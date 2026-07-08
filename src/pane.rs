@@ -25,6 +25,8 @@ pub struct Pane {
     pub id: usize,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    #[cfg(test)]
+    input_record: Arc<Mutex<Vec<u8>>>,
     pub parser: Arc<Mutex<vt100::Parser>>,
     child: Box<dyn Child + Send + Sync>,
     _reader_handle: thread::JoinHandle<()>,
@@ -202,6 +204,8 @@ impl Pane {
             id,
             master: pair.master,
             writer,
+            #[cfg(test)]
+            input_record: Arc::new(Mutex::new(Vec::new())),
             parser,
             child,
             _reader_handle: reader_handle,
@@ -250,10 +254,22 @@ impl Pane {
         if self.exited {
             return Ok(());
         }
+        #[cfg(test)]
+        if let Ok(mut record) = self.input_record.lock() {
+            record.extend_from_slice(data);
+        }
         if self.writer.write_all(data).is_err() || self.writer.flush().is_err() {
             self.exited = true;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drain_input_record_for_test(&self) -> Vec<u8> {
+        let Ok(mut record) = self.input_record.lock() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut *record)
     }
 
     /// Resize the PTY and vt100 parser. Returns `true` if the size

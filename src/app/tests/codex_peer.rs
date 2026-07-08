@@ -415,7 +415,24 @@ fn handle_peer_send_nudges_focused_codex_directly_without_notification() {
         .insert(sibling_id, PeerClientKind::Codex);
     app.handle_focus(&ipc::PaneRef::Id(sibling_id))
         .expect("focus sibling");
+    app.ws()
+        .panes
+        .get(&sibling_id)
+        .expect("sibling pane exists")
+        .drain_input_record_for_test();
     while rx.try_recv().is_ok() {}
+
+    let expected_nudge = crate::mcp_peer::build_send_keys_payload(
+        &format_codex_peer_message(&PendingCodexPeerMessage {
+            from_pane: sender_id,
+            from_name: None,
+            from_kind: None,
+        }),
+        None,
+        true,
+    )
+    .expect("expected focused Codex nudge payload")
+    .into_bytes();
 
     app.handle_peer_send(
         sender_id,
@@ -437,6 +454,13 @@ fn handle_peer_send_nudges_focused_codex_directly_without_notification() {
         }
         other => panic!("unexpected event: {other:?}"),
     }
+    let actual_nudge = app
+        .ws()
+        .panes
+        .get(&sibling_id)
+        .expect("sibling pane exists")
+        .drain_input_record_for_test();
+    assert_eq!(actual_nudge, expected_nudge);
     assert!(
         app.visible_codex_peer_notification().is_none(),
         "focused Codex target should not show a notification overlay"
