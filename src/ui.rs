@@ -468,7 +468,7 @@ fn render_tab_bar(app: &mut App, frame: &mut Frame, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ));
         } else if is_active {
-            // Active tab: underline bar ▔ effect via bold + brighter bg
+            // Active tab: identified via underline + bold + default fg vs DarkGray for inactive.
             spans.push(Span::styled(
                 label.clone(),
                 Style::default()
