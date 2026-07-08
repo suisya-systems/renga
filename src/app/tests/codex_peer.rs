@@ -397,7 +397,7 @@ fn forward_paste_to_pty_clears_codex_transcript_overlay_hint() {
 }
 
 #[test]
-fn handle_peer_send_defers_codex_nudge_while_target_is_focused() {
+fn handle_peer_send_nudges_focused_codex_directly_without_notification() {
     let mut app = App::new(40, 80).expect("App::new");
     let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
@@ -437,68 +437,68 @@ fn handle_peer_send_defers_codex_nudge_while_target_is_focused() {
         }
         other => panic!("unexpected event: {other:?}"),
     }
-    let notification = app
-        .visible_codex_peer_notification()
-        .expect("focused Codex target should show a notification overlay");
-    assert_eq!(notification.target_pane, sibling_id);
-    assert_eq!(notification.pending_count, 1);
-    assert_eq!(
-        app.pending_codex_peer_messages
-            .get(&sibling_id)
-            .map(|q| q.len()),
-        None,
-        "focused Codex target should not queue an immediate PTY nudge"
-    );
-
-    app.flush_pending_codex_peer_messages();
-    assert_eq!(
-        app.pending_codex_peer_messages
-            .get(&sibling_id)
-            .map(|q| q.len()),
-        None,
-        "focused Codex target should stay notification-only while it remains focused"
-    );
-
-    app.handle_focus(&ipc::PaneRef::Id(sender_id))
-        .expect("refocus sender");
-    app.flush_pending_codex_peer_messages();
     assert!(
         app.visible_codex_peer_notification().is_none(),
-        "moving focus away should hand the notification back to the worker queue"
+        "focused Codex target should not show a notification overlay"
     );
     assert_eq!(
         app.pending_codex_peer_messages
             .get(&sibling_id)
             .map(|q| q.len()),
-        Some(1),
-        "unfocused Codex target should regain a queued nudge"
+        None,
+        "focused Codex target should not leave a queued PTY nudge"
     );
-    {
-        let pane = app.ws_mut().panes.get_mut(&sibling_id).expect("pane");
-        let mut parser = pane.parser.lock().unwrap();
-        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
-    }
+
     app.flush_pending_codex_peer_messages();
     assert_eq!(
         app.pending_codex_peer_messages
             .get(&sibling_id)
             .map(|q| q.len()),
-        Some(1),
-        "first unfocused flush should advance the deferred nudge to submit stage"
-    );
-    if let Some(queue) = app.pending_codex_peer_messages.get_mut(&sibling_id) {
-        queue[0] = PendingCodexPeerDelivery::SubmitAt(Instant::now());
-    }
-    app.flush_pending_codex_peer_messages();
-    assert!(
-        !app.pending_codex_peer_messages.contains_key(&sibling_id),
-        "second unfocused flush should submit the deferred nudge"
+        None,
+        "direct focused nudge should not reappear in the queue"
     );
     app.shutdown();
 }
 
 #[test]
-fn handle_peer_send_coalesces_focused_codex_notifications() {
+fn handle_peer_send_keeps_unfocused_codex_on_queued_nudge_path() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let sender_id = app.ws().focused_pane_id;
+    let sibling_id = app
+        .handle_split(
+            &ipc::PaneRef::Focused,
+            ipc::Direction::Vertical,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("split succeeds");
+    app.peer_client_kinds
+        .insert(sibling_id, PeerClientKind::Codex);
+    app.handle_focus(&ipc::PaneRef::Id(sender_id))
+        .expect("refocus sender");
+
+    app.handle_peer_send(
+        sender_id,
+        &ipc::PaneRef::Id(sibling_id),
+        "hello unfocused codex".to_string(),
+    )
+    .expect("peer send");
+
+    assert!(app.visible_codex_peer_notification().is_none());
+    assert_eq!(
+        app.pending_codex_peer_messages
+            .get(&sibling_id)
+            .map(|q| q.len()),
+        Some(1),
+        "unfocused Codex target should still use the ready-gated queue"
+    );
+    app.shutdown();
+}
+
+#[test]
+fn handle_peer_send_repeated_focused_codex_messages_do_not_open_notification() {
     let mut app = App::new(40, 80).expect("App::new");
     let sender_id = app.ws().focused_pane_id;
     let sibling_id = app
@@ -529,92 +529,19 @@ fn handle_peer_send_coalesces_focused_codex_notifications() {
     )
     .expect("second peer send");
 
-    let notification = app
-        .visible_codex_peer_notification()
-        .expect("focused Codex target should still show one notification");
-    assert_eq!(notification.pending_count, 2);
+    assert!(
+        app.visible_codex_peer_notification().is_none(),
+        "focused Codex sends should be direct, not notification-backed"
+    );
     assert_eq!(
         app.pending_codex_peer_messages
             .get(&sibling_id)
             .map(|q| q.len()),
         None,
-        "focused notifications should not leak into the PTY nudge queue"
+        "focused Codex sends should not leak into the PTY nudge queue"
     );
     app.shutdown();
 }
-
-#[test]
-fn focused_codex_notification_esc_dismisses_without_queueing_nudge() {
-    let mut app = App::new(40, 80).expect("App::new");
-    let sender_id = app.ws().focused_pane_id;
-    let sibling_id = app
-        .handle_split(
-            &ipc::PaneRef::Focused,
-            ipc::Direction::Vertical,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("split succeeds");
-    app.peer_client_kinds
-        .insert(sibling_id, PeerClientKind::Codex);
-    app.handle_focus(&ipc::PaneRef::Id(sibling_id))
-        .expect("focus sibling");
-    app.handle_peer_send(
-        sender_id,
-        &ipc::PaneRef::Id(sibling_id),
-        "hello focused codex".to_string(),
-    )
-    .expect("peer send");
-
-    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-    let consumed = app.handle_key_event(esc).expect("dismiss notification");
-    assert!(consumed);
-    assert!(app.visible_codex_peer_notification().is_none());
-    assert!(
-        !app.pending_codex_peer_messages.contains_key(&sibling_id),
-        "dismissing the notification should not silently queue a PTY nudge"
-    );
-    app.shutdown();
-}
-
-#[test]
-fn focused_codex_notification_commit_clears_notification() {
-    let mut app = App::new(40, 80).expect("App::new");
-    let sender_id = app.ws().focused_pane_id;
-    let sibling_id = app
-        .handle_split(
-            &ipc::PaneRef::Focused,
-            ipc::Direction::Vertical,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("split succeeds");
-    app.peer_client_kinds
-        .insert(sibling_id, PeerClientKind::Codex);
-    app.handle_focus(&ipc::PaneRef::Id(sibling_id))
-        .expect("focus sibling");
-    app.handle_peer_send(
-        sender_id,
-        &ipc::PaneRef::Id(sibling_id),
-        "hello focused codex".to_string(),
-    )
-    .expect("peer send");
-
-    let commit = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
-    let consumed = app.handle_key_event(commit).expect("commit notification");
-    assert!(consumed);
-    assert!(app.visible_codex_peer_notification().is_none());
-    assert!(
-        !app.pending_codex_peer_messages.contains_key(&sibling_id),
-        "manual insert should consume the focused notification without requeueing"
-    );
-    app.shutdown();
-}
-
 #[test]
 fn flush_pending_codex_peer_messages_requires_ready_screen() {
     let mut app = App::new(40, 80).expect("App::new");

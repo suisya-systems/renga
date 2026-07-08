@@ -27,13 +27,6 @@ pub(crate) struct CodexPeerNotificationState {
     pub(crate) pending_count: usize,
 }
 
-impl CodexPeerNotificationState {
-    fn register_message(&mut self, message: PendingCodexPeerMessage) {
-        self.message = message;
-        self.pending_count = self.pending_count.saturating_add(1);
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PendingCodexPeerDelivery {
     Draft(PendingCodexPeerMessage),
@@ -261,19 +254,14 @@ impl App {
                 && self.workspaces[target_ws].focused_pane_id == target_id;
             if target_is_focused {
                 self.pending_codex_peer_messages.remove(&target_id);
-                match self.codex_peer_notification.as_mut() {
-                    Some(notification) if notification.target_pane == target_id => {
-                        notification.register_message(message);
-                    }
-                    _ => {
-                        self.codex_peer_notification = Some(CodexPeerNotificationState {
-                            target_pane: target_id,
-                            message,
-                            pending_count: 1,
-                        });
-                    }
+                if self
+                    .codex_peer_notification
+                    .as_ref()
+                    .is_some_and(|notification| notification.target_pane == target_id)
+                {
+                    self.codex_peer_notification = None;
                 }
-                self.dirty = true;
+                self.send_codex_peer_nudge_now(target_ws, target_id, &message)?;
             } else {
                 self.push_pending_codex_peer_nudge(target_id, message);
             }
@@ -335,6 +323,28 @@ impl App {
         if queue.is_empty() {
             queue.push_back(PendingCodexPeerDelivery::Draft(message));
         }
+    }
+
+    fn send_codex_peer_nudge_now(
+        &mut self,
+        ws_index: usize,
+        pane_id: usize,
+        message: &PendingCodexPeerMessage,
+    ) -> std::result::Result<(), ipc::CodedError> {
+        let payload = crate::mcp_peer::build_send_keys_payload(
+            &format_codex_peer_message(message),
+            None,
+            true,
+        )
+        .expect("codex peer focused nudge payload");
+        let pane = self
+            .workspaces
+            .get_mut(ws_index)
+            .and_then(|ws| ws.panes.get_mut(&pane_id))
+            .ok_or_else(|| ipc::CodedError::new(ipc::err_code::PANE_VANISHED, "pane vanished"))?;
+        write_input_to_pane(pane, payload.as_bytes(), false)?;
+        self.dirty = true;
+        Ok(())
     }
 
     pub(crate) fn codex_peer_notification_is_visible(&self) -> bool {
