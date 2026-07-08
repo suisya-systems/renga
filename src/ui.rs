@@ -61,25 +61,36 @@ fn syntax_rgb_to_ansi_color(r: u8, g: u8, b: u8) -> Color {
     }
 
     let intense = max >= 192;
-    let near_max = max.saturating_sub(32);
-    let red = r >= near_max;
-    let green = g >= near_max;
-    let blue = b >= near_max;
+    let substantial = |channel: u8| (u16::from(channel) * 20) >= (u16::from(max) * 11);
+    let close = |channel: u8| (u16::from(channel) * 4) > (u16::from(max) * 3);
+    let low = |channel: u8| u16::from(channel) * 5 <= u16::from(max) * 3;
 
-    match (red, green, blue, intense) {
-        (true, true, false, true) => Color::LightYellow,
-        (true, true, false, false) => Color::Yellow,
-        (true, false, true, true) => Color::LightMagenta,
-        (true, false, true, false) => Color::Magenta,
-        (false, true, true, true) => Color::LightCyan,
-        (false, true, true, false) => Color::Cyan,
-        (true, false, false, true) => Color::LightRed,
-        (true, false, false, false) => Color::Red,
-        (false, true, false, true) => Color::LightGreen,
-        (false, true, false, false) => Color::Green,
-        (false, false, true, true) => Color::LightBlue,
-        (false, false, true, false) => Color::Blue,
-        _ => Color::Gray,
+    let color = if r == max && substantial(g) && low(b) {
+        Color::Yellow
+    } else if r == max && close(b) && g < b {
+        Color::Magenta
+    } else if g == max && close(b) && r < b {
+        Color::Cyan
+    } else if r == max {
+        Color::Red
+    } else if g == max {
+        Color::Green
+    } else {
+        Color::Blue
+    };
+
+    if intense {
+        match color {
+            Color::Red => Color::LightRed,
+            Color::Green => Color::LightGreen,
+            Color::Yellow => Color::LightYellow,
+            Color::Blue => Color::LightBlue,
+            Color::Magenta => Color::LightMagenta,
+            Color::Cyan => Color::LightCyan,
+            _ => color,
+        }
+    } else {
+        color
     }
 }
 
@@ -1921,6 +1932,34 @@ mod syntax_color_tests {
         ));
         assert!(matches!(
             syntax_rgb_to_ansi_color(0xff, 0xff, 0x00),
+            Color::Yellow | Color::LightYellow
+        ));
+    }
+
+    #[test]
+    fn maps_real_theme_gold_orange_and_brown_without_red_collapse() {
+        let red = syntax_rgb_to_ansi_color(0xf2, 0x77, 0x7a);
+        let orange = syntax_rgb_to_ansi_color(0xf9, 0x91, 0x57);
+        let brown = syntax_rgb_to_ansi_color(0xd2, 0x7b, 0x53);
+
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xff, 0xcc, 0x66),
+            Color::Yellow | Color::LightYellow
+        ));
+        assert!(matches!(orange, Color::Yellow | Color::LightYellow));
+        assert!(matches!(brown, Color::Yellow | Color::LightYellow));
+        assert_ne!(orange, red);
+        assert_ne!(brown, red);
+    }
+
+    #[test]
+    fn maps_other_theme_yellows_to_ansi_yellow() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xe5, 0xc0, 0x7b),
+            Color::Yellow | Color::LightYellow
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xb5, 0x89, 0x00),
             Color::Yellow | Color::LightYellow
         ));
     }
