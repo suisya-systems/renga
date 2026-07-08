@@ -60,16 +60,26 @@ fn syntax_rgb_to_ansi_color(r: u8, g: u8, b: u8) -> Color {
         };
     }
 
-    match (r >= g && r >= b, g >= r && g >= b, b >= r && b >= g) {
-        (true, false, false) if g > b.saturating_add(32) => Color::Yellow,
-        (true, false, false) if b > g.saturating_add(32) => Color::Magenta,
-        (true, _, _) => Color::Red,
-        (false, true, false) if b > r.saturating_add(32) => Color::Cyan,
-        (false, true, _) if r > b.saturating_add(32) => Color::Yellow,
-        (false, true, _) => Color::Green,
-        (false, false, true) if r > g.saturating_add(32) => Color::Magenta,
-        (false, false, true) if g > r.saturating_add(32) => Color::Cyan,
-        _ => Color::Blue,
+    let intense = max >= 192;
+    let near_max = max.saturating_sub(32);
+    let red = r >= near_max;
+    let green = g >= near_max;
+    let blue = b >= near_max;
+
+    match (red, green, blue, intense) {
+        (true, true, false, true) => Color::LightYellow,
+        (true, true, false, false) => Color::Yellow,
+        (true, false, true, true) => Color::LightMagenta,
+        (true, false, true, false) => Color::Magenta,
+        (false, true, true, true) => Color::LightCyan,
+        (false, true, true, false) => Color::Cyan,
+        (true, false, false, true) => Color::LightRed,
+        (true, false, false, false) => Color::Red,
+        (false, true, false, true) => Color::LightGreen,
+        (false, true, false, false) => Color::Green,
+        (false, false, true, true) => Color::LightBlue,
+        (false, false, true, false) => Color::Blue,
+        _ => Color::Gray,
     }
 }
 
@@ -1863,6 +1873,56 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Default => Color::Reset,
         vt100::Color::Idx(idx) => Color::Indexed(idx),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+#[cfg(test)]
+mod syntax_color_tests {
+    use super::syntax_rgb_to_ansi_color;
+    use ratatui::style::Color;
+
+    #[test]
+    fn maps_magenta_family_to_ansi_magenta() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xcc, 0x99, 0xcc),
+            Color::Magenta | Color::LightMagenta
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xff, 0x00, 0xff),
+            Color::Magenta | Color::LightMagenta
+        ));
+    }
+
+    #[test]
+    fn maps_cyan_family_to_ansi_cyan() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0x66, 0xcc, 0xcc),
+            Color::Cyan | Color::LightCyan
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0x00, 0xff, 0xff),
+            Color::Cyan | Color::LightCyan
+        ));
+    }
+
+    #[test]
+    fn maps_blue_family_to_ansi_blue() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0x66, 0x99, 0xcc),
+            Color::Blue | Color::LightBlue
+        ));
+    }
+
+    #[test]
+    fn keeps_red_and_yellow_families_distinct() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xf2, 0x77, 0x7a),
+            Color::Red | Color::LightRed
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xff, 0xff, 0x00),
+            Color::Yellow | Color::LightYellow
+        ));
     }
 }
 
