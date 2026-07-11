@@ -31,6 +31,7 @@
 //! out every time Claude starts outside renga.
 
 pub mod install;
+mod parent_watch;
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufRead, Write};
@@ -58,9 +59,17 @@ fn log_stderr(msg: &str) {
 }
 
 /// Entry point called by `renga mcp-peer`. Blocks on stdin until EOF
-/// or an unrecoverable error.
+/// or an unrecoverable error — with a parent-process watchdog as the
+/// authoritative backstop, because stdin EOF is not guaranteed to
+/// arrive on Windows when the pipe's write end leaked into sibling
+/// processes via handle inheritance (renga-9fs).
 pub fn run() -> Result<()> {
     log_stderr(&format!("starting {SERVER_NAME} v{SERVER_VERSION}"));
+
+    parent_watch::spawn(|| {
+        log_stderr("parent process exited; shutting down");
+        std::process::exit(0);
+    });
 
     let ctx = PeerCtx::load();
     match &ctx.mode {
