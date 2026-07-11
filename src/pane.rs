@@ -1443,6 +1443,19 @@ mod tests {
     fn kill_reaps_grandchild_after_shell_natural_exit() {
         use std::time::{Duration, Instant};
 
+        // The startup command below is bash syntax (`& disown; exit`).
+        // On a machine where detect_shell() falls back to PowerShell
+        // the command would fail for shell-language reasons, not
+        // product reasons — skip rather than report a false negative.
+        let shell_name = detect_shell()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !shell_name.contains("bash") {
+            eprintln!("skipping: test requires a bash pane shell, got {shell_name}");
+            return;
+        }
+
         fn wait_for(mut cond: impl FnMut() -> bool, budget: Duration) -> bool {
             let deadline = Instant::now() + budget;
             while Instant::now() < deadline {
@@ -1454,10 +1467,22 @@ mod tests {
             false
         }
 
+        /// Removes the listed files on drop, so temp artifacts are
+        /// cleaned up even when an assertion panics mid-test.
+        struct TempFiles(Vec<std::path::PathBuf>);
+        impl Drop for TempFiles {
+            fn drop(&mut self) {
+                for p in &self.0 {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+
         let tag = format!("renga-trx-e2e-{}", std::process::id());
         let temp = std::env::temp_dir();
         let lock_path = temp.join(format!("{tag}.lock"));
         let script_path = temp.join(format!("{tag}.ps1"));
+        let _cleanup = TempFiles(vec![lock_path.clone(), script_path.clone()]);
         std::fs::write(&lock_path, b"x").expect("create lock file");
         // Forward slashes keep the path inert through bash quoting.
         let lock_fwd = lock_path.display().to_string().replace('\\', "/");
@@ -1476,7 +1501,7 @@ mod tests {
         // Detach the locker from the shell, then end the shell — the
         // exact "natural exit leaves an orphan" scenario.
         pane.queue_startup_command(&format!(
-            "powershell -NoProfile -ExecutionPolicy Bypass -File {script_fwd} & disown; exit"
+            "powershell -NoProfile -ExecutionPolicy Bypass -File '{script_fwd}' & disown; exit"
         ));
         assert!(
             wait_for(
@@ -1504,8 +1529,6 @@ mod tests {
             wait_for(|| !lock_is_held(&lock_path), Duration::from_secs(10)),
             "orphaned grandchild should be dead after pane kill"
         );
-        let _ = std::fs::remove_file(&lock_path);
-        let _ = std::fs::remove_file(&script_path);
     }
 
     #[test]

@@ -19,6 +19,14 @@
 //! last handle close reaps the job. Nested jobs are supported since
 //! Windows 8, so a pane job coexists with any job the host terminal
 //! or CI runner already put renga in.
+//!
+//! Deliberate trade-off: the job does NOT set
+//! `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so a program inside a pane that
+//! calls `CreateProcess` with `CREATE_BREAKAWAY_FROM_JOB` (some legacy
+//! installers / CI helpers) fails with `ERROR_ACCESS_DENIED` instead
+//! of spawning outside the job. Granting breakaway would reopen the
+//! exact leak this module exists to close; such callers were already
+//! rare-to-broken under other job-managed hosts.
 
 use std::ffi::c_void;
 
@@ -193,9 +201,16 @@ mod tests {
             "$f=[IO.File]::Open('{}','Open','ReadWrite','None'); Start-Sleep 60",
             lock_path.display()
         );
+        // The leading `ping -n 2` (~1 s) keeps cmd from spawning the
+        // grandchild before the test's `PaneJob::assign` has run —
+        // processes already alive at assignment time would NOT be
+        // captured by the job. (The product path has no such race:
+        // `pending_startup` can't flush before a shell prompt exists.)
         Command::new("cmd.exe")
             .arg("/c")
-            .raw_arg(format!("start /b powershell -NoProfile -Command \"{ps}\""))
+            .raw_arg(format!(
+                "ping -n 2 127.0.0.1 >nul & start /b powershell -NoProfile -Command \"{ps}\""
+            ))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -211,6 +226,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         false
+    }
+
+    /// Removes the listed files on drop, so temp artifacts are cleaned
+    /// up even when an assertion panics mid-test.
+    struct TempFiles(Vec<std::path::PathBuf>);
+    impl Drop for TempFiles {
+        fn drop(&mut self) {
+            for p in &self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
     }
 
     #[test]
@@ -239,6 +265,7 @@ mod tests {
     fn terminate_kills_grandchild_whose_parent_exited() {
         let lock_path =
             std::env::temp_dir().join(format!("rengatrx-job-{}.lock", std::process::id()));
+        let _cleanup = TempFiles(vec![lock_path.clone()]);
         let mut cmd = spawn_locker_grandchild(&lock_path);
         let job = PaneJob::assign(cmd.id()).expect("assign job");
         // Positive precondition: the grandchild is up and holding the
@@ -258,6 +285,5 @@ mod tests {
             wait_for(|| !lock_is_held(&lock_path), Duration::from_secs(5)),
             "grandchild should be dead after job termination"
         );
-        let _ = std::fs::remove_file(&lock_path);
     }
 }
