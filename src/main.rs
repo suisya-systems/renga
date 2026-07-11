@@ -13,6 +13,8 @@ mod pane;
 mod preview;
 mod ui;
 mod version_check;
+#[cfg(windows)]
+mod win_job;
 
 use std::io;
 use std::panic;
