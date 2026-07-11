@@ -30,7 +30,11 @@
 
 use std::ffi::c_void;
 
-type Handle = isize;
+// `*mut c_void` (not isize) to match the other hand-rolled Win32
+// extern blocks (`conpty_colors::win`, `mcp_peer::parent_watch::win`)
+// — mismatched aliases across duplicate declarations trip
+// `clashing_extern_declarations`.
+type Handle = *mut c_void;
 
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
 /// `JOBOBJECTINFOCLASS::JobObjectExtendedLimitInformation`
@@ -114,7 +118,7 @@ impl PaneJob {
     pub fn assign(pid: u32) -> Option<Self> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
-            if job == 0 {
+            if job.is_null() {
                 return None;
             }
             let job = PaneJob(job);
@@ -132,7 +136,7 @@ impl PaneJob {
             }
 
             let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if process == 0 {
+            if process.is_null() {
                 return None;
             }
             let assigned = AssignProcessToJobObject(job.0, process);
