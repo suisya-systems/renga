@@ -43,6 +43,11 @@ fn wait_parent_exit() {
 
 #[cfg(unix)]
 fn wait_parent_exit() {
+    // Known gap: if the parent died before this first read, `original`
+    // is already the reaper's PID and the loop never fires. Unix has
+    // working stdin EOF as the primary shutdown signal, so the
+    // watchdog stays a best-effort backstop there — unlike Windows,
+    // where it is authoritative.
     // SAFETY: getppid is async-signal-safe and has no failure mode.
     let original = unsafe { libc::getppid() };
     loop {
@@ -84,11 +89,20 @@ mod win {
         sz_exe_file: [u16; MAX_PATH],
     }
 
+    /// Win32 `FILETIME`. Field order is fixed by the ABI (low dword
+    /// first), which is the REVERSE of numeric significance — never
+    /// derive `Ord`/`PartialOrd` here; compare via [`FileTime::as_u64`].
     #[repr(C)]
-    #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    struct FileTime {
+    #[derive(Default, Clone, Copy, PartialEq, Eq)]
+    pub(super) struct FileTime {
         dw_low_date_time: u32,
         dw_high_date_time: u32,
+    }
+
+    impl FileTime {
+        pub(super) fn as_u64(self) -> u64 {
+            (u64::from(self.dw_high_date_time) << 32) | u64::from(self.dw_low_date_time)
+        }
     }
 
     extern "system" {
@@ -113,7 +127,14 @@ mod win {
     /// Blocks until the parent process exits. Returns immediately when
     /// the parent is already gone or cannot be identified.
     pub(super) fn wait_parent_exit() {
-        let Some(ppid) = parent_pid() else {
+        // One retry after a short pause: `CreateToolhelp32Snapshot`
+        // can fail transiently under resource pressure, and treating
+        // that as "already orphaned" would exit a healthy server.
+        let ppid = parent_pid().or_else(|| {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            parent_pid()
+        });
+        let Some(ppid) = ppid else {
             return;
         };
         let Some(handle) = open_for_wait(ppid) else {
@@ -129,12 +150,22 @@ mod win {
             creation_time(handle),
             creation_time(unsafe { GetCurrentProcess() }),
         ) {
-            if parent_created > self_created {
+            if parent_created.as_u64() > self_created.as_u64() {
                 unsafe { CloseHandle(handle) };
                 return;
             }
         }
         wait_and_close(handle);
+    }
+
+    /// Construct a `FileTime` for tests without exposing the struct's
+    /// fields outside this module.
+    #[cfg(test)]
+    pub(super) fn test_filetime(high: u32, low: u32) -> FileTime {
+        FileTime {
+            dw_low_date_time: low,
+            dw_high_date_time: high,
+        }
     }
 
     /// Block until the process identified by `pid` exits; returns
@@ -220,6 +251,19 @@ mod tests {
     use std::time::Duration;
 
     use super::win::wait_pid_exit;
+
+    /// Regression for the PID-reuse guard: FILETIME's ABI field order
+    /// (low dword first) is the reverse of numeric significance, so a
+    /// derived lexicographic Ord would order these two values wrongly.
+    /// The high dword rolls over every ~429.5 s, so "high differs,
+    /// low compares the other way" is the common real-world shape —
+    /// a parent 8+ minutes older than the child.
+    #[test]
+    fn filetime_comparison_uses_high_dword_first() {
+        let older = super::win::test_filetime(5, 0xFFFF_FFFF); // high=5
+        let newer = super::win::test_filetime(6, 0x0000_0001); // high=6
+        assert!(older.as_u64() < newer.as_u64());
+    }
 
     #[test]
     fn parent_pid_resolves() {
