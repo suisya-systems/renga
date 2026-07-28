@@ -310,6 +310,7 @@ already-running renga server).
 | `--ime <hotkey\|off>` | enum | Overrides `[ime] mode` in config. |
 | `--ime-freeze-panes[=BOOL]` | bool | Suppress repaints while IME overlay open. Default `true`. |
 | `--ime-overlay-catchup-ms <MS>` | u64 | Periodic repaint interval while frozen. Default 3000, clamped ≥ 100; `0` = pure freeze. |
+| `--ime-anchor-row-offset <ROWS>` | u16 | Rows the caret is pushed below the focused pane's caret row to anchor a native IME candidate window. Default 1, clamped ≤ 4; `0` = anchor on the caret cell. conpty hosts only. |
 | `--lang <auto\|ja\|en>` | enum | UI language. |
 | `--min-pane-width <COLS>` | u16 | Default 20. `0` clamps to 1. Process-global; not exposed per-call (see §6 *Out of scope*). |
 | `--min-pane-height <ROWS>` | u16 | Default 5. `0` clamps to 1. Same scope as `--min-pane-width`. |
@@ -471,6 +472,7 @@ than abort the stream. New variants are additive (see §5).
 mode = "hotkey"           # "hotkey" (default) | "off"
 freeze_panes_on_overlay = true   # default true
 overlay_catchup_ms = 3000        # default 3000; non-zero clamped >= 100; 0 = pure freeze
+anchor_row_offset = 1            # default 1; clamped <= 4; 0 = anchor on the caret cell (conpty hosts only)
 
 [ui]
 lang = "auto"             # "auto" (default) | "ja" | "en"; case-insensitive

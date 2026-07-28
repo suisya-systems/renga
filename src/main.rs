@@ -148,6 +148,7 @@ fn main() -> Result<()> {
         cli.ime,
         cli.ime_freeze_panes,
         cli.ime_overlay_catchup_ms,
+        cli.ime_anchor_row_offset,
         cli.lang,
         cli.fps,
     );
@@ -572,10 +573,25 @@ fn flush_paste_buffer(app: &mut app::App, buffer: &mut Vec<u8>) -> Result<()> {
 
 /// Whether the hardware cursor must be force-hidden for the whole draw
 /// transaction to avoid conpty leaking intermediate `MoveTo` to the host
-/// caret (see the call site for the full rationale). Always true on native
-/// Windows; on other targets only under WSL, where the outer terminal is
-/// still Windows Terminal via conpty.
+/// caret (see the call site for the full rationale). Exactly the conpty
+/// hosts — see [`is_conpty_host`].
 pub(crate) fn hide_cursor_during_draw() -> bool {
+    is_conpty_host()
+}
+
+/// Whether the host terminal anchors a native IME (pre-edit + candidate
+/// window) to the terminal caret. That is a conpty / Windows Terminal
+/// behavior — the mechanism Issue #34 leans on to keep composition at
+/// the user's input position, and the one Issue #281 needed nudged one
+/// row down. Other terminals place IME windows themselves (or have no
+/// system IME attached at all), so renga leaves their caret alone.
+pub(crate) fn host_anchors_ime_to_caret() -> bool {
+    is_conpty_host()
+}
+
+/// Native Windows, or Linux under WSL where the outer terminal is still
+/// Windows Terminal driving a conpty.
+fn is_conpty_host() -> bool {
     #[cfg(windows)]
     {
         true

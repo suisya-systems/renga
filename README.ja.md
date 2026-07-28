@@ -129,6 +129,8 @@ renga mcp install --client codex   # Codex peer も使う場合
 
 Claude のペインにフォーカスした状態で `Ctrl+;` を押すと、画面中央に複数行の合成ボックスが開きます。ホストターミナルの IME 候補窓は合成ボックス内のキャレットに吸着し、裏のペインは凍結 (周期 catch-up あり) されるので、ストリーミング出力が候補窓を踊らせることがありません。挙動ノブ (`freeze_panes_on_overlay`, `overlay_catchup_ms`)、overlay 内のキーマップ、プラットフォーム固有の癖 (WSL2 の `Alt+Enter` vs `Ctrl+Enter`、macOS の Option as Meta) は [`docs/ime.ja.md`](./docs/ime.ja.md) を参照。
 
+overlay を開かずにペインへ直接入力することもできます。その場合も renga はホスト側 IME を入力位置にアンカーし、Windows Terminal ではそのアンカーを 1 行下げて変換窓が入力行を避けるようにします。挙動の調整・無効化は `anchor_row_offset` で行えます — [`docs/ime.ja.md`](./docs/ime.ja.md#overlay-を使わない場合ネイティブ-ime-のアンカー) を参照。
+
 ## キーバインド チートシート
 
 最初に覚えるキーだけを置いています。フル表 (ペイン / ファイルツリー / プレビュー / マウス) と macOS Option-as-Meta 設定は [`docs/keymap.ja.md`](./docs/keymap.ja.md) を参照。

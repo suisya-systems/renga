@@ -117,6 +117,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // over the pane caret when the overlay is open, reproducing the historical
     // last-write-wins ordering (the overlay previously called
     // `set_cursor_position` after the panes).
+    //
+    // Only the pane caret carries the #281 IME row bias. Inside the
+    // overlay renga renders the composition buffer itself, so biasing
+    // that caret would split the two renderings of the same text across
+    // rows — the box would show the buffer on one row while the host
+    // painted its pre-edit on the next.
     let caret = overlay_caret.or(pane_caret);
 
     // Caret delivery. On conpty (Windows / WSL) defer the caret so the main
@@ -690,6 +696,12 @@ fn render_panes(app: &mut App, frame: &mut Frame, area: Rect) -> Option<(u16, u1
     let focused_id = app.ws().focused_pane_id;
     let focus_target = app.ws().focus_target;
     let selection = app.selection.clone();
+    // Resolved once per frame rather than per pane: the host check is a
+    // process-wide fact and only the focused pane's caret is delivered.
+    let ime_row_offset = effective_ime_row_offset(
+        app.ime_anchor_row_offset,
+        crate::host_anchors_ime_to_caret(),
+    );
     let mut caret: Option<(u16, u16)> = None;
     for (pane_id, rect) in rects {
         if let Some(pane) = app.ws().panes.get(&pane_id) {
@@ -698,8 +710,15 @@ fn render_panes(app: &mut App, frame: &mut Frame, area: Rect) -> Option<(u16, u1
                 |s| matches!(s.target, crate::app::SelectionTarget::Pane(id) if id == pane_id),
             );
             let claude_state = app.claude_monitor.state(pane_id);
-            let pane_caret =
-                render_single_pane(pane, is_focused, pane_sel, &claude_state, frame, rect);
+            let pane_caret = render_single_pane(
+                pane,
+                is_focused,
+                pane_sel,
+                &claude_state,
+                ime_row_offset,
+                frame,
+                rect,
+            );
             if is_focused {
                 caret = pane_caret;
             }
@@ -762,6 +781,7 @@ fn render_single_pane(
     is_focused: bool,
     selection: Option<&crate::app::TextSelection>,
     claude_state: &crate::claude_monitor::ClaudeState,
+    ime_row_offset: u16,
     frame: &mut Frame,
     area: Rect,
 ) -> Option<(u16, u16)> {
@@ -905,7 +925,7 @@ fn render_single_pane(
         frame.render_widget(msg, inner);
         None
     } else {
-        render_terminal_content(pane, is_focused, selection, frame, inner)
+        render_terminal_content(pane, is_focused, selection, ime_row_offset, frame, inner)
     }
 }
 
@@ -915,10 +935,15 @@ fn render_single_pane(
 /// `frame.set_cursor_position` itself, so on conpty the caret can be applied
 /// after `terminal.draw` without ratatui re-showing it at a stale position
 /// (#260).
+///
+/// `ime_row_offset` biases the returned row downward so a host-drawn IME
+/// candidate window clears the input line (#281). It is already resolved
+/// to `0` by the caller on hosts that don't anchor an IME to the caret.
 fn render_terminal_content(
     pane: &crate::pane::Pane,
     is_focused: bool,
     selection: Option<&crate::app::TextSelection>,
+    ime_row_offset: u16,
     frame: &mut Frame,
     area: Rect,
 ) -> Option<(u16, u16)> {
@@ -1063,7 +1088,14 @@ fn render_terminal_content(
                 // Surfaced to `render` instead of set on the frame here, so the
                 // out-of-range pending-wrap case still yields no caret (`None`)
                 // exactly as before — preserving #253's plain-PTY behavior.
-                caret = Some((area.x + clamped_col, cursor_y));
+                //
+                // The row is resolved first and biased second: the
+                // in-range test above still runs against the *resolved*
+                // caret, so the IME offset can never turn a dropped
+                // caret into a delivered one (or vice versa).
+                let anchor_y =
+                    ime_anchored_caret_row(cursor_y, area.y, area.height, ime_row_offset);
+                caret = Some((area.x + clamped_col, anchor_y));
             }
         }
     }
@@ -1130,6 +1162,41 @@ fn should_track_claude_caret(
 /// `None` only when the area has zero width (nothing to draw into).
 fn clamp_caret_col(col: u16, width: u16) -> Option<u16> {
     (width > 0).then(|| col.min(width - 1))
+}
+
+/// Resolve the IME anchor offset actually used for a frame.
+///
+/// renga owns no host window, so its only influence on a native IME is
+/// where it parks the terminal caret (#34). Only conpty hosts (Windows
+/// Terminal, natively or via WSL) place the pre-edit and candidate
+/// window off that caret, so every other target keeps the configured
+/// offset at `0` and the caret stays exactly on the resolved cell —
+/// preserving the caret work in #253 / #257 / #260 on Linux and macOS
+/// terminals, which never had the overlap in the first place.
+fn effective_ime_row_offset(configured: u16, host_anchors_ime: bool) -> u16 {
+    if host_anchors_ime {
+        configured
+    } else {
+        0
+    }
+}
+
+/// Push a resolved caret row down by `offset` rows to give a host-drawn
+/// IME candidate window a row to open into (#281).
+///
+/// Windows Terminal opens the candidate window flush against the bottom
+/// of the anchored row, so anchoring on Claude's input row leaves the
+/// popup butted straight into the composed text. Biasing the anchor down
+/// moves both the popup and the inline pre-edit Windows Terminal draws at
+/// the caret, so the input line stays readable.
+///
+/// The result never leaves the pane body: it is clamped to the pane's
+/// last row, and it never moves the caret *up*, so a caret already on the
+/// bottom row simply keeps today's behavior instead of being dragged
+/// backwards by a degenerate `area_height`.
+fn ime_anchored_caret_row(caret_y: u16, area_y: u16, area_height: u16, offset: u16) -> u16 {
+    let last_row = area_y.saturating_add(area_height.saturating_sub(1));
+    caret_y.saturating_add(offset).min(last_row.max(caret_y))
 }
 
 /// Prompt glyphs Claude Code renders at the left edge of its input box.
@@ -1936,6 +2003,103 @@ mod overlay_wrap_tests {
         assert!(should_track_claude_caret(false, true, true));
         assert!(!should_track_claude_caret(false, true, false));
         assert!(should_track_claude_caret(true, false, false));
+    }
+}
+
+/// Row math for the native-IME anchor (#281). renga cannot position the
+/// host's candidate window directly — it only decides which cell the
+/// terminal caret sits on — so these tests pin the bias + clamp that
+/// decide how far below the input line that anchor lands.
+#[cfg(test)]
+mod ime_anchor_tests {
+    use super::{effective_ime_row_offset, ime_anchored_caret_row};
+    use crate::config::{DEFAULT_IME_ANCHOR_ROW_OFFSET, MAX_IME_ANCHOR_ROW_OFFSET};
+
+    /// A pane body 20 rows tall starting 3 rows down the terminal, i.e.
+    /// body rows 3..=22. Mirrors the `inner` rect `render_single_pane`
+    /// hands to `render_terminal_content`.
+    const AREA_Y: u16 = 3;
+    const AREA_H: u16 = 20;
+
+    #[test]
+    fn default_offset_anchors_one_row_below_the_input_line() {
+        // The reported case: Claude's input row is mid-pane and the
+        // candidate window opens flush under the anchor, so the anchor
+        // must sit one row below the composed text.
+        assert_eq!(
+            ime_anchored_caret_row(10, AREA_Y, AREA_H, DEFAULT_IME_ANCHOR_ROW_OFFSET),
+            11
+        );
+    }
+
+    #[test]
+    fn zero_offset_reproduces_the_pre_281_anchor() {
+        // The escape hatch (`anchor_row_offset = 0`) must be bit-for-bit
+        // the old behavior, since that is what users fall back to if the
+        // shifted visible caret bothers them more than the overlap.
+        for row in [AREA_Y, 10, AREA_Y + AREA_H - 1] {
+            assert_eq!(ime_anchored_caret_row(row, AREA_Y, AREA_H, 0), row);
+        }
+    }
+
+    #[test]
+    fn anchor_never_leaves_the_pane_body() {
+        // Caret already on the pane's last row: there is no row below to
+        // bias into, so it stays put rather than landing on the pane
+        // border (or another pane).
+        let last = AREA_Y + AREA_H - 1;
+        assert_eq!(ime_anchored_caret_row(last, AREA_Y, AREA_H, 1), last);
+        assert_eq!(
+            ime_anchored_caret_row(last, AREA_Y, AREA_H, MAX_IME_ANCHOR_ROW_OFFSET),
+            last
+        );
+    }
+
+    #[test]
+    fn oversized_offset_clamps_onto_the_last_row() {
+        // Caret two rows above the bottom with a 4-row offset: clamps to
+        // the last body row instead of overshooting the pane.
+        let last = AREA_Y + AREA_H - 1;
+        assert_eq!(
+            ime_anchored_caret_row(last - 2, AREA_Y, AREA_H, MAX_IME_ANCHOR_ROW_OFFSET),
+            last
+        );
+    }
+
+    #[test]
+    fn degenerate_area_never_drags_the_caret_upward() {
+        // Neither of these can reach the live path — the caller only
+        // biases a caret it already proved is inside the area — but the
+        // clamp must never move a caret *up*. An anchor above the input
+        // line would put the popup over the composed text, i.e. exactly
+        // the bug being fixed, only worse.
+        //
+        // Zero-height area: the clamp target collapses onto `area_y`,
+        // above the caret, so the caret is left alone.
+        assert_eq!(ime_anchored_caret_row(10, AREA_Y, 0, 1), 10);
+        // Caret above the area entirely: still biased downward, never
+        // yanked back to the area's row.
+        for (caret_y, area_y, area_h) in [(10u16, 12u16, 1u16), (10, 40, 20)] {
+            assert!(ime_anchored_caret_row(caret_y, area_y, area_h, 1) >= caret_y);
+        }
+    }
+
+    #[test]
+    fn saturating_add_survives_a_caret_at_u16_max() {
+        assert_eq!(ime_anchored_caret_row(u16::MAX, 0, 0, 4), u16::MAX);
+    }
+
+    #[test]
+    fn only_conpty_hosts_apply_the_configured_offset() {
+        // Linux / macOS terminals place IME windows themselves, so the
+        // caret must stay exactly where #253 / #257 / #260 put it.
+        assert_eq!(effective_ime_row_offset(1, true), 1);
+        assert_eq!(effective_ime_row_offset(1, false), 0);
+        assert_eq!(
+            effective_ime_row_offset(MAX_IME_ANCHOR_ROW_OFFSET, false),
+            0
+        );
+        assert_eq!(effective_ime_row_offset(0, true), 0);
     }
 }
 

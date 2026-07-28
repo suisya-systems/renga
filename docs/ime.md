@@ -2,7 +2,7 @@
 
 renga ships a built-in IME composition overlay so JP / CJK candidate windows anchor to the caret instead of jumping across the screen as Claude streams. This page covers **what the overlay feels like** — recommended settings, the overlay's internal keymap, and troubleshooting.
 
-For the **canonical TOML keys and CLI flags** (`[ime] mode` / `freeze_panes_on_overlay` / `overlay_catchup_ms`, plus their `--ime-*` flag counterparts and precedence rules), see [`configuration.md`](./configuration.md). This doc deliberately does not restate the schema.
+For the **canonical TOML keys and CLI flags** (`[ime] mode` / `freeze_panes_on_overlay` / `overlay_catchup_ms` / `anchor_row_offset`, plus their `--ime-*` flag counterparts and precedence rules), see [`configuration.md`](./configuration.md). This doc deliberately does not restate the schema.
 
 ![Centered IME overlay with a Japanese conversion candidate window anchored right under the caret, Claude panes frozen behind it](../ime-overlay.png)
 
@@ -56,6 +56,22 @@ mode = "off"
 ```
 
 `--ime-*` CLI flags override `config.toml` for a single run. Full precedence rules are in [`configuration.md`](./configuration.md#precedence).
+
+## Composing without the overlay (native IME anchoring)
+
+You do not have to open the overlay — typing straight into a pane with the system IME works too, and renga still anchors the host's IME to your input position by parking the terminal caret there ([Issue #34](https://github.com/suisya-systems/renga/issues/34)).
+
+Windows Terminal draws the pre-edit at that caret and opens the candidate window flush against the bottom of the same row, which left the popup butted straight into Claude's input line ([Issue #281](https://github.com/suisya-systems/renga/issues/281)). renga now drops the anchor one row on conpty hosts so the popup — and the inline pre-edit — clear the input line:
+
+```toml
+# Anchor the native IME candidate window on the caret cell itself
+# (pre-#281 behavior). Use this if you would rather have the visible
+# caret sit exactly on your input cell than have the popup clear it.
+[ime]
+anchor_row_offset = 0
+```
+
+The trade-off is that the *visible* caret moves down with the anchor, since a terminal has only one cursor to give. The offset therefore applies only on conpty hosts (native Windows, or WSL under Windows Terminal) — the ones that anchor a system IME to the terminal caret in the first place. Linux and macOS terminals ignore it entirely and keep the caret exactly on the resolved cell.
 
 ## Troubleshooting
 

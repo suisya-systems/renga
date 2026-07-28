@@ -267,6 +267,14 @@ pub struct App {
     /// `MIN_OVERLAY_CATCHUP_MS` at apply time when non-zero to avoid
     /// a tight repaint loop.
     pub ime_overlay_catchup_ms: u64,
+    /// Rows the focused pane's caret is pushed down before it is handed
+    /// to the host as the native IME anchor (Issue #281). Resolved from
+    /// `[ime] anchor_row_offset` + `--ime-anchor-row-offset` by
+    /// [`App::apply_config`] and already clamped to
+    /// [`crate::config::MAX_IME_ANCHOR_ROW_OFFSET`]. Consumed by
+    /// `ui::render_panes`, which additionally drops it to `0` on hosts
+    /// that don't anchor an IME to the caret.
+    pub ime_anchor_row_offset: u16,
     /// Instant of the last overlay-era repaint (open or catch-up
     /// tick). Populated by [`App::maybe_tick_overlay_catchup`] and
     /// cleared when the overlay closes. `None` outside an overlay

@@ -4,7 +4,7 @@
 
 renga には JP / CJK の IME 候補窓をキャレット直下に固定するための合成 overlay が組み込まれています。本ページは **overlay の使い心地** を扱います — 推奨設定、overlay 内のキーマップ、トラブルシュート。
 
-**canonical な TOML キーと CLI フラグ**（`[ime] mode` / `freeze_panes_on_overlay` / `overlay_catchup_ms` と対応する `--ime-*` フラグ、優先順位ルール）は [`configuration.ja.md`](./configuration.ja.md) に集約しています。本ページは設定スキーマを再掲しません。
+**canonical な TOML キーと CLI フラグ**（`[ime] mode` / `freeze_panes_on_overlay` / `overlay_catchup_ms` / `anchor_row_offset` と対応する `--ime-*` フラグ、優先順位ルール）は [`configuration.ja.md`](./configuration.ja.md) に集約しています。本ページは設定スキーマを再掲しません。
 
 ![ターミナル中央に開いた IME overlay。日本語の変換候補窓がキャレット直下に表示され、背後の Claude ペインは凍結している](../ime-overlay.png)
 
@@ -57,6 +57,22 @@ mode = "off"
 ```
 
 `--ime-*` CLI フラグは 1 回の起動だけ `config.toml` を上書きします。完全な優先順位ルールは [`configuration.ja.md`](./configuration.ja.md#優先順位) を参照。
+
+## overlay を使わない場合（ネイティブ IME のアンカー）
+
+overlay を開かず、ペインへ直接 OS の IME で入力することもできます。その場合も renga は端末キャレットを入力位置に置くことでホスト側 IME をそこへアンカーします（[Issue #34](https://github.com/suisya-systems/renga/issues/34)）。
+
+Windows Terminal は未確定文字列をそのキャレット位置に描画し、変換窓を同じ行の直下にぴったり付けて開くため、変換窓が Claude の入力行に食い込んでいました（[Issue #281](https://github.com/suisya-systems/renga/issues/281)）。現在は conpty ホストに限りアンカーを 1 行下げ、変換窓と未確定文字列が入力行を避けるようにしています。
+
+```toml
+# ネイティブ IME のアンカーをキャレットのセルそのものに戻す（#281 以前の挙動）。
+# 変換窓が入力行を避けることより、表示キャレットが入力セル上にあることを
+# 優先したい場合はこちら。
+[ime]
+anchor_row_offset = 0
+```
+
+トレードオフとして、端末のカーソルは 1 つしかないため **表示キャレットもアンカーと一緒に下がります**。そのため、この offset はシステム IME を端末キャレットにアンカーする conpty ホスト（Windows ネイティブ / Windows Terminal 上の WSL）でのみ適用され、Linux / macOS の端末では完全に無視されキャレットは従来どおりの位置に留まります。
 
 ## うまく動かないとき
 

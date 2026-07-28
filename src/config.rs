@@ -81,6 +81,28 @@ pub struct ImeConfig {
     /// README: flicker stays barely noticeable while Claude's
     /// streaming output still advances at a readable pace).
     pub overlay_catchup_ms: u64,
+    /// Rows the host caret is pushed *below* the pane's resolved caret
+    /// row before it is handed to the terminal (Issue #281).
+    ///
+    /// renga does not own the host window, so the only lever it has on
+    /// native IME placement is where it parks the terminal caret — that
+    /// is the whole mechanism Issue #34 introduced. Windows Terminal
+    /// opens the candidate window flush against the bottom of the
+    /// anchored row, so with an offset of `0` the popup butts directly
+    /// into Claude's input line and reads as covering the composed text.
+    /// `1` (the default) drops the anchor one row so the popup — and the
+    /// inline pre-edit Windows Terminal draws at the caret — clears the
+    /// input line.
+    ///
+    /// The trade-off is that the *visible* caret moves down with the
+    /// anchor, so the offset is applied only on conpty hosts (native
+    /// Windows, or WSL under Windows Terminal), which are the only ones
+    /// that anchor an IME to the terminal caret in the first place. Set
+    /// `0` to restore the pre-#281 behavior of anchoring exactly on the
+    /// caret cell. Clamped to [`MAX_IME_ANCHOR_ROW_OFFSET`] at apply
+    /// time; the caret is additionally clamped inside the pane at render
+    /// time, so an offset can never push it out of the pane body.
+    pub anchor_row_offset: u16,
 }
 
 impl Default for ImeConfig {
@@ -95,6 +117,7 @@ impl Default for ImeConfig {
             mode: ImeMode::default(),
             freeze_panes_on_overlay: true,
             overlay_catchup_ms: 3000,
+            anchor_row_offset: DEFAULT_IME_ANCHOR_ROW_OFFSET,
         }
     }
 }
@@ -103,6 +126,17 @@ impl Default for ImeConfig {
 /// periodic repaint becomes a near-continuous storm that defeats the
 /// point of freezing in the first place.
 pub const MIN_OVERLAY_CATCHUP_MS: u64 = 100;
+
+/// Rows the native IME anchor is pushed below the resolved caret row by
+/// default. `1` keeps Windows Terminal's candidate window off the input
+/// line it is composing into (Issue #281) while staying close enough to
+/// preserve the anchoring behavior of Issue #34.
+pub const DEFAULT_IME_ANCHOR_ROW_OFFSET: u16 = 1;
+
+/// Upper bound for `anchor_row_offset`. Anything larger stops reading as
+/// "the popup for this input line" and starts hiding unrelated pane
+/// content, so a fat-fingered `50` is clamped rather than honored.
+pub const MAX_IME_ANCHOR_ROW_OFFSET: u16 = 4;
 
 /// Default main-loop rate used for ordinary event polling.
 pub const DEFAULT_UI_FPS: u16 = 30;
@@ -225,6 +259,7 @@ impl Config {
         ime_mode: Option<ImeMode>,
         freeze_panes_on_overlay: Option<bool>,
         overlay_catchup_ms: Option<u64>,
+        anchor_row_offset: Option<u16>,
         ui_lang: Option<crate::i18n::UiLang>,
         ui_fps: Option<u16>,
     ) {
@@ -236,6 +271,9 @@ impl Config {
         }
         if let Some(ms) = overlay_catchup_ms {
             self.ime.overlay_catchup_ms = ms;
+        }
+        if let Some(rows) = anchor_row_offset {
+            self.ime.anchor_row_offset = rows;
         }
         if let Some(lang) = ui_lang {
             self.ui.lang = lang;
@@ -251,6 +289,12 @@ impl Config {
         }
         if self.ui.fps < MIN_UI_FPS {
             self.ui.fps = MIN_UI_FPS;
+        }
+        // Clamp regardless of origin (config file or CLI) so the render
+        // path only ever sees an offset that still reads as "the popup
+        // belonging to this input line".
+        if self.ime.anchor_row_offset > MAX_IME_ANCHOR_ROW_OFFSET {
+            self.ime.anchor_row_offset = MAX_IME_ANCHOR_ROW_OFFSET;
         }
     }
 }
@@ -360,7 +404,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(Some(ImeMode::Off), None, None, None, None);
+        cfg.apply_cli_overrides(Some(ImeMode::Off), None, None, None, None, None);
         assert_eq!(cfg.ime.mode, ImeMode::Off);
     }
 
@@ -373,7 +417,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(None, None, None, None, None);
+        cfg.apply_cli_overrides(None, None, None, None, None, None);
         assert_eq!(cfg.ime.mode, ImeMode::Off);
     }
 
@@ -448,11 +492,11 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(None, Some(false), None, None, None);
+        cfg.apply_cli_overrides(None, Some(false), None, None, None, None);
         assert!(!cfg.ime.freeze_panes_on_overlay);
 
         let mut cfg2 = Config::default();
-        cfg2.apply_cli_overrides(None, Some(true), None, None, None);
+        cfg2.apply_cli_overrides(None, Some(true), None, None, None, None);
         assert!(cfg2.ime.freeze_panes_on_overlay);
     }
 
@@ -487,20 +531,89 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(None, None, Some(3000), None, None);
+        cfg.apply_cli_overrides(None, None, Some(3000), None, None, None);
         assert_eq!(cfg.ime.overlay_catchup_ms, 3000);
 
         let mut cfg2 = Config::default();
         // Non-zero sub-floor value must be clamped up.
-        cfg2.apply_cli_overrides(None, None, Some(10), None, None);
+        cfg2.apply_cli_overrides(None, None, Some(10), None, None, None);
         assert_eq!(cfg2.ime.overlay_catchup_ms, MIN_OVERLAY_CATCHUP_MS);
 
         // Zero must stay zero (means "disabled") even when the default
         // is a non-zero value — an explicit `--ime-overlay-catchup-ms 0`
         // must still give a pure freeze.
         let mut cfg3 = Config::default();
-        cfg3.apply_cli_overrides(None, None, Some(0), None, None);
+        cfg3.apply_cli_overrides(None, None, Some(0), None, None, None);
         assert_eq!(cfg3.ime.overlay_catchup_ms, 0);
+    }
+
+    // ── [ime] anchor_row_offset (#281) ───────────────────
+
+    #[test]
+    fn anchor_row_offset_defaults_to_one_row() {
+        // Ships on: the reported overlap is the out-of-the-box behavior
+        // on Windows Terminal, so the fix has to be the default rather
+        // than something users must discover.
+        let cfg = Config::default();
+        assert_eq!(cfg.ime.anchor_row_offset, DEFAULT_IME_ANCHOR_ROW_OFFSET);
+        assert_eq!(cfg.ime.anchor_row_offset, 1);
+    }
+
+    #[test]
+    fn parses_anchor_row_offset_from_toml() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [ime]
+            anchor_row_offset = 2
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.ime.anchor_row_offset, 2);
+    }
+
+    #[test]
+    fn anchor_row_offset_zero_survives_the_clamp() {
+        // `0` is the documented escape hatch back to pre-#281 anchoring;
+        // it must never be "corrected" up to the default.
+        let mut cfg: Config = toml::from_str(
+            r#"
+            [ime]
+            anchor_row_offset = 0
+            "#,
+        )
+        .unwrap();
+        cfg.apply_cli_overrides(None, None, None, None, None, None);
+        assert_eq!(cfg.ime.anchor_row_offset, 0);
+    }
+
+    #[test]
+    fn cli_anchor_row_offset_beats_file_and_clamps_above_ceiling() {
+        let mut cfg: Config = toml::from_str(
+            r#"
+            [ime]
+            anchor_row_offset = 1
+            "#,
+        )
+        .unwrap();
+        cfg.apply_cli_overrides(None, None, None, Some(0), None, None);
+        assert_eq!(cfg.ime.anchor_row_offset, 0);
+
+        // A fat-fingered value from either origin is clamped, not
+        // honored — a caret 50 rows below the input line would anchor
+        // the popup over unrelated pane content.
+        let mut cfg2 = Config::default();
+        cfg2.apply_cli_overrides(None, None, None, Some(50), None, None);
+        assert_eq!(cfg2.ime.anchor_row_offset, MAX_IME_ANCHOR_ROW_OFFSET);
+
+        let mut cfg3: Config = toml::from_str(
+            r#"
+            [ime]
+            anchor_row_offset = 99
+            "#,
+        )
+        .unwrap();
+        cfg3.apply_cli_overrides(None, None, None, None, None, None);
+        assert_eq!(cfg3.ime.anchor_row_offset, MAX_IME_ANCHOR_ROW_OFFSET);
     }
 
     #[test]
@@ -594,11 +707,11 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(None, None, None, None, Some(60));
+        cfg.apply_cli_overrides(None, None, None, None, None, Some(60));
         assert_eq!(cfg.ui.fps, 60);
 
         let mut cfg2 = Config::default();
-        cfg2.apply_cli_overrides(None, None, None, None, Some(0));
+        cfg2.apply_cli_overrides(None, None, None, None, None, Some(0));
         assert_eq!(cfg2.ui.fps, MIN_UI_FPS);
     }
 
@@ -629,7 +742,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(None, None, None, Some(crate::i18n::UiLang::En), None);
+        cfg.apply_cli_overrides(None, None, None, None, Some(crate::i18n::UiLang::En), None);
         assert_eq!(cfg.ui.lang, crate::i18n::UiLang::En);
     }
 
@@ -642,7 +755,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        cfg.apply_cli_overrides(None, None, None, None, None);
+        cfg.apply_cli_overrides(None, None, None, None, None, None);
         assert_eq!(cfg.ui.lang, crate::i18n::UiLang::En);
     }
 }

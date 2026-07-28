@@ -65,6 +65,19 @@ pub struct Cli {
     #[arg(long, value_name = "MS")]
     pub ime_overlay_catchup_ms: Option<u64>,
 
+    /// Rows the native IME anchor is pushed below the focused pane's
+    /// caret row (Issue #281). Windows Terminal opens the candidate
+    /// window flush under the anchored row, so `0` lets it butt into
+    /// the input line it is composing into. **Defaults to 1**, which
+    /// drops the anchor one row so the popup clears that line. The
+    /// visible caret moves with the anchor, so the offset applies only
+    /// on conpty hosts (native Windows / WSL under Windows Terminal);
+    /// other terminals keep the caret exactly on the resolved cell
+    /// regardless of this value. Values above 4 are clamped. Overrides
+    /// `[ime] anchor_row_offset` in config.toml.
+    #[arg(long, value_name = "ROWS")]
+    pub ime_anchor_row_offset: Option<u16>,
+
     /// UI language for status bar hints and preview error messages.
     /// Overrides `[ui] lang` in config.toml.
     ///
@@ -1011,6 +1024,26 @@ mod tests {
     fn ime_overlay_catchup_ms_defaults_to_none() {
         let cli = Cli::try_parse_from(["renga"]).unwrap();
         assert_eq!(cli.ime_overlay_catchup_ms, None);
+    }
+
+    #[test]
+    fn ime_anchor_row_offset_defaults_to_none() {
+        // `None` means "don't override" — the config default (1) has to
+        // come from `Config`, not from clap, or a bare `renga` run would
+        // silently outrank the user's config.toml.
+        let cli = Cli::try_parse_from(["renga"]).unwrap();
+        assert_eq!(cli.ime_anchor_row_offset, None);
+    }
+
+    #[test]
+    fn parses_ime_anchor_row_offset_override() {
+        let cli = Cli::try_parse_from(["renga", "--ime-anchor-row-offset", "2"]).unwrap();
+        assert_eq!(cli.ime_anchor_row_offset, Some(2));
+
+        // `0` is the documented opt-out and must parse as an explicit
+        // override rather than being confused with "flag absent".
+        let cli0 = Cli::try_parse_from(["renga", "--ime-anchor-row-offset", "0"]).unwrap();
+        assert_eq!(cli0.ime_anchor_row_offset, Some(0));
     }
 
     #[test]

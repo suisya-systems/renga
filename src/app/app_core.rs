@@ -79,6 +79,7 @@ impl App {
             lang: crate::i18n::Lang::default(),
             ime_freeze_panes_on_overlay: false,
             ime_overlay_catchup_ms: 0,
+            ime_anchor_row_offset: crate::config::DEFAULT_IME_ANCHOR_ROW_OFFSET,
             last_overlay_repaint: None,
             min_pane_width: 20,
             min_pane_height: 5,
@@ -183,6 +184,14 @@ impl App {
                 .overlay_catchup_ms
                 .max(crate::config::MIN_OVERLAY_CATCHUP_MS)
         };
+        // `apply_cli_overrides` already clamps this, but re-clamp here so
+        // a caller that hand-builds a `Config` (tests, future embedders)
+        // can't hand the renderer an offset that walks the caret off the
+        // input line it is supposed to be anchoring near.
+        self.ime_anchor_row_offset = cfg
+            .ime
+            .anchor_row_offset
+            .min(crate::config::MAX_IME_ANCHOR_ROW_OFFSET);
     }
 
     /// Resolved message table for the current UI language. Prefer this

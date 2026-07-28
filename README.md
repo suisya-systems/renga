@@ -130,6 +130,8 @@ Full setup, two-pane workflow, pane-control tools (`inspect_pane`, `send_keys`, 
 
 Press `Ctrl+;` on a focused Claude pane to open a centered multi-line composition box; the host terminal's IME candidate window anchors to the caret inside the box, and the pane underneath is frozen with a periodic catch-up so streaming output doesn't flicker past your candidates. Behavior knobs (`freeze_panes_on_overlay`, `overlay_catchup_ms`), the overlay's internal keymap, and platform-specific quirks (WSL2 `Alt+Enter` vs `Ctrl+Enter`, macOS Option as Meta) are documented in [`docs/ime.md`](./docs/ime.md).
 
+Composing straight into a pane without the overlay works too: renga anchors the host IME to your input position, and on Windows Terminal it drops that anchor one row so the candidate window clears the input line. Tune or disable the drop with `anchor_row_offset` — see [`docs/ime.md`](./docs/ime.md#composing-without-the-overlay-native-ime-anchoring).
+
 ## Keybindings cheat sheet
 
 The first keys to learn. Full tables (Pane / File tree / Preview / Mouse) and the macOS Option-as-Meta setup are in [`docs/keymap.md`](./docs/keymap.md).
