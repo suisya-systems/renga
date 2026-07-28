@@ -71,7 +71,9 @@ Windows Terminal draws the pre-edit at that caret and opens the candidate window
 anchor_row_offset = 0
 ```
 
-The trade-off is that the *visible* caret moves down with the anchor, since a terminal has only one cursor to give. The offset therefore applies only where a Windows IME really is anchored to the terminal caret: native Windows, or WSL under Windows Terminal (detected via the `WT_SESSION` / `WT_PROFILE_ID` that Windows Terminal forwards through `WSLENV`). SSH into a WSL distro, a Linux terminal under WSLg, and native Linux / macOS terminals all ignore the offset entirely and keep the caret exactly on the resolved cell.
+The trade-off is that the *visible* caret moves down with the anchor, since a terminal has only one cursor to give. The offset therefore applies only where a Windows IME really is anchored to the terminal caret: native Windows, or WSL under Windows Terminal (detected via the `WT_SESSION` / `WT_PROFILE_ID` that Windows Terminal forwards through `WSLENV`, and rejected when another emulator identifies itself through `TERM_PROGRAM` / `TERM`). SSH into a WSL distro, a Linux terminal under WSLg, and native Linux / macOS terminals all ignore the offset entirely and keep the caret exactly on the resolved cell.
+
+> **Known limitation.** A Linux process cannot ask which emulator owns its tty. If you launch a terminal that identifies itself through neither `TERM_PROGRAM` nor `TERM` — bare `xterm`, `gnome-terminal` — *from* a Windows Terminal WSL shell, it inherits `WT_SESSION` and renga will read it as Windows Terminal. Set `anchor_row_offset = 0` in that session.
 
 ## Troubleshooting
 

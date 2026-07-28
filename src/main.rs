@@ -611,7 +611,7 @@ pub(crate) fn host_anchors_ime_to_caret() -> bool {
     }
 }
 
-/// Whether a WSL process was launched from Windows Terminal. Cached like
+/// Whether a WSL process is running *in* Windows Terminal. Cached like
 /// [`is_wsl`]: the render path consults it every frame, and the
 /// environment cannot change under a running process.
 #[cfg(not(windows))]
@@ -619,8 +619,52 @@ fn is_windows_terminal() -> bool {
     use std::sync::OnceLock;
     static WT: OnceLock<bool> = OnceLock::new();
     *WT.get_or_init(|| {
-        std::env::var_os("WT_SESSION").is_some() || std::env::var_os("WT_PROFILE_ID").is_some()
+        let wt_marker =
+            std::env::var_os("WT_SESSION").is_some() || std::env::var_os("WT_PROFILE_ID").is_some();
+        windows_terminal_from_env(
+            wt_marker,
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+            std::env::var("TERM").ok().as_deref(),
+        )
     })
+}
+
+/// Decide whether the frontend is Windows Terminal from environment
+/// facts alone. Split out from [`is_windows_terminal`] so the policy is
+/// unit-testable without mutating process-global env.
+///
+/// `WT_SESSION` / `WT_PROFILE_ID` are inherited by *children* of a
+/// Windows Terminal shell, so their presence alone does not prove the
+/// current frontend is Windows Terminal — launch a GUI terminal from a
+/// WT-hosted WSL shell and it inherits them. Reject the marker whenever
+/// some other terminal identifies itself: Windows Terminal sets neither
+/// `TERM_PROGRAM` nor a self-naming `TERM`, so any such value means a
+/// different emulator owns this tty.
+///
+/// Known residual gap: emulators that announce themselves through
+/// *neither* variable (bare `xterm`, `gnome-terminal`) still read as
+/// Windows Terminal when launched from a WT shell. There is no way to
+/// identify the owning frontend from inside a Linux process, so that
+/// case is left to the `[ime] anchor_row_offset = 0` escape hatch and
+/// documented in `docs/ime.md`.
+#[cfg(not(windows))]
+fn windows_terminal_from_env(
+    wt_marker: bool,
+    term_program: Option<&str>,
+    term: Option<&str>,
+) -> bool {
+    if !wt_marker {
+        return false;
+    }
+    // wezterm, VS Code, ghostty, Apple Terminal, … all set this.
+    if term_program.is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    // Emulators that self-name through TERM instead of TERM_PROGRAM.
+    !matches!(
+        term,
+        Some("alacritty" | "xterm-kitty" | "foot" | "foot-extra" | "contour" | "rio")
+    )
 }
 
 /// Native Windows, or Linux under WSL where the outer terminal is still
@@ -655,6 +699,61 @@ fn is_wsl() -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+#[cfg(all(test, not(windows)))]
+mod windows_terminal_detection_tests {
+    use super::windows_terminal_from_env;
+
+    #[test]
+    fn wt_hosted_wsl_shell_is_windows_terminal() {
+        // The reporter's environment (#281): WT forwards WT_SESSION
+        // through WSLENV, and sets neither TERM_PROGRAM nor a
+        // self-naming TERM.
+        assert!(windows_terminal_from_env(
+            true,
+            None,
+            Some("xterm-256color")
+        ));
+    }
+
+    #[test]
+    fn no_wt_marker_is_never_windows_terminal() {
+        // SSH into a WSL distro, or a login shell that never saw WT.
+        assert!(!windows_terminal_from_env(
+            false,
+            None,
+            Some("xterm-256color")
+        ));
+        assert!(!windows_terminal_from_env(false, Some("WezTerm"), None));
+    }
+
+    #[test]
+    fn a_self_identifying_frontend_beats_an_inherited_wt_marker() {
+        // Launch one of these from a WT-hosted WSL shell and it
+        // inherits WT_SESSION — but it, not WT, owns the tty and the
+        // caret, so the offset must stay off.
+        for term_program in ["WezTerm", "vscode", "ghostty", "Apple_Terminal"] {
+            assert!(
+                !windows_terminal_from_env(true, Some(term_program), Some("xterm-256color")),
+                "TERM_PROGRAM={term_program} must not read as Windows Terminal"
+            );
+        }
+        for term in ["alacritty", "xterm-kitty", "foot", "contour", "rio"] {
+            assert!(
+                !windows_terminal_from_env(true, None, Some(term)),
+                "TERM={term} must not read as Windows Terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_term_program_does_not_disqualify() {
+        // Some shells export TERM_PROGRAM="" rather than unsetting it;
+        // that carries no frontend identity and must not suppress the
+        // fix for a genuine WT session.
+        assert!(windows_terminal_from_env(true, Some(""), None));
+    }
 }
 
 #[cfg(test)]

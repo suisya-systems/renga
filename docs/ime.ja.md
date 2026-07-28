@@ -72,7 +72,9 @@ Windows Terminal は未確定文字列をそのキャレット位置に描画し
 anchor_row_offset = 0
 ```
 
-トレードオフとして、端末のカーソルは 1 つしかないため **表示キャレットもアンカーと一緒に下がります**。そのため、この offset は Windows の IME が実際に端末キャレットへ吸着するホスト — Windows ネイティブ、および Windows Terminal 上の WSL（Windows Terminal が `WSLENV` 経由で渡す `WT_SESSION` / `WT_PROFILE_ID` で判定）— でのみ適用されます。WSL への SSH、WSLg 上の Linux 端末、ネイティブの Linux / macOS 端末では完全に無視され、キャレットは従来どおりの位置に留まります。
+トレードオフとして、端末のカーソルは 1 つしかないため **表示キャレットもアンカーと一緒に下がります**。そのため、この offset は Windows の IME が実際に端末キャレットへ吸着するホスト — Windows ネイティブ、および Windows Terminal 上の WSL（Windows Terminal が `WSLENV` 経由で渡す `WT_SESSION` / `WT_PROFILE_ID` で判定し、他のエミュレータが `TERM_PROGRAM` / `TERM` で自己申告している場合は除外）— でのみ適用されます。WSL への SSH、WSLg 上の Linux 端末、ネイティブの Linux / macOS 端末では完全に無視され、キャレットは従来どおりの位置に留まります。
+
+> **既知の制限**: Linux プロセスから「どのエミュレータが自分の tty を持っているか」を問い合わせる方法はありません。`TERM_PROGRAM` でも `TERM` でも自己申告しない端末（素の `xterm` や `gnome-terminal`）を Windows Terminal 上の WSL シェルから起動した場合、それらは `WT_SESSION` を継承するため renga からは Windows Terminal に見えます。そのセッションでは `anchor_row_offset = 0` を指定してください。
 
 ## うまく動かないとき
 
