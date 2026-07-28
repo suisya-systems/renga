@@ -700,7 +700,11 @@ impl Pane {
     /// to distinguish "shell dead" from "PTY closed" — on ConPTY the
     /// PTY read only EOFs when the last attached client detaches, so
     /// `exited` lags the shell's death while grandchildren are alive.
-    #[cfg(test)]
+    /// Gated on `windows` as well as `test`: the only caller is the
+    /// `#[cfg(windows)]` job-reaping test, so `#[cfg(test)]` alone
+    /// makes this dead code everywhere else and fails CI's clippy job,
+    /// which runs `-D warnings` on Linux.
+    #[cfg(all(test, windows))]
     pub(crate) fn child_exited_for_test(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(Some(_)))
     }
