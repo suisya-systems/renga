@@ -1233,11 +1233,10 @@ fn extract_osc7(data: &[u8]) -> Option<PathBuf> {
         let path = if path_str.starts_with('/') {
             // No hostname (file:///path)
             path_str
-        } else if let Some(slash_pos) = path_str.find('/') {
-            // Has hostname (file://host/path)
-            &path_str[slash_pos..]
         } else {
-            return None;
+            // Has hostname (file://host/path)
+            let slash_pos = path_str.find('/')?;
+            &path_str[slash_pos..]
         };
 
         // On Windows/MSYS2, convert /c/Users/... to C:\Users\...
@@ -1404,6 +1403,33 @@ fn detect_shell_unix() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `file:///path` — empty hostname, the path is taken verbatim.
+    #[test]
+    fn extract_osc7_reads_empty_hostname_form() {
+        assert_eq!(
+            extract_osc7(b"\x1b]7;file:///tmp/work\x07"),
+            Some(PathBuf::from("/tmp/work"))
+        );
+    }
+
+    /// `file://host/path` — the hostname is skipped from the first
+    /// slash on. Also covers the ST (`ESC \`) terminator.
+    #[test]
+    fn extract_osc7_skips_hostname_before_path() {
+        assert_eq!(
+            extract_osc7(b"\x1b]7;file://myhost/tmp/work\x1b\\"),
+            Some(PathBuf::from("/tmp/work"))
+        );
+    }
+
+    /// A hostname with no path separator at all has no path to
+    /// extract, so the whole sequence is rejected. Pins the branch the
+    /// `?` rewrite replaced (clippy::question_mark under Rust 1.97).
+    #[test]
+    fn extract_osc7_rejects_hostname_without_path() {
+        assert_eq!(extract_osc7(b"\x1b]7;file://myhost\x07"), None);
+    }
 
     #[test]
     fn drain_osc52_copies_decodes_bel_terminated_payload() {

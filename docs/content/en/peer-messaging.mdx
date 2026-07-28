@@ -93,7 +93,7 @@ Exposed by the MCP server to each Claude pane:
 | `close_pane(target)` | Closes a pane. Refuses with `last_pane` when it's the only pane of the only tab. |
 | `focus_pane(target)` | Moves keyboard focus inside the same tab. Use sparingly — yanking focus out from under the user is disruptive. |
 | `new_tab(…)` | Opens a brand-new tab with a fresh pane and switches focus to it. Accepts the same `cwd` option as `spawn_pane`, plus the same `claude` auto-upgrade when `command` starts with `claude`. |
-| `inspect_pane(target, …)` | Snapshots another pane's visible screen so an orchestrator can detect prompts, banners, or mode changes without asking the target Claude to describe itself. Text by default; `format="grid"` returns row-addressable JSON and `lines=N` trims to the last N rows. |
+| `inspect_pane(target, …)` | Snapshots another pane's visible screen so an orchestrator can detect prompts, banners, or mode changes without asking the target Claude to describe itself. Text by default; `format="grid"` returns row-addressable JSON. `lines=N` returns the last N lines, reaching into scrollback history when N exceeds the visible height (2000-line cap) — recent output stays readable even in small panes. |
 | `send_keys(target, …)` | Sends raw PTY key input (`Enter`, `Esc`, arrows, `Ctrl+<letter>`, literal text, etc.) to another pane. Use this for interactive prompts or TUIs that cannot consume `send_message`. |
 | `set_pane_identity(target, name?, role?)` | Rename or (re)assign the stable `name` / `role` of an existing pane. Three-state fields: omit a key to keep, `null` to clear, a string to set. Rejects all-digit names and same-tab name collisions. Also exposed as `renga rename`. |
 

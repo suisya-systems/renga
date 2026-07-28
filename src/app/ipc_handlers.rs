@@ -378,43 +378,94 @@ impl App {
             .map(|(n, _)| n.clone());
 
         let (rows, cols, line_start, line_count, collected, cursor) = {
-            let parser = pane.parser.lock().map_err(|_| {
+            let mut parser = pane.parser.lock().map_err(|_| {
                 ipc::CodedError::new(ipc::err_code::INTERNAL, "vt100 parser lock poisoned")
             })?;
-            let screen = parser.screen();
-            let size = screen.size();
-            let total_rows = size.0 as usize;
-            let total_cols = size.1 as usize;
 
-            let want: usize = lines.map(|n| n.min(total_rows)).unwrap_or(total_rows);
-            let start: usize = total_rows.saturating_sub(want);
-            let end: usize = total_rows;
+            // Pin the read to the live tail. A human may have scrolled
+            // this pane back; inspect results must not depend on that,
+            // and the user's scroll position must survive the call.
+            // The whole save → read → restore dance happens under one
+            // lock hold, so the renderer never sees an intermediate
+            // offset.
+            let saved_offset = parser.screen().scrollback();
+            parser.screen_mut().set_scrollback(0);
 
-            let mut collected: Vec<(usize, String)> = Vec::with_capacity(end - start);
-            for row in start..end {
+            let (total_rows, total_cols) = {
+                let size = parser.screen().size();
+                (size.0 as usize, size.1 as usize)
+            };
+
+            let want: usize = lines.unwrap_or(total_rows).min(ipc::INSPECT_MAX_LINES);
+
+            let read_row = |screen: &vt100::Screen, row: usize| -> String {
                 let mut s = String::with_capacity(total_cols);
                 for col in 0..total_cols {
                     if let Some(cell) = screen.cell(row as u16, col as u16) {
                         s.push_str(cell.contents());
                     }
                 }
-                collected.push((row, s.trim_end().to_string()));
+                s.trim_end().to_string()
+            };
+
+            // Coordinate system: row 0 is the top of the visible
+            // screen at the live view; scrollback rows above it are
+            // negative (-1 = the line just above the visible top).
+            let mut collected: Vec<(isize, String)> = Vec::with_capacity(want);
+
+            let visible_start = total_rows.saturating_sub(want);
+            for row in visible_start..total_rows {
+                collected.push((row as isize, read_row(parser.screen(), row)));
             }
 
+            // Shortfall beyond the visible grid continues into
+            // scrollback, walked one screenful per step. set_scrollback
+            // clamps to the history that actually exists, so a clamped
+            // response means the top has been reached.
+            let mut hist_needed = want.saturating_sub(total_rows);
+            let mut hist_read: usize = 0;
+            while hist_needed > 0 {
+                let step = hist_needed.min(total_rows);
+                if step == 0 {
+                    break;
+                }
+                let requested = hist_read + step;
+                parser.screen_mut().set_scrollback(requested);
+                let actual = parser.screen().scrollback();
+                if actual <= hist_read {
+                    break;
+                }
+                // With offset `actual`, screen row r shows the line at
+                // coordinate r - actual; rows 0..(actual - hist_read)
+                // are exactly the lines not yet collected.
+                let new_rows = actual - hist_read;
+                for row in 0..new_rows {
+                    let coord = row as isize - actual as isize;
+                    collected.push((coord, read_row(parser.screen(), row)));
+                }
+                hist_read = actual;
+                hist_needed = hist_needed.saturating_sub(new_rows);
+                if actual < requested {
+                    break;
+                }
+            }
+
+            parser.screen_mut().set_scrollback(saved_offset);
+
+            collected.sort_by_key(|(coord, _)| *coord);
+
             let cursor = if include_cursor {
+                let screen = parser.screen();
                 let (crow, ccol) = screen.cursor_position();
                 Some((!screen.hide_cursor(), crow as usize, ccol as usize))
             } else {
                 None
             };
 
+            let line_start = collected.first().map(|(coord, _)| *coord).unwrap_or(0);
+            let line_count = collected.len();
             (
-                total_rows,
-                total_cols,
-                start,
-                end - start,
-                collected,
-                cursor,
+                total_rows, total_cols, line_start, line_count, collected, cursor,
             )
         };
 

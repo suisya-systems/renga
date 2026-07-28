@@ -214,8 +214,10 @@ pub enum IpcCommand {
         id: Option<usize>,
         #[arg(long, conflicts_with_all = ["name", "id"])]
         focused: bool,
-        /// Limit to the bottom N rows of the screen grid (blank rows
-        /// preserved). Omit to return the full visible screen.
+        /// Return the last N rendered lines ending at the live bottom.
+        /// N beyond the visible height continues into scrollback
+        /// history (capped at 2000; scrollback rows have negative row
+        /// indices). Omit to return the full visible screen.
         #[arg(long)]
         lines: Option<usize>,
         /// Include the cursor position and visibility in the payload.

@@ -217,7 +217,7 @@ new tab.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `target` | string | yes | |
-| `lines` | int ≥ 1 | no | Bottom N rows (blank rows preserved). |
+| `lines` | int ≥ 1 | no | Last N rendered lines ending at the live bottom (blank rows preserved). Since v1.4 (#278): N beyond the visible height continues into scrollback, capped at 2000 total; scrollback rows carry negative `row` indices and `screen.line_start` may be negative. Reads are pinned to the live tail regardless of the pane's user scroll position, which is preserved. N ≤ visible height and the omitted form are unchanged. |
 | `include_cursor` | bool | no | Default `false`. |
 | `format` | `"text"\|"grid"` | no | Default `"text"`. `"grid"` returns one JSON row object per line. `structuredContent` is always populated regardless of `format`. |
 
@@ -411,7 +411,7 @@ Server budgets: 5 s `APP_REPLY_TIMEOUT` (server → app event loop) +
 | `close` | `target: PaneRef` | |
 | `new_tab` | `command?`, `id?`, `label?`, `role?`, `cwd?` | |
 | `subscribe` | — | Switches to event-stream mode after ack. |
-| `inspect` | `target: PaneRef`, `lines?`, `include_cursor: bool` (default false) | |
+| `inspect` | `target: PaneRef`, `lines?`, `include_cursor: bool` (default false) | `lines` beyond the visible height reads scrollback since v1.4 (#278) — see §1.12. |
 | `peer_list` | `from_pane: usize` | |
 | `peer_send` | `from_pane: usize`, `target: PaneRef`, `body: string` | Cross-tab silently no-ops (Q5). |
 | `peer_register_client` | `pane_id: usize`, `kind: claude\|codex` | Posted by `renga mcp-peer` on startup. |
