@@ -30,10 +30,11 @@
 
 use std::ffi::c_void;
 
-// `*mut c_void` (not isize) to match the other hand-rolled Win32
-// extern blocks (`conpty_colors::win`, `mcp_peer::parent_watch::win`)
-// — mismatched aliases across duplicate declarations trip
-// `clashing_extern_declarations`.
+// `*mut c_void` (not isize) to match the companion
+// `mcp_peer::parent_watch::win` extern block (#269) — mismatched
+// aliases across duplicate declarations of the same symbol
+// (`OpenProcess`, `CloseHandle`) trip `clashing_extern_declarations`
+// once both land.
 type Handle = *mut c_void;
 
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
