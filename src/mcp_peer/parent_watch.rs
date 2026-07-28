@@ -22,27 +22,38 @@
 
 use std::thread;
 
-/// Spawn the watchdog thread. `on_parent_exit` runs exactly once, on
-/// a background thread, when the parent process is observed dead. If
-/// the parent cannot be identified (or predeceased us), the callback
-/// fires immediately — an unidentifiable parent means we are already
-/// orphaned.
+/// Spawn the watchdog thread. `on_parent_exit` runs at most once, on
+/// a background thread, and only when a parent was positively
+/// identified *and* subsequently observed to exit.
+///
+/// Arming is fallible — the process snapshot can fail transiently,
+/// the parent handle can be unopenable, and the PID-reuse guard can
+/// reject an impostor. Every such failure leaves the callback unfired
+/// and the server running on the stdin-EOF path it used before this
+/// module existed. Treating "could not observe the parent" as "the
+/// parent died" would shut healthy servers down on a transient Win32
+/// error, which is a worse failure than the leak this module fixes.
 pub fn spawn(on_parent_exit: impl FnOnce() + Send + 'static) {
     let _ = thread::Builder::new()
         .name("parent-watchdog".into())
         .spawn(move || {
-            wait_parent_exit();
-            on_parent_exit();
+            if wait_parent_exit() {
+                on_parent_exit();
+            }
         });
 }
 
+/// Returns `true` only when a parent was watched and observed to
+/// exit; `false` means the watchdog never armed.
 #[cfg(windows)]
-fn wait_parent_exit() {
-    win::wait_parent_exit();
+fn wait_parent_exit() -> bool {
+    win::wait_parent_exit()
 }
 
+/// Returns `true` when reparenting is observed. `getppid` cannot
+/// fail, so there is no arming-failure path to report here.
 #[cfg(unix)]
-fn wait_parent_exit() {
+fn wait_parent_exit() -> bool {
     // Known gap: if the parent died before this first read, `original`
     // is already the reaper's PID and the loop never fires. Unix has
     // working stdin EOF as the primary shutdown signal, so the
@@ -54,7 +65,7 @@ fn wait_parent_exit() {
         std::thread::sleep(std::time::Duration::from_secs(2));
         let now = unsafe { libc::getppid() };
         if now != original {
-            return;
+            return true;
         }
     }
 }
@@ -124,9 +135,17 @@ mod win {
         ) -> i32;
     }
 
-    /// Blocks until the parent process exits. Returns immediately when
-    /// the parent is already gone or cannot be identified.
-    pub(super) fn wait_parent_exit() {
+    /// Blocks until the parent process exits, then returns `true`.
+    ///
+    /// Returns `false` without blocking when the watchdog could not
+    /// arm: no parent PID, no openable handle, or a PID-reuse
+    /// impostor. All three mean "we cannot observe the parent", not
+    /// "the parent died", so the caller must not treat them as a
+    /// shutdown signal — `CreateToolhelp32Snapshot` in particular is
+    /// documented to fail transiently (`ERROR_BAD_LENGTH`) when the
+    /// process list churns mid-snapshot, and exiting on that would
+    /// kill a healthy server.
+    pub(super) fn wait_parent_exit() -> bool {
         // One retry after a short pause: `CreateToolhelp32Snapshot`
         // can fail transiently under resource pressure, and treating
         // that as "already orphaned" would exit a healthy server.
@@ -135,12 +154,15 @@ mod win {
             parent_pid()
         });
         let Some(ppid) = ppid else {
-            return;
+            return false;
         };
         let Some(handle) = open_for_wait(ppid) else {
-            // Parent already dead (or inaccessible, which for a
-            // same-user parent means dead).
-            return;
+            // Could not open the parent. For a same-user parent that
+            // usually means it is already gone, but it is not
+            // distinguishable from a transient failure without
+            // inspecting `GetLastError`, so disarm instead of
+            // shutting down on a guess.
+            return false;
         };
         // PID-reuse guard for the window between the snapshot and
         // OpenProcess: a genuine parent was created before us, so a
@@ -152,10 +174,11 @@ mod win {
         ) {
             if parent_created.as_u64() > self_created.as_u64() {
                 unsafe { CloseHandle(handle) };
-                return;
+                return false;
             }
         }
         wait_and_close(handle);
+        true
     }
 
     /// Construct a `FileTime` for tests without exposing the struct's
