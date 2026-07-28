@@ -9,6 +9,26 @@ rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
 
 ## [Unreleased]
 
+### Added
+
+- **`inspect_pane` / `renga inspect` can now read scrollback history.**
+  `lines` beyond the pane's visible height continues into the vt100
+  scrollback (up to 2000 lines total), so an orchestrator can retrieve
+  a worker's recent output even when small screens shrink every pane
+  to a handful of rows. Scrollback rows are returned with negative
+  `row` indices (`-1` = the line just above the visible top) and
+  `screen.line_start` may be negative. Previously such requests were
+  silently clamped to the pane height. Omitted `lines` and
+  `N ≤ visible height` behave exactly as before. (#278)
+
+### Changed
+
+- Inspect reads are now pinned to the live tail: the result no longer
+  depends on whether a human happens to be scrolling the target pane
+  (previously undocumented — an inspect during a scroll-up returned
+  the scrolled view), and the pane's scroll position is preserved
+  across the call. (#278)
+
 ## [1.3.2] — 2026-06-07
 
 Patch release. Fixes caret freeze/drift in Claude Code panes on Windows

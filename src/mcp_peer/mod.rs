@@ -659,7 +659,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "inspect_pane",
-            "description": "Snapshot the visible screen of a pane in the current renga tab. Returns the rendered contents so you can detect interactive prompts (e.g. y/n confirmations), error banners, or mode indicators in another pane without asking its Claude. The `lines` option trims the response to the bottom N rows (blank rows preserved, useful for anchoring on a status bar). `format=\"grid\"` switches the text block to JSON with one row object per line; the full structured payload is always available in `structuredContent`.",
+            "description": "Snapshot the rendered contents of a pane in the current renga tab. Returns the rendered text so you can detect interactive prompts (e.g. y/n confirmations), error banners, or mode indicators in another pane without asking its Claude. The `lines` option returns the last N lines ending at the live bottom; when N exceeds the pane's visible height the remainder is pulled from scrollback history (up to 2000 lines total), so recent output stays reachable even in small panes. (Scrollback only exists for main-screen output; a full-screen TUI on the alternate screen has no history to walk.) Reads are pinned to the live tail regardless of the pane's scroll position. `format=\"grid\"` switches the text block to JSON with one row object per line; the full structured payload is always available in `structuredContent`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -670,7 +670,7 @@ fn tools_spec() -> Value {
                     "lines": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Optional — trim the response to the bottom N rows of the screen grid. Blank rows are preserved. Omit for the full visible screen."
+                        "description": "Optional — return the last N rendered lines ending at the live bottom. N up to the visible height reads the screen grid (blank rows preserved, useful for anchoring on a status bar); larger N continues into scrollback history, capped at 2000 lines. Scrollback rows have negative `row` indices (-1 = just above the visible top). Omit for the full visible screen."
                     },
                     "include_cursor": {
                         "type": "boolean",
@@ -1968,13 +1968,12 @@ fn handle_set_summary(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
 
 // ── inspect_pane (pane screen snapshot over MCP) ──────────────
 
-/// Cap on the `lines` argument. The underlying screen is bounded by
-/// the pane's terminal height (< 1000 under any sane desktop), but
-/// accept a generous ceiling so callers can request "everything I can
-/// possibly see" without hand-tuning. Values above this are clamped
-/// silently to match how `renga inspect --lines` treats oversized
-/// requests.
-const INSPECT_MAX_LINES: u64 = 10_000;
+/// Cap on the `lines` argument, shared with the IPC handler. `lines`
+/// beyond the pane's visible height continues into scrollback
+/// history, so the cap bounds the total payload (not just sanitizes
+/// input). Values above it are clamped silently, matching how
+/// `renga inspect --lines` treats oversized requests.
+const INSPECT_MAX_LINES: u64 = crate::ipc::INSPECT_MAX_LINES as u64;
 
 fn parse_inspect_format(raw: Option<&str>) -> std::result::Result<InspectFormat, String> {
     match raw.map(str::trim) {

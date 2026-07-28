@@ -5,10 +5,27 @@ on:
   push:
     branches:
       - main
+  # `main` can sit untouched for weeks, and the jobs below pin
+  # `rust-toolchain@stable` with `-D warnings` — so a new Rust release
+  # turns `main` red with no commit involved. That happened once
+  # already: stable rolled to 1.97.1, `clippy::question_mark` grew a
+  # new case, and the breakage surfaced only when three external PRs
+  # all failed on a `src/pane.rs` line none of them touched (#274).
+  # Run weekly so CI, not a contributor, is what trips over the next
+  # toolchain bump. Off-the-hour minute because scheduled jobs queue
+  # behind everyone else's on-the-hour crons.
+  #
+  # Note: GitHub disables scheduled workflows after 60 days without
+  # repository activity, and re-enabling is manual.
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC (12:17 JST)
   workflow_dispatch:
 
+# Scheduled and push runs share a ref (`refs/heads/main`), so the event
+# name has to be part of the key — otherwise a cron firing mid-push
+# cancels the push's own checks.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:

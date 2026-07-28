@@ -704,3 +704,172 @@ fn handle_peer_list_surfaces_summary() {
     assert!(peers.iter().all(|p| p.id != a_id));
     app.shutdown();
 }
+
+// ── handle_inspect: scrollback continuation (#278) ───────────
+
+/// Feed `count` numbered lines (`SBTEST-0000`, `SBTEST-0001`, …) into
+/// the focused pane's vt100 parser in a single `process()` call so
+/// the block stays contiguous regardless of PTY reader timing.
+fn seed_numbered_lines(app: &mut App, count: usize) {
+    let mut blob = String::with_capacity(count * 14);
+    for i in 0..count {
+        blob.push_str(&format!("SBTEST-{i:04}\r\n"));
+    }
+    let pane_id = app.ws().focused_pane_id;
+    let pane = app.ws().panes.get(&pane_id).expect("focused pane exists");
+    let mut parser = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
+    parser.process(blob.as_bytes());
+}
+
+fn focused_grid_height(app: &App) -> usize {
+    let pane_id = app.ws().focused_pane_id;
+    let pane = app.ws().panes.get(&pane_id).expect("focused pane exists");
+    let parser = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
+    parser.screen().size().0 as usize
+}
+
+fn inspect_texts(payload: &serde_json::Value) -> Vec<String> {
+    payload["lines"]
+        .as_array()
+        .expect("lines array")
+        .iter()
+        .map(|l| l["text"].as_str().expect("text").to_string())
+        .collect()
+}
+
+#[test]
+fn handle_inspect_lines_beyond_height_reaches_scrollback() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let height = focused_grid_height(&app);
+    seed_numbered_lines(&mut app, height + 40);
+
+    let want = height + 20;
+    let payload = app
+        .handle_inspect(&ipc::PaneRef::Focused, Some(want), false)
+        .expect("inspect succeeds");
+
+    assert_eq!(
+        payload["screen"]["line_count"].as_u64(),
+        Some(want as u64),
+        "history exists, so the full request must be honored"
+    );
+    assert_eq!(
+        payload["screen"]["line_start"].as_i64(),
+        Some(-20),
+        "20 of the lines must come from scrollback (negative rows)"
+    );
+
+    // The seeded lines must appear in order with consecutive numbering.
+    // Shell prompt noise may surround the block but must not
+    // interleave it. Threshold is the 20 scrollback lines only: the
+    // history side is immune to late repaints (conpty clear/redraw
+    // can overwrite the visible grid after seeding, but scrolled-off
+    // lines are frozen), so this stays deterministic on all CI OSes.
+    let nums: Vec<u64> = inspect_texts(&payload)
+        .iter()
+        .filter_map(|t| t.strip_prefix("SBTEST-").and_then(|n| n.parse().ok()))
+        .collect();
+    assert!(
+        nums.len() >= 20,
+        "expected at least the 20 scrollback-side seeded lines, got {}",
+        nums.len()
+    );
+    assert!(
+        nums.windows(2).all(|w| w[1] == w[0] + 1),
+        "seeded lines must be contiguous and ordered: {nums:?}"
+    );
+    app.shutdown();
+}
+
+#[test]
+fn handle_inspect_small_n_stays_on_screen_grid() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let height = focused_grid_height(&app);
+    seed_numbered_lines(&mut app, height + 40);
+
+    let payload = app
+        .handle_inspect(&ipc::PaneRef::Focused, Some(3), false)
+        .expect("inspect succeeds");
+
+    assert_eq!(payload["screen"]["line_count"].as_u64(), Some(3));
+    assert_eq!(
+        payload["screen"]["line_start"].as_i64(),
+        Some((height - 3) as i64),
+        "small N keeps the pre-#278 bottom-of-grid semantics"
+    );
+    let rows: Vec<i64> = payload["lines"]
+        .as_array()
+        .expect("lines array")
+        .iter()
+        .map(|l| l["row"].as_i64().expect("row"))
+        .collect();
+    assert!(
+        rows.iter().all(|r| *r >= 0),
+        "no scrollback rows for small N: {rows:?}"
+    );
+    app.shutdown();
+}
+
+#[test]
+fn handle_inspect_is_pinned_to_live_tail_and_preserves_scroll() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let height = focused_grid_height(&app);
+    seed_numbered_lines(&mut app, height + 30);
+
+    let pane_id = app.ws().focused_pane_id;
+    app.ws().panes.get(&pane_id).expect("pane").scroll_up(10);
+
+    let payload = app
+        .handle_inspect(&ipc::PaneRef::Focused, None, false)
+        .expect("inspect succeeds");
+
+    // The last seeded line sits at the live bottom. A view-anchored
+    // read (pre-#278 behavior) scrolled up by 10 would not contain it.
+    let last = format!("SBTEST-{:04}", height + 30 - 1);
+    assert!(
+        inspect_texts(&payload).iter().any(|t| t == &last),
+        "inspect must read the live tail even while the pane is scrolled"
+    );
+
+    // ≥ 10, not == 10: vt100 auto-increments the offset whenever new
+    // lines enter scrollback while the view is scrolled back, and the
+    // live shell can still emit output between scroll_up and here. A
+    // restore bug would reset the offset to 0, which this still
+    // catches (lines=None never walks history, so no walk residue can
+    // fake a non-zero offset).
+    let pane = app.ws().panes.get(&pane_id).expect("pane");
+    let parser = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(
+        parser.screen().scrollback() >= 10,
+        "the user's scroll position must survive the inspect, got {}",
+        parser.screen().scrollback()
+    );
+    drop(parser);
+    app.shutdown();
+}
+
+#[test]
+fn handle_inspect_clamps_at_inspect_max_lines() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let height = focused_grid_height(&app);
+    seed_numbered_lines(&mut app, ipc::INSPECT_MAX_LINES + 200);
+
+    let payload = app
+        .handle_inspect(
+            &ipc::PaneRef::Focused,
+            Some(ipc::INSPECT_MAX_LINES + 3000),
+            false,
+        )
+        .expect("inspect succeeds");
+
+    assert_eq!(
+        payload["screen"]["line_count"].as_u64(),
+        Some(ipc::INSPECT_MAX_LINES as u64),
+        "requests beyond the cap are clamped to INSPECT_MAX_LINES"
+    );
+    assert_eq!(
+        payload["screen"]["line_start"].as_i64(),
+        Some(-((ipc::INSPECT_MAX_LINES - height) as i64)),
+    );
+    app.shutdown();
+}
