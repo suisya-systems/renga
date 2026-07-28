@@ -148,13 +148,14 @@ impl PaneJob {
         }
     }
 
-    /// Synchronously kill every process currently in the job. Errors
-    /// are ignored: the only recovery would be the `KILL_ON_JOB_CLOSE`
-    /// backstop that runs on drop anyway.
-    pub fn terminate(&self) {
-        unsafe {
-            let _ = TerminateJobObject(self.0, 1);
-        }
+    /// Synchronously kill every process currently in the job. Returns
+    /// whether the kernel accepted the request, so `Pane::kill` can
+    /// still run its `taskkill /F /T` fallback when it did not —
+    /// reporting success unconditionally would disable that fallback
+    /// in exactly the case it exists for. On `false` the
+    /// `KILL_ON_JOB_CLOSE` backstop remains the last line of defence.
+    pub fn terminate(&self) -> bool {
+        unsafe { TerminateJobObject(self.0, 1) != 0 }
     }
 }
 

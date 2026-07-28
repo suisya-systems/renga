@@ -650,13 +650,13 @@ impl Pane {
         // orphaned grandchildren (dev servers, `run_in_background`
         // jobs, mcp-peer, …) stay in the job after their parents die,
         // and this is the only close path that can still reach them.
-        // `take()` keeps the close+Drop pair single-shot.
+        // `take()` keeps the close+Drop pair single-shot. A job that
+        // refuses to terminate reports `false`, so the taskkill
+        // fallback below still runs instead of being skipped on the
+        // strength of a call that did nothing.
         #[cfg(windows)]
         let job_terminated = match self.job.take() {
-            Some(job) => {
-                job.terminate();
-                true
-            }
+            Some(job) => job.terminate(),
             None => false,
         };
         if alive {
