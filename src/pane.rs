@@ -95,6 +95,12 @@ pub struct Pane {
     /// pane. Guards the multiple exit pathways (explicit close, tab
     /// close, natural shell exit) so subscribers see exactly one event.
     pub exit_event_emitted: bool,
+    /// Kill-on-close Job Object holding the pane shell and every
+    /// descendant the kernel added since spawn. `None` when job
+    /// creation/assignment failed at spawn time — `kill()` then falls
+    /// back to the legacy `taskkill /F /T` tree walk.
+    #[cfg(windows)]
+    job: Option<crate::win_job::PaneJob>,
 }
 
 impl Pane {
@@ -149,6 +155,14 @@ impl Pane {
             .slave
             .spawn_command(cmd)
             .context("Failed to spawn shell")?;
+
+        // Windows: capture the shell (and, via kernel-side inheritance,
+        // every future descendant) in a kill-on-close Job Object so
+        // pane close can reap the whole tree even after intermediate
+        // parents exit — `taskkill /T` can't reach those. Assignment
+        // failure is non-fatal: `kill()` falls back to taskkill.
+        #[cfg(windows)]
+        let job = child.process_id().and_then(crate::win_job::PaneJob::assign);
 
         // Drop the slave side — we only use master
         drop(pair.slave);
@@ -222,6 +236,8 @@ impl Pane {
             role: None,
             summary: None,
             exit_event_emitted: false,
+            #[cfg(windows)]
+            job,
         };
 
         // Inject OSC 7 hook after shell starts
@@ -614,9 +630,12 @@ impl Pane {
     /// grandchildren (e.g. `claude`/`node.exe` launched from the shell
     /// via `pending_startup`) survive and keep open handles on the
     /// pane's working directory. That blocks `git worktree remove` /
-    /// `rmdir` until the renga process itself exits (#214). Walk the
-    /// tree first via `taskkill /F /T` so directory handles in the
-    /// pane's cwd are released as soon as the pane is closed.
+    /// `rmdir` until the renga process itself exits (#214). The pane's
+    /// Job Object (assigned at spawn) terminates every descendant in
+    /// one call, independent of the parent/child links still being
+    /// intact; `taskkill /F /T` remains only as the fallback for the
+    /// rare spawn where job assignment failed, with its known holes
+    /// (can't reach children of already-dead intermediates).
     pub fn kill(&mut self) {
         // `try_wait` distinguishes "child still alive, needs killing"
         // from "child already exited, just needs reaping" — important
@@ -627,15 +646,30 @@ impl Pane {
         // gone so the close+Drop pair doesn't double-spawn taskkill on
         // Windows (#214 review), but `wait()` always runs to reap.
         let alive = !matches!(self.child.try_wait(), Ok(Some(_)));
+        // Terminate the job even when the shell itself already exited:
+        // orphaned grandchildren (dev servers, `run_in_background`
+        // jobs, mcp-peer, …) stay in the job after their parents die,
+        // and this is the only close path that can still reach them.
+        // `take()` keeps the close+Drop pair single-shot. A job that
+        // refuses to terminate reports `false`, so the taskkill
+        // fallback below still runs instead of being skipped on the
+        // strength of a call that did nothing.
+        #[cfg(windows)]
+        let job_terminated = match self.job.take() {
+            Some(job) => job.terminate(),
+            None => false,
+        };
         if alive {
             #[cfg(windows)]
-            if let Some(pid) = self.child.process_id() {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .stdin(std::process::Stdio::null())
-                    .status();
+            if !job_terminated {
+                if let Some(pid) = self.child.process_id() {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .stdin(std::process::Stdio::null())
+                        .status();
+                }
             }
             let _ = self.child.kill();
         }
@@ -660,6 +694,19 @@ impl Pane {
     /// Use [`queue_startup_command`] when the command should auto-run.
     pub fn queue_startup_text(&mut self, text: &str) {
         self.pending_startup = Some(text.as_bytes().to_vec());
+    }
+
+    /// Whether the shell child process has exited, for tests that need
+    /// to distinguish "shell dead" from "PTY closed" — on ConPTY the
+    /// PTY read only EOFs when the last attached client detaches, so
+    /// `exited` lags the shell's death while grandchildren are alive.
+    /// Gated on `windows` as well as `test`: the only caller is the
+    /// `#[cfg(windows)]` job-reaping test, so `#[cfg(test)]` alone
+    /// makes this dead code everywhere else and fails CI's clippy job,
+    /// which runs `-D warnings` on Linux.
+    #[cfg(all(test, windows))]
+    pub(crate) fn child_exited_for_test(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
     }
 
     /// If a startup command is queued and the shell prompt has been
@@ -1409,6 +1456,109 @@ mod tests {
         buf.extend_from_slice(b"bG8=\x07");
         assert_eq!(drain_osc52_copies(&mut buf), vec!["hello"]);
         assert!(buf.is_empty());
+    }
+
+    /// End-to-end acceptance for the pane Job Object (renga-trx): a
+    /// grandchild that outlives its shell — the shell spawns it
+    /// detached (`disown`) and then exits — must still die when the
+    /// pane is killed. The legacy `taskkill /F /T` path provably
+    /// leaked this shape: the shell was already gone, so the taskkill
+    /// branch was skipped and nothing reaped the orphan.
+    ///
+    /// Liveness is probed through a kernel-enforced exclusive file
+    /// lock held by the grandchild (see `win_job::tests` for why
+    /// signal-based probes don't work in sandboxed environments).
+    #[cfg(windows)]
+    #[test]
+    fn kill_reaps_grandchild_after_shell_natural_exit() {
+        use std::time::{Duration, Instant};
+
+        // The startup command below is bash syntax (`& disown; exit`).
+        // On a machine where detect_shell() falls back to PowerShell
+        // the command would fail for shell-language reasons, not
+        // product reasons — skip rather than report a false negative.
+        let shell_name = detect_shell()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !shell_name.contains("bash") {
+            eprintln!("skipping: test requires a bash pane shell, got {shell_name}");
+            return;
+        }
+
+        fn wait_for(mut cond: impl FnMut() -> bool, budget: Duration) -> bool {
+            let deadline = Instant::now() + budget;
+            while Instant::now() < deadline {
+                if cond() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            false
+        }
+
+        /// Removes the listed files on drop, so temp artifacts are
+        /// cleaned up even when an assertion panics mid-test.
+        struct TempFiles(Vec<std::path::PathBuf>);
+        impl Drop for TempFiles {
+            fn drop(&mut self) {
+                for p in &self.0 {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+
+        let tag = format!("renga-trx-e2e-{}", std::process::id());
+        let temp = std::env::temp_dir();
+        let lock_path = temp.join(format!("{tag}.lock"));
+        let script_path = temp.join(format!("{tag}.ps1"));
+        let _cleanup = TempFiles(vec![lock_path.clone(), script_path.clone()]);
+        std::fs::write(&lock_path, b"x").expect("create lock file");
+        // Forward slashes keep the path inert through bash quoting.
+        let lock_fwd = lock_path.display().to_string().replace('\\', "/");
+        std::fs::write(
+            &script_path,
+            format!("$f=[IO.File]::Open('{lock_fwd}','Open','ReadWrite','None'); Start-Sleep 60"),
+        )
+        .expect("write locker script");
+        let script_fwd = script_path.display().to_string().replace('\\', "/");
+
+        let lock_is_held =
+            |path: &std::path::Path| std::fs::OpenOptions::new().write(true).open(path).is_err();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut pane = Pane::new(9901, 24, 80, tx).expect("spawn pane");
+        // Detach the locker from the shell, then end the shell — the
+        // exact "natural exit leaves an orphan" scenario.
+        pane.queue_startup_command(&format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File '{script_fwd}' & disown; exit"
+        ));
+        assert!(
+            wait_for(
+                || pane.try_flush_startup().unwrap_or(false),
+                Duration::from_secs(30)
+            ),
+            "shell prompt should be detected and startup command flushed"
+        );
+        assert!(
+            wait_for(|| lock_is_held(&lock_path), Duration::from_secs(30)),
+            "grandchild should start and hold the lock"
+        );
+        // Wait for the shell itself to exit so kill() runs down the
+        // already-exited path. Can't use PtyEof here: ConPTY only EOFs
+        // the read side once the LAST attached client detaches, and
+        // the orphaned powershell keeps the session open by design.
+        assert!(
+            wait_for(|| pane.child_exited_for_test(), Duration::from_secs(30)),
+            "shell should exit after the startup command"
+        );
+
+        pane.kill();
+
+        assert!(
+            wait_for(|| !lock_is_held(&lock_path), Duration::from_secs(10)),
+            "orphaned grandchild should be dead after pane kill"
+        );
     }
 
     #[test]
