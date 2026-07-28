@@ -119,7 +119,7 @@ renga inspect --name worker-foo --lines 10 --cursor
 
 | Flag | Meaning |
 |---|---|
-| `--lines <N>` | Return only the bottom N rows of the screen grid |
+| `--lines <N>` | Return the last N rendered lines; N beyond the visible height continues into scrollback (2000-line cap, negative row indices for history) |
 | `--cursor` | Include the cursor position and visibility in the payload |
 
 Example response:

@@ -52,6 +52,15 @@ pub mod server;
 
 pub use events::EventBus;
 
+/// Hard cap on the total number of lines an [`Request::Inspect`] call
+/// returns (visible screen + scrollback continuation). The vt100
+/// scrollback holds up to 10,000 lines per pane, but an uncapped read
+/// would produce megabyte-scale payloads that no MCP / LLM consumer
+/// can usefully ingest in one response. Oversized requests are
+/// clamped silently, consistent with how `lines` has always treated
+/// values beyond what is available.
+pub const INSPECT_MAX_LINES: usize = 2000;
+
 /// One IPC call from a client to the running renga instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -129,18 +138,23 @@ pub enum Request {
     /// [`Event`] JSON Lines until the client disconnects. No further
     /// [`Request`]s are accepted on this connection.
     Subscribe,
-    /// Snapshot the current visible screen of the target pane.
-    /// Returns the plain-text contents in row-addressable form so
-    /// orchestrators can detect prompts like "Allow this tool use?",
-    /// error banners, or mode indicators without relying on worker
-    /// self-reports.
+    /// Snapshot the rendered contents of the target pane. Returns
+    /// plain text in row-addressable form so orchestrators can detect
+    /// prompts like "Allow this tool use?", error banners, or mode
+    /// indicators without relying on worker self-reports.
     ///
-    /// `lines = Some(N)` limits the response to the bottom `N` rows
-    /// of the screen grid (including blank rows — the row layout is
-    /// preserved on purpose so callers can match against fixed
-    /// positions like the status bar). `None` returns the full
-    /// visible screen. `include_cursor = true` adds a `cursor`
-    /// object to the payload.
+    /// `lines = Some(N)` returns the last `N` rendered lines ending
+    /// at the live bottom of the pane (including blank rows — the row
+    /// layout is preserved on purpose so callers can match against
+    /// fixed positions like the status bar). When `N` exceeds the
+    /// pane's visible height, the shortfall continues into scrollback
+    /// history, capped at [`INSPECT_MAX_LINES`]; scrollback rows carry
+    /// negative `row` indices (`-1` = the line just above the visible
+    /// top) and `line_start` may be negative. `None` returns the full
+    /// visible screen. Reads are pinned to the live tail — the result
+    /// does not depend on the pane's user scroll position, which is
+    /// preserved across the call. `include_cursor = true` adds a
+    /// `cursor` object to the payload.
     Inspect {
         target: PaneRef,
         #[serde(default)]
