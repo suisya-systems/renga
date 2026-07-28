@@ -74,9 +74,9 @@ fn wait_parent_exit() -> bool {
 mod win {
     use std::ffi::c_void;
 
-    // Match `crate::conpty_colors::win`'s alias so the duplicated
-    // extern declarations (WaitForSingleObject, CloseHandle, ...)
-    // don't trip `clashing_extern_declarations`.
+    // Match the companion `crate::win_job` alias (#268) so the
+    // duplicated extern declarations (`OpenProcess`, `CloseHandle`)
+    // don't trip `clashing_extern_declarations` once both land.
     type Handle = *mut c_void;
 
     const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
