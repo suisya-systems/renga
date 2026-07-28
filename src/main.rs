@@ -580,13 +580,47 @@ pub(crate) fn hide_cursor_during_draw() -> bool {
 }
 
 /// Whether the host terminal anchors a native IME (pre-edit + candidate
-/// window) to the terminal caret. That is a conpty / Windows Terminal
-/// behavior — the mechanism Issue #34 leans on to keep composition at
-/// the user's input position, and the one Issue #281 needed nudged one
-/// row down. Other terminals place IME windows themselves (or have no
-/// system IME attached at all), so renga leaves their caret alone.
+/// window) to the terminal caret. That is the mechanism Issue #34 leans
+/// on to keep composition at the user's input position, and the one
+/// Issue #281 needed nudged one row down.
+///
+/// Deliberately stricter than [`is_conpty_host`]. That predicate answers
+/// "does conpty sit between us and the host", which is true for *any*
+/// WSL session; this one gates a shift of the visible caret, so it must
+/// also be true that a Windows IME is actually attached. SSH into a WSL
+/// distro, or a Linux terminal under WSLg, is conpty-free from the
+/// user's point of view — shifting their caret would cost them the
+/// accurate caret position and buy nothing. Windows Terminal forwards
+/// `WT_SESSION` / `WT_PROFILE_ID` across the WSL boundary via `WSLENV`,
+/// so their presence is the signal that the frontend really is Windows
+/// Terminal.
+///
+/// Other conpty frontends (wezterm, Alacritty driving `wsl.exe`) fall
+/// through to `false` and keep the pre-#281 anchor. That is the safe
+/// side: no fix, but no caret shift either.
 pub(crate) fn host_anchors_ime_to_caret() -> bool {
-    is_conpty_host()
+    #[cfg(windows)]
+    {
+        // Running as a native Windows process, the console host (conhost
+        // or Windows Terminal) is by definition the IME's window owner.
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        is_wsl() && is_windows_terminal()
+    }
+}
+
+/// Whether a WSL process was launched from Windows Terminal. Cached like
+/// [`is_wsl`]: the render path consults it every frame, and the
+/// environment cannot change under a running process.
+#[cfg(not(windows))]
+fn is_windows_terminal() -> bool {
+    use std::sync::OnceLock;
+    static WT: OnceLock<bool> = OnceLock::new();
+    *WT.get_or_init(|| {
+        std::env::var_os("WT_SESSION").is_some() || std::env::var_os("WT_PROFILE_ID").is_some()
+    })
 }
 
 /// Native Windows, or Linux under WSL where the outer terminal is still

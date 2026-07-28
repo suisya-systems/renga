@@ -95,13 +95,14 @@ pub struct ImeConfig {
     /// input line.
     ///
     /// The trade-off is that the *visible* caret moves down with the
-    /// anchor, so the offset is applied only on conpty hosts (native
-    /// Windows, or WSL under Windows Terminal), which are the only ones
-    /// that anchor an IME to the terminal caret in the first place. Set
-    /// `0` to restore the pre-#281 behavior of anchoring exactly on the
-    /// caret cell. Clamped to [`MAX_IME_ANCHOR_ROW_OFFSET`] at apply
-    /// time; the caret is additionally clamped inside the pane at render
-    /// time, so an offset can never push it out of the pane body.
+    /// anchor, so the offset is applied only where a Windows IME is
+    /// actually anchored to the terminal caret: native Windows, or WSL
+    /// running under Windows Terminal. SSH into WSL, WSLg, and Linux /
+    /// macOS terminals ignore it entirely. Set `0` to restore the
+    /// pre-#281 behavior of anchoring exactly on the caret cell. Clamped
+    /// to [`MAX_IME_ANCHOR_ROW_OFFSET`] at apply time; the caret is
+    /// additionally clamped inside the pane at render time, so an offset
+    /// can never push it out of the pane body.
     pub anchor_row_offset: u16,
 }
 

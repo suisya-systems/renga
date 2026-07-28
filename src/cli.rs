@@ -71,10 +71,11 @@ pub struct Cli {
     /// the input line it is composing into. **Defaults to 1**, which
     /// drops the anchor one row so the popup clears that line. The
     /// visible caret moves with the anchor, so the offset applies only
-    /// on conpty hosts (native Windows / WSL under Windows Terminal);
-    /// other terminals keep the caret exactly on the resolved cell
-    /// regardless of this value. Values above 4 are clamped. Overrides
-    /// `[ime] anchor_row_offset` in config.toml.
+    /// where a Windows IME is attached to the terminal caret: native
+    /// Windows, or WSL under Windows Terminal. Everything else (SSH into
+    /// WSL, WSLg, Linux / macOS terminals) keeps the caret exactly on
+    /// the resolved cell regardless of this value. Values above 4 are
+    /// clamped. Overrides `[ime] anchor_row_offset` in config.toml.
     #[arg(long, value_name = "ROWS")]
     pub ime_anchor_row_offset: Option<u16>,
 

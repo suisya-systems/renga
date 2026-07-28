@@ -273,7 +273,7 @@ pub struct App {
     /// [`App::apply_config`] and already clamped to
     /// [`crate::config::MAX_IME_ANCHOR_ROW_OFFSET`]. Consumed by
     /// `ui::render_panes`, which additionally drops it to `0` on hosts
-    /// that don't anchor an IME to the caret.
+    /// that don't anchor a Windows IME to the caret.
     pub ime_anchor_row_offset: u16,
     /// Instant of the last overlay-era repaint (open or catch-up
     /// tick). Populated by [`App::maybe_tick_overlay_catchup`] and

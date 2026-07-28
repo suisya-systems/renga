@@ -1167,12 +1167,13 @@ fn clamp_caret_col(col: u16, width: u16) -> Option<u16> {
 /// Resolve the IME anchor offset actually used for a frame.
 ///
 /// renga owns no host window, so its only influence on a native IME is
-/// where it parks the terminal caret (#34). Only conpty hosts (Windows
-/// Terminal, natively or via WSL) place the pre-edit and candidate
-/// window off that caret, so every other target keeps the configured
-/// offset at `0` and the caret stays exactly on the resolved cell —
-/// preserving the caret work in #253 / #257 / #260 on Linux and macOS
-/// terminals, which never had the overlap in the first place.
+/// where it parks the terminal caret (#34). Only a Windows IME host
+/// (native Windows, or WSL under Windows Terminal) places the pre-edit
+/// and candidate window off that caret, so every other target keeps the
+/// configured offset at `0` and the caret stays exactly on the resolved
+/// cell — preserving the caret work in #253 / #257 / #260 everywhere
+/// that never had the overlap in the first place, including SSH into
+/// WSL and Linux terminals under WSLg.
 fn effective_ime_row_offset(configured: u16, host_anchors_ime: bool) -> u16 {
     if host_anchors_ime {
         configured
@@ -2090,9 +2091,11 @@ mod ime_anchor_tests {
     }
 
     #[test]
-    fn only_conpty_hosts_apply_the_configured_offset() {
-        // Linux / macOS terminals place IME windows themselves, so the
-        // caret must stay exactly where #253 / #257 / #260 put it.
+    fn only_windows_ime_hosts_apply_the_configured_offset() {
+        // Everywhere else — Linux / macOS terminals, SSH into WSL,
+        // WSLg — places IME windows itself or has no system IME on the
+        // caret at all, so the caret must stay exactly where
+        // #253 / #257 / #260 put it.
         assert_eq!(effective_ime_row_offset(1, true), 1);
         assert_eq!(effective_ime_row_offset(1, false), 0);
         assert_eq!(

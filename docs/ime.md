@@ -61,7 +61,7 @@ mode = "off"
 
 You do not have to open the overlay — typing straight into a pane with the system IME works too, and renga still anchors the host's IME to your input position by parking the terminal caret there ([Issue #34](https://github.com/suisya-systems/renga/issues/34)).
 
-Windows Terminal draws the pre-edit at that caret and opens the candidate window flush against the bottom of the same row, which left the popup butted straight into Claude's input line ([Issue #281](https://github.com/suisya-systems/renga/issues/281)). renga now drops the anchor one row on conpty hosts so the popup — and the inline pre-edit — clear the input line:
+Windows Terminal draws the pre-edit at that caret and opens the candidate window flush against the bottom of the same row, which left the popup butted straight into Claude's input line ([Issue #281](https://github.com/suisya-systems/renga/issues/281)). renga now drops the anchor one row so the popup — and the inline pre-edit — clear the input line:
 
 ```toml
 # Anchor the native IME candidate window on the caret cell itself
@@ -71,7 +71,7 @@ Windows Terminal draws the pre-edit at that caret and opens the candidate window
 anchor_row_offset = 0
 ```
 
-The trade-off is that the *visible* caret moves down with the anchor, since a terminal has only one cursor to give. The offset therefore applies only on conpty hosts (native Windows, or WSL under Windows Terminal) — the ones that anchor a system IME to the terminal caret in the first place. Linux and macOS terminals ignore it entirely and keep the caret exactly on the resolved cell.
+The trade-off is that the *visible* caret moves down with the anchor, since a terminal has only one cursor to give. The offset therefore applies only where a Windows IME really is anchored to the terminal caret: native Windows, or WSL under Windows Terminal (detected via the `WT_SESSION` / `WT_PROFILE_ID` that Windows Terminal forwards through `WSLENV`). SSH into a WSL distro, a Linux terminal under WSLg, and native Linux / macOS terminals all ignore the offset entirely and keep the caret exactly on the resolved cell.
 
 ## Troubleshooting
 

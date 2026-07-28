@@ -62,7 +62,7 @@ mode = "off"
 
 overlay を開かず、ペインへ直接 OS の IME で入力することもできます。その場合も renga は端末キャレットを入力位置に置くことでホスト側 IME をそこへアンカーします（[Issue #34](https://github.com/suisya-systems/renga/issues/34)）。
 
-Windows Terminal は未確定文字列をそのキャレット位置に描画し、変換窓を同じ行の直下にぴったり付けて開くため、変換窓が Claude の入力行に食い込んでいました（[Issue #281](https://github.com/suisya-systems/renga/issues/281)）。現在は conpty ホストに限りアンカーを 1 行下げ、変換窓と未確定文字列が入力行を避けるようにしています。
+Windows Terminal は未確定文字列をそのキャレット位置に描画し、変換窓を同じ行の直下にぴったり付けて開くため、変換窓が Claude の入力行に食い込んでいました（[Issue #281](https://github.com/suisya-systems/renga/issues/281)）。現在はアンカーを 1 行下げ、変換窓と未確定文字列が入力行を避けるようにしています。
 
 ```toml
 # ネイティブ IME のアンカーをキャレットのセルそのものに戻す（#281 以前の挙動）。
@@ -72,7 +72,7 @@ Windows Terminal は未確定文字列をそのキャレット位置に描画し
 anchor_row_offset = 0
 ```
 
-トレードオフとして、端末のカーソルは 1 つしかないため **表示キャレットもアンカーと一緒に下がります**。そのため、この offset はシステム IME を端末キャレットにアンカーする conpty ホスト（Windows ネイティブ / Windows Terminal 上の WSL）でのみ適用され、Linux / macOS の端末では完全に無視されキャレットは従来どおりの位置に留まります。
+トレードオフとして、端末のカーソルは 1 つしかないため **表示キャレットもアンカーと一緒に下がります**。そのため、この offset は Windows の IME が実際に端末キャレットへ吸着するホスト — Windows ネイティブ、および Windows Terminal 上の WSL（Windows Terminal が `WSLENV` 経由で渡す `WT_SESSION` / `WT_PROFILE_ID` で判定）— でのみ適用されます。WSL への SSH、WSLg 上の Linux 端末、ネイティブの Linux / macOS 端末では完全に無視され、キャレットは従来どおりの位置に留まります。
 
 ## うまく動かないとき
 

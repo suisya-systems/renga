@@ -39,7 +39,7 @@ anchor_row_offset = 1
 | `mode` | `"hotkey" \| "off"` | `"hotkey"` | `--ime <hotkey\|off>` | `hotkey` は `Ctrl+;` (フォールバックに `Alt+;` / `Alt+I` — `Ctrl+;` を奪うターミナル向け) で overlay を開く。`off` は `Ctrl+;` を黙って飲み込む。ホスト端末側で IME 候補窓の位置が既に望ましく出ている人向け。 |
 | `freeze_panes_on_overlay` | bool | `true` | `--ime-freeze-panes[=BOOL]` | overlay を開いている間、裏のペインの再描画を止める。Claude のストリーミング出力が IME 候補窓を踊らせるのを防ぐ。overlay を開かないユーザー (IME を使わない人) には影響しない。`=false` で生の再描画を維持。 |
 | `overlay_catchup_ms` | u64 ms | `3000` | `--ime-overlay-catchup-ms <MS>` | freeze が有効な間、指定ミリ秒ごとに 1 フレームだけ再描画を挟む。`0` で完全凍結 (catch-up なし)。非ゼロ値は最低 `100` に丸める。 |
-| `anchor_row_offset` | u16 行 | `1` | `--ime-anchor-row-offset <ROWS>` | overlay を使わず**ネイティブ IME** で直接入力するときに、変換窓が入力行にめり込まないよう、端末キャレットをフォーカスペインのキャレット行から何行下に置くか。conpty ホスト (Windows ネイティブ / Windows Terminal 上の WSL) でのみ適用され、他の端末はこの値を無視して従来どおりキャレット行そのものに置く。表示キャレットもアンカーと一緒に下がるため、入力セル上に戻したい場合は `0` を指定する。`4` を超える値は丸められ、キャレットは常にペイン内に収まる。 |
+| `anchor_row_offset` | u16 行 | `1` | `--ime-anchor-row-offset <ROWS>` | overlay を使わず**ネイティブ IME** で直接入力するときに、変換窓が入力行にめり込まないよう、端末キャレットをフォーカスペインのキャレット行から何行下に置くか。Windows の IME が端末キャレットに吸着するホスト — Windows ネイティブ、および Windows Terminal 上の WSL (Windows Terminal が `WSLENV` 経由で渡す `WT_SESSION` / `WT_PROFILE_ID` で判定) — でのみ適用される。WSL への SSH、WSLg、Linux / macOS の端末はこの値を無視して従来どおりキャレット行そのものに置く。表示キャレットもアンカーと一緒に下がるため、入力セル上に戻したい場合は `0` を指定する。`4` を超える値は丸められ、キャレットは常にペイン内に収まる。 |
 
 > 以前は `Claude` ペインにフォーカスするたびに overlay が自動で開く `"always"` モードがありました。実運用で不安定だったため削除済み。フォーカス直後から overlay を使いたい場合は `Ctrl+;` を 1 回押してください。
 
