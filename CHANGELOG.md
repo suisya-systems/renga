@@ -9,6 +9,18 @@ rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-07-29
+
+First minor release after the v1.3.x patch line. `inspect_pane` /
+`renga inspect` can now reach past the visible screen into scrollback
+history, and pane close on Windows finally reaps the processes it used
+to leave behind. The frozen v1.0 API surface (MCP wire shape, CLI
+flags, config keys, env vars) is unchanged — `inspect`'s existing
+`lines` input grows a backward-compatible reach into scrollback (the
+old height clamp and the scroll-position dependence were both
+undocumented), so this bumps the minor per
+[`docs/semver-policy.md`](./docs/semver-policy.md).
+
 ### Added
 
 - **`inspect_pane` / `renga inspect` can now read scrollback history.**
@@ -28,6 +40,42 @@ rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
   (previously undocumented — an inspect during a scroll-up returned
   the scrolled view), and the pane's scroll position is preserved
   across the call. (#278)
+
+### Fixed
+
+- **Closing a pane no longer leaves its background processes running
+  (Windows).** The old `taskkill /F /T` walked live parent → child
+  links only, so descendants whose intermediate parent had already
+  exited — dev servers, detached background jobs — survived the close,
+  and a shell that had already exited on its own skipped the tree kill
+  entirely. Each pane's shell is now assigned to a kill-on-close
+  Windows Job Object at spawn, and closing the pane terminates the job,
+  reaping the whole tree regardless of its topology. `taskkill` stays
+  as the fallback when job assignment fails or the kernel rejects the
+  terminate, and the job's kill-on-close flag is the final backstop if
+  renga itself goes away. (#268)
+- **`renga mcp-peer` no longer outlives the Claude Code process that
+  started it.** stdin EOF is not a reliable shutdown signal on Windows:
+  handle inheritance can leak the write end of the stdin pipe into
+  sibling children of the spawning client, and any survivor keeps EOF
+  from ever arriving — observed as mcp-peer processes lingering for
+  days after their parent was gone. The peer server now watches its
+  parent directly (Windows: a thread blocked on a handle to the parent,
+  with a creation-time guard against the startup PID-reuse window;
+  Unix: a `getppid` poll) and exits within a few seconds of the parent
+  disappearing. If the watchdog cannot be armed, the server keeps
+  running on the previous stdin-EOF path rather than exiting. (#269)
+- **The caret no longer flickers onto the spinner row while Claude is
+  generating (Windows / WSL conpty).** With an IME composition active,
+  the caret was resolved to the correct input row every frame, but
+  ratatui re-shows the hardware cursor at frame end *before* moving it,
+  so on conpty the caret became briefly visible at the last painted
+  cell — the spinner row, which repaints every frame, turning the
+  one-frame leak into continuous flicker. On conpty the resolved caret
+  is now applied after the frame as `MoveTo` then `Show`, while the
+  cursor is still hidden, so it only ever becomes visible at its final
+  position. Non-conpty targets keep the previous in-frame path, so the
+  plain-PTY caret behavior from 1.3.1 is unaffected. (#262)
 
 ## [1.3.2] — 2026-06-07
 

@@ -224,7 +224,20 @@ name = "renga"
 # (#257). Patch bump: rendering/display bug fix in internal source
 # only; the frozen v1.0 API surface (MCP wire shape, CLI flags, config
 # keys, env vars) is unchanged.
-version = "1.3.2"
+# 1.4.0 lets inspect reach into scrollback: `lines` beyond the pane's
+# visible height continues into the vt100 scrollback (capped at 2000
+# lines, negative `row` indices for history rows) and reads are pinned
+# to the live tail regardless of the pane's scroll position (#278).
+# Also fixes two process-leak shapes on Windows — pane close now kills
+# the whole process tree via a kill-on-close Job Object (#268) and
+# mcp-peer exits when its parent process dies instead of relying on
+# stdin EOF (#269) — plus the conpty caret flicker onto the spinner row
+# during Claude generation (#262). Minor bump: the `inspect` reach is
+# an additive, backward-compatible extension of an existing optional
+# input (the old height clamp and scroll-position dependence were both
+# undocumented), so no frozen v1.0 API surface item (MCP wire shape,
+# CLI flags, config keys, env vars) changes incompatibly.
+version = "1.4.0"
 edition = "2021"
 description = "AI-native terminal for orchestrating multiple Claude Code and Codex agents in one workspace"
 
