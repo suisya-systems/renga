@@ -6,22 +6,22 @@ use ratatui::Frame;
 
 use crate::app::{App, DragTarget, FocusTarget, SplitDirection};
 
-// ─── Theme (Claude-inspired) ──────────────────────────────
-const BG: Color = Color::Rgb(0x0d, 0x11, 0x17);
-const PANEL_BG: Color = Color::Rgb(0x13, 0x17, 0x1f);
-const BORDER: Color = Color::Rgb(0x2d, 0x33, 0x3b);
-const FOCUS_BORDER: Color = Color::Rgb(0x58, 0xa6, 0xff);
-const TEXT: Color = Color::Rgb(0xe6, 0xed, 0xf3);
-const TEXT_DIM: Color = Color::Rgb(0x6e, 0x76, 0x81);
-const ACCENT_GREEN: Color = Color::Rgb(0x3f, 0xb9, 0x50);
-const ACCENT_BLUE: Color = Color::Rgb(0x58, 0xa6, 0xff);
-const ACCENT_CLAUDE: Color = Color::Rgb(0xd9, 0x77, 0x57);
-const ACCENT_CODEX: Color = Color::Rgb(0x10, 0xa3, 0x7f);
-const HEADER_BG: Color = Color::Rgb(0x16, 0x1b, 0x22);
-const ACTIVE_TAB_BG: Color = Color::Rgb(0x0d, 0x11, 0x17);
-const ACTIVE_BG: Color = Color::Rgb(0x1c, 0x23, 0x33);
-const LINE_NUM_COLOR: Color = Color::Rgb(0x3d, 0x44, 0x4d);
-const SCROLL_BG: Color = Color::Rgb(0x2a, 0x1f, 0x14);
+// ─── Theme (terminal palette) ─────────────────────────────
+const BG: Color = Color::Reset;
+const PANEL_BG: Color = Color::Reset;
+const BORDER: Color = Color::DarkGray;
+const FOCUS_BORDER: Color = Color::LightBlue;
+const TEXT: Color = Color::Reset;
+const TEXT_DIM: Color = Color::DarkGray;
+const ACCENT_GREEN: Color = Color::Green;
+const ACCENT_BLUE: Color = Color::Blue;
+const ACCENT_CLAUDE: Color = Color::Yellow;
+const ACCENT_CODEX: Color = Color::Cyan;
+const HEADER_BG: Color = Color::Reset;
+const ACTIVE_TAB_BG: Color = Color::Reset;
+const LINE_NUM_COLOR: Color = Color::DarkGray;
+const SCROLL_BG: Color = Color::Reset;
+const SCROLL_THUMB: Color = Color::Gray;
 
 const MIN_TERMINAL_WIDTH: u16 = 40;
 const MIN_TERMINAL_HEIGHT: u16 = 10;
@@ -31,21 +31,66 @@ const MIN_PANE_AREA_WIDTH: u16 = 20;
 fn file_icon(name: &str) -> (&'static str, Color) {
     let ext = name.rsplit('.').next().unwrap_or("");
     match ext {
-        "rs" => ("\u{1f980} ", Color::Rgb(0xde, 0x93, 0x5f)), // 🦀 orange
-        "toml" => ("\u{2699}\u{fe0f} ", Color::Rgb(0x9e, 0x9e, 0x9e)), // ⚙️ gray
-        "lock" => ("\u{1f512} ", Color::Rgb(0x9e, 0x9e, 0x9e)), // 🔒
-        "md" => ("\u{1f4c4} ", Color::Rgb(0x58, 0xa6, 0xff)), // 📄 blue
-        "json" => ("{ ", Color::Rgb(0xf1, 0xe0, 0x5a)),       // { yellow
-        "yaml" | "yml" => ("~ ", Color::Rgb(0xf1, 0xe0, 0x5a)), // ~ yellow
-        "js" => ("\u{26a1} ", Color::Rgb(0xf1, 0xe0, 0x5a)),  // ⚡ yellow
-        "ts" | "tsx" => ("\u{26a1} ", Color::Rgb(0x31, 0x78, 0xc6)), // ⚡ blue
-        "jsx" => ("\u{26a1} ", Color::Rgb(0x61, 0xda, 0xfb)), // ⚡ cyan
-        "py" => ("\u{1f40d} ", Color::Rgb(0x35, 0x72, 0xa5)), // 🐍 blue
-        "sh" | "bash" | "zsh" => ("$ ", Color::Rgb(0x3f, 0xb9, 0x50)), // $ green
-        "css" | "scss" => ("# ", Color::Rgb(0x56, 0x3d, 0x7c)), // # purple
-        "html" => ("< ", Color::Rgb(0xe3, 0x4c, 0x26)),       // < orange
-        "gitignore" => ("\u{2022} ", Color::Rgb(0xf0, 0x50, 0x33)), // • git red
-        _ => ("\u{2022} ", TEXT_DIM),                         // • default
+        "rs" => ("\u{1f980} ", Color::Yellow),
+        "toml" => ("\u{2699}\u{fe0f} ", TEXT_DIM),
+        "lock" => ("\u{1f512} ", TEXT_DIM),
+        "md" => ("\u{1f4c4} ", ACCENT_BLUE),
+        "json" => ("{ ", Color::Yellow),
+        "yaml" | "yml" => ("~ ", Color::Yellow),
+        "js" => ("\u{26a1} ", Color::Yellow),
+        "ts" | "tsx" => ("\u{26a1} ", ACCENT_BLUE),
+        "jsx" => ("\u{26a1} ", Color::Cyan),
+        "py" => ("\u{1f40d} ", ACCENT_BLUE),
+        "sh" | "bash" | "zsh" => ("$ ", ACCENT_GREEN),
+        "css" | "scss" => ("# ", Color::Magenta),
+        "html" => ("< ", Color::Red),
+        "gitignore" => ("\u{2022} ", Color::Red),
+        _ => ("\u{2022} ", TEXT_DIM),
+    }
+}
+
+fn syntax_rgb_to_ansi_color(r: u8, g: u8, b: u8) -> Color {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    if max.saturating_sub(min) < 32 {
+        return if max < 96 {
+            Color::DarkGray
+        } else {
+            Color::Gray
+        };
+    }
+
+    let intense = max >= 192;
+    let substantial = |channel: u8| (u16::from(channel) * 20) >= (u16::from(max) * 11);
+    let close = |channel: u8| (u16::from(channel) * 4) > (u16::from(max) * 3);
+    let low = |channel: u8| u16::from(channel) * 5 <= u16::from(max) * 3;
+
+    let color = if r == max && substantial(g) && low(b) {
+        Color::Yellow
+    } else if r == max && close(b) && g < b {
+        Color::Magenta
+    } else if g == max && close(b) && r < b {
+        Color::Cyan
+    } else if r == max {
+        Color::Red
+    } else if g == max {
+        Color::Green
+    } else {
+        Color::Blue
+    };
+
+    if intense {
+        match color {
+            Color::Red => Color::LightRed,
+            Color::Green => Color::LightGreen,
+            Color::Yellow => Color::LightYellow,
+            Color::Blue => Color::LightBlue,
+            Color::Magenta => Color::LightMagenta,
+            Color::Cyan => Color::LightCyan,
+            _ => color,
+        }
+    } else {
+        color
     }
 }
 
@@ -434,7 +479,7 @@ fn render_tab_bar(app: &mut App, frame: &mut Frame, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ));
         } else if is_active {
-            // Active tab: underline bar ▔ effect via bold + brighter bg
+            // Active tab: identified via underline + bold + default fg vs DarkGray for inactive.
             spans.push(Span::styled(
                 label.clone(),
                 Style::default()
@@ -603,9 +648,11 @@ fn render_file_tree(app: &mut App, frame: &mut Frame, area: Rect) {
         // Selection indicator bar on the left
         let indicator = if is_selected { "\u{258e}" } else { " " }; // ▎ or space
         let indicator_style = if is_selected {
-            Style::default().fg(ACCENT_BLUE).bg(ACTIVE_BG)
+            Style::default()
+                .fg(ACCENT_BLUE)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else {
-            Style::default().fg(PANEL_BG).bg(PANEL_BG)
+            Style::default()
         };
 
         // Tree indent with connector lines
@@ -642,8 +689,7 @@ fn render_file_tree(app: &mut App, frame: &mut Frame, area: Rect) {
         let content_style = if is_selected {
             Style::default()
                 .fg(TEXT)
-                .bg(ACTIVE_BG)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else {
             Style::default().fg(name_color).bg(PANEL_BG)
         };
@@ -965,9 +1011,7 @@ fn render_terminal_content(
                     (sr != er || sc != ec) && s.contains(row as u32, col as u32)
                 });
                 let final_style = if has_selection {
-                    Style::default()
-                        .fg(Color::Rgb(0x0d, 0x11, 0x17))
-                        .bg(Color::Rgb(0x58, 0xa6, 0xff))
+                    Style::default().add_modifier(Modifier::REVERSED)
                 } else {
                     style
                 };
@@ -1091,15 +1135,9 @@ fn render_terminal_content(
             let y = area.y + row;
             let is_thumb = row >= thumb_top && row < thumb_top + thumb_height;
             let (sym, style) = if is_thumb {
-                (
-                    "\u{2588}",
-                    Style::default().fg(Color::Rgb(0x58, 0x5e, 0x68)),
-                ) // █ thumb
+                ("\u{2588}", Style::default().fg(SCROLL_THUMB)) // █ thumb
             } else {
-                (
-                    "\u{2502}",
-                    Style::default().fg(Color::Rgb(0x2d, 0x33, 0x3b)),
-                ) // │ track
+                ("\u{2502}", Style::default().fg(TEXT_DIM)) // │ track
             };
             if let Some(cell) = buf.cell_mut((scrollbar_x, y)) {
                 cell.set_symbol(sym);
@@ -1537,7 +1575,10 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
                 let text = truncate_to_width(&visible_text, remaining);
                 used_width += unicode_width::UnicodeWidthStr::width(text.as_str());
                 let (r, g, b) = styled_span.fg;
-                spans.push(Span::styled(text, Style::default().fg(Color::Rgb(r, g, b))));
+                spans.push(Span::styled(
+                    text,
+                    Style::default().fg(syntax_rgb_to_ansi_color(r, g, b)),
+                ));
             }
         } else {
             let plain = &ws.preview.lines[line_idx];
@@ -1609,11 +1650,7 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
                         }
                         let x = content.x + screen_col_i as u16;
                         if let Some(cell) = buf.cell_mut((x, y)) {
-                            cell.set_style(
-                                Style::default()
-                                    .fg(Color::Rgb(0x0d, 0x11, 0x17))
-                                    .bg(Color::Rgb(0x58, 0xa6, 0xff)),
-                            );
+                            cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
                         }
                     }
                 }
@@ -1626,7 +1663,7 @@ fn render_preview(app: &mut App, frame: &mut Frame, area: Rect) {
 
 /// Warm yellow for the warning glyph + headline — visually distinct
 /// from the status-bar hints directly below (dim gray + accent blue).
-const TIP_WARN: Color = Color::Rgb(0xe3, 0xb3, 0x41);
+const TIP_WARN: Color = Color::Yellow;
 
 /// Renders the 2-row Option-as-Meta banner. See `crate::macos_tip`
 /// for the gating logic; this function is only called when the
@@ -1747,9 +1784,9 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             let ratio = claude_state.context_usage();
             let bar = make_progress_bar((ratio * 10.0) as usize, 10, 6);
             let color = if ratio > 0.9 {
-                Color::Rgb(0xf8, 0x51, 0x49) // red
+                Color::Red
             } else if ratio > 0.7 {
-                Color::Rgb(0xd2, 0x99, 0x22) // yellow
+                Color::Yellow
             } else {
                 ACCENT_GREEN
             };
@@ -1847,6 +1884,84 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Default => Color::Reset,
         vt100::Color::Idx(idx) => Color::Indexed(idx),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+#[cfg(test)]
+mod syntax_color_tests {
+    use super::syntax_rgb_to_ansi_color;
+    use ratatui::style::Color;
+
+    #[test]
+    fn maps_magenta_family_to_ansi_magenta() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xcc, 0x99, 0xcc),
+            Color::Magenta | Color::LightMagenta
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xff, 0x00, 0xff),
+            Color::Magenta | Color::LightMagenta
+        ));
+    }
+
+    #[test]
+    fn maps_cyan_family_to_ansi_cyan() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0x66, 0xcc, 0xcc),
+            Color::Cyan | Color::LightCyan
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0x00, 0xff, 0xff),
+            Color::Cyan | Color::LightCyan
+        ));
+    }
+
+    #[test]
+    fn maps_blue_family_to_ansi_blue() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0x66, 0x99, 0xcc),
+            Color::Blue | Color::LightBlue
+        ));
+    }
+
+    #[test]
+    fn keeps_red_and_yellow_families_distinct() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xf2, 0x77, 0x7a),
+            Color::Red | Color::LightRed
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xff, 0xff, 0x00),
+            Color::Yellow | Color::LightYellow
+        ));
+    }
+
+    #[test]
+    fn maps_real_theme_gold_orange_and_brown_without_red_collapse() {
+        let red = syntax_rgb_to_ansi_color(0xf2, 0x77, 0x7a);
+        let orange = syntax_rgb_to_ansi_color(0xf9, 0x91, 0x57);
+        let brown = syntax_rgb_to_ansi_color(0xd2, 0x7b, 0x53);
+
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xff, 0xcc, 0x66),
+            Color::Yellow | Color::LightYellow
+        ));
+        assert!(matches!(orange, Color::Yellow | Color::LightYellow));
+        assert!(matches!(brown, Color::Yellow | Color::LightYellow));
+        assert_ne!(orange, red);
+        assert_ne!(brown, red);
+    }
+
+    #[test]
+    fn maps_other_theme_yellows_to_ansi_yellow() {
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xe5, 0xc0, 0x7b),
+            Color::Yellow | Color::LightYellow
+        ));
+        assert!(matches!(
+            syntax_rgb_to_ansi_color(0xb5, 0x89, 0x00),
+            Color::Yellow | Color::LightYellow
+        ));
     }
 }
 
