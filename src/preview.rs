@@ -396,4 +396,33 @@ mod tests {
         let first = &preview.highlighted_lines[0];
         assert!(!first.is_empty());
     }
+
+    #[test]
+    fn test_preview_highlight_actually_uses_the_syntax_dump() {
+        // `Preview` reaches syntect only through the binary dumps
+        // compiled into the crate (`SyntaxSet::load_defaults_newlines`
+        // / `ThemeSet::load_defaults`); the `plist-load` / `yaml-load`
+        // source parsers are switched off in Cargo.toml so quick-xml
+        // and yaml-rust stay out of the tree. That makes `dump-load`
+        // the single supply of syntaxes and themes, so this pins the
+        // property the trim depends on: an empty or unreadable syntax
+        // dump would silently fall back to plain text, which still
+        // yields one span per line and would slip past the assertions
+        // in `test_preview_highlight_rust`.
+        let mut preview = Preview::new();
+        preview.load(Path::new("src/main.rs"), None, &crate::i18n::MESSAGES_EN);
+
+        let colors: std::collections::HashSet<(u8, u8, u8)> = preview
+            .highlighted_lines
+            .iter()
+            .flatten()
+            .map(|span| span.fg)
+            .collect();
+        assert!(
+            colors.len() > 1,
+            "expected the Rust syntax + theme dumps to produce more than one \
+             foreground color; got {colors:?} (a single color means the syntax \
+             set fell back to plain text)"
+        );
+    }
 }

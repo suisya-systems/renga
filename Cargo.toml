@@ -249,7 +249,26 @@ vt100 = "0.16"
 anyhow = "1.0"
 unicode-width = "0.2.1"
 arboard = "3.6"
-syntect = "5.3"
+# Default features drag in `plist-load` (-> plist -> quick-xml) and
+# `yaml-load` (-> yaml-rust) for parsing `.tmTheme` / `.sublime-syntax`
+# source files. renga never parses either: `Preview` only calls
+# `SyntaxSet::load_defaults_newlines()` and `ThemeSet::load_defaults()`,
+# which inflate the binary dumps compiled into syntect itself (feature
+# `dump-load`), plus `find_syntax_*` / `HighlightLines`. Trimming to the
+# features actually used drops quick-xml — carrying RUSTSEC-2026-0194
+# and RUSTSEC-2026-0195, both unreachable here but unfixable in place
+# because `plist` pins `quick-xml = "0.38"` — and the unmaintained
+# yaml-rust (RUSTSEC-2024-0320) out of the tree entirely.
+#
+# `regex-onig` is the engine syntect's own default selects; keeping it
+# means highlighting output is byte-for-byte what it was before the
+# trim. Switching to `regex-fancy` would also drop the C dependency but
+# is a behavior change, so it is deliberately not bundled in here.
+syntect = { version = "5.3", default-features = false, features = [
+    "default-syntaxes", # = parsing + dump-load -> load_defaults_newlines()
+    "default-themes",   # = dump-load           -> ThemeSet::load_defaults()
+    "regex-onig",
+] }
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 serde_json = "1"
 dirs = "5"
