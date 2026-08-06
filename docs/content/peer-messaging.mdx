@@ -221,7 +221,7 @@ Codex の MCP 承認は pane ごとです。Claude Code のような「一度許
 
 多くの場合は `types=[...]` フィルタの仕様どおりです。条件に合わないイベントでも long-poll 自体は解除され、そのイベントを飛び越えた `next_since` が返ります。つまり空配列でも cursor は進み、そのイベントは再送されません。
 
-返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときだけ、1 回 `list_panes` で再同期してから続行します。ただし `list_panes` が返すのは呼び出し元自身のタブだけなので、他タブのペインで落ちたイベントはこの方法では埋め合わせられません。
+返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときは `list_peers` で再同期してから続行します。`poll_events` はプロセス全体が対象なので、対応する全タブのビューは `list_peers` です — `list_panes` が返すのは呼び出し元自身のタブだけで、他タブのペインで落ちたイベントは埋め合わせられません。`list_peers` は自分自身のペインを含まないため、自分のタブを詳細に取り直すときは `list_panes` と併用してください。
 
 ### `renga mcp install` が失敗する
 

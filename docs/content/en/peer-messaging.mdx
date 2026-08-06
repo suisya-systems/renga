@@ -217,7 +217,7 @@ Snapshot first with `inspect_pane(target=..., lines=20)` and send to a stable pa
 
 This is usually the `types=[...]` filter doing exactly what it says. A non-matching event can still wake the long-poll; `poll_events` then returns an empty `events` array but advances `next_since` past that event, so it will not be replayed.
 
-Loop with the returned `next_since` cursor. If you ever receive an `events_dropped` event, re-sync once with `list_panes` before continuing — but that only refreshes the caller's own tab, so events dropped for panes in other tabs cannot be reconciled this way.
+Loop with the returned `next_since` cursor. If you ever receive an `events_dropped` event, re-sync with `list_peers` before continuing — it is the all-tab view that matches `poll_events`'s process-wide stream, whereas `list_panes` only refreshes the caller's own tab and cannot reconcile events dropped for panes elsewhere. `list_peers` omits your own pane, so combine the two when you need your tab in full.
 
 ### `renga mcp install` fails
 

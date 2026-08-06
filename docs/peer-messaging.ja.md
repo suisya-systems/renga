@@ -96,7 +96,7 @@ Claude B の次のターンのコンテキストに `<channel source="renga-peer
 - **新しい Codex pane で `check_messages` / `send_message` の承認がまた出る** — Codex の承認は pane-local に振る舞うことがあります。`renga mcp install --client codex --codex-auto-approve-peer-tools` で安全な peer messaging 系の承認を事前設定できますが、Codex のバージョンや実行形態によっては、新しい pane で一度だけ warm-up 承認が必要です。
 - **`spawn_codex_pane` が `[codex_not_installed]` で失敗する** — Codex の MCP 設定 (`~/.codex/config.toml`) に renga-peers エントリがない、ファイルが読めない、もしくは `[mcp_servers.renga-peers.env]` に `RENGA_PEER_CLIENT_KIND=codex` が登録されていません。`renga mcp install --client codex` を 1 回実行してください。env 値だけが欠けた既存エントリも install 経路で self-heal します。
 - **`send_keys` が効いていないように見える** — `send_keys` は target ペインの PTY に生の入力バイトを書き込むだけで、帯域外の「承認」操作ではありません。まず `inspect_pane(target=…, lines=20)` で本当に入力待ちか確認し、レイアウトが動く運用ではフォーカス推測ではなく安定した pane `name` を target に使ってください。
-- **`poll_events` が想定より早く `events: []` を返す** — `types=[…]` フィルタは返却結果を絞るだけで、非一致イベントでも long-poll は解除されて `next_since` は前進します。返ってきた cursor でそのまま再 poll してください。`events_dropped` が来た場合は 1 回 `list_panes` で再同期すると安全ですが、`poll_events` はプロセス全体が対象で**全タブ**のペインライフサイクルが届くのに対し `list_panes` は自分のタブしか返さないため、他タブで落ちたイベントはこの再同期では埋められません。
+- **`poll_events` が想定より早く `events: []` を返す** — `types=[…]` フィルタは返却結果を絞るだけで、非一致イベントでも long-poll は解除されて `next_since` は前進します。返ってきた cursor でそのまま再 poll してください。`events_dropped` が来た場合は `list_peers` で再同期してください。`poll_events` はプロセス全体が対象で**全タブ**のペインライフサイクルが届くので、対応する全タブのビューは `list_peers` です — `list_panes` は自分のタブしか返さず、他タブで落ちたイベントを埋められません。`list_peers` は自分自身のペインを含まないため、自分のタブを詳細に取り直したいときは `list_panes` と併用してください。
 - **renga をアップグレードしたら** — `renga mcp install --client claude --force` / `renga mcp install --client codex --force` を実行し直し、登録済みの各 client が新しいバイナリを指すようにしてください。
 
 ## 関連ドキュメント
