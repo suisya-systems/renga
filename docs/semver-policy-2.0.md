@@ -189,9 +189,19 @@ remove-the-old must take one of two paths:
   and provide the prior behavior under an opt-out flag for at least one full
   minor release after the default flip.
 - **The capability path** (new in 2.0, §7): flip the behavior in a major
-  release and gate it on a new capability token, so that a client built
-  against either side of the flip fails closed with `server_too_old` instead
-  of silently getting the behavior it did not ask for.
+  release and gate it on a new capability token, so that a client that
+  *needs* the new behavior fails closed with `server_too_old` against a
+  server that does not have it, instead of silently getting the old behavior.
+
+  **This path is directional and does not cover both skew directions.**
+  Gating is client-side (`require_capability` reads the advertised list from
+  the `hello` handshake), so it protects **new client → old server** only. An
+  **old client → new server** does not know the token exists, sends its
+  request unchanged, and receives the new behavior — a pre-#289 client
+  talking to a 2.0 server gets cross-tab `peer_send` / `peer_list`, not a
+  refusal. Choose this path only when that residual direction is acceptable;
+  when it is not, the flag path or explicit server-side negotiation against a
+  client-declared version is required.
 
 > **Why the capability path exists.** The flag path assumes the risk is a
 > caller who wants the old behavior. renga's actual risk is different: the
@@ -283,6 +293,11 @@ Rules:
    newly spawned `renga mcp-peer` can talk to an old server within one user
    session. `[server_too_old] … restart renga` is the expected, correct
    outcome in that window.
+5. **The protection is one-directional.** Because the gate lives in the
+   client, it covers **new client → old server** and nothing else. An old
+   client cannot gate on a token it has never heard of, so **old client → new
+   server** silently receives the new behavior. Nothing in this mechanism
+   changes that, and §4's capability path must not be read as if it did.
 
 Note that the capability set is readable directly out of the `hello`
 handshake by any IPC client — that is how the bundled client gates its
@@ -324,9 +339,12 @@ Two consequences for how this policy is read going forward:
   entry, naming who decided and why. "It is a bug fix" is §3.1 and must
   satisfy §3.1's four conditions.
 
-Two further gaps the 2.0.0 release should close, both surfaced by running the
-§9 step 1 inventory pass: the companion doc is missing the `--fps` CLI flag
-and `[ui] fps` config key (shipped in 1.1.0), the `server_too_old` error code
+**Gaps that must be closed before 2.0.0 ships.** §1 defines the public API as
+exactly the companion doc's stable items, so anything shipped but missing from
+that inventory is not actually frozen by this policy. The §9 step 1 pass is
+what closes them, and it is a release blocker, not a nicety: the companion
+doc is missing the `--fps` CLI flag and the `[ui] fps` config key (both
+shipped in 1.1.0), the `server_too_old` error code
 (emitted today and referenced five times in its own prose), and the
 `capabilities` field on `Response::Hello`. Its appendix item counts are stale
 accordingly.
