@@ -8,9 +8,9 @@ Let mixed Claude Code and Codex instances running under the same renga session e
   Claude receives peer messages as `<channel source="renga-peers">...</channel>` tags, which keeps them distinct from user input. Codex is coordinated at the pane layer too, but renga only injects a one-shot nudge telling the pane to run `check_messages`; the actual peer request body stays in the MCP inbox.
 </Callout>
 
-## Scope authority: the renga tab
+## Scope authority: the renga session
 
-[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) infers peer scope from `cwd` / `git_root` / `PID` — heuristics that collide when the same repo is opened from two places. renga-peers uses **the renga tab as the authoritative scope**: the user literally put these panes next to each other, which is a stronger signal than "they share a cwd". renga owns pane lifecycle, so peer liveness is exact — no PID polling, no SQLite GC. Since #289 the authoritative scope is the renga **session**: `list_peers` enumerates every tab (your own first) and a numeric pane id reaches a peer in any tab. What the tab still governs is *name* resolution — pane names are unique per tab, so a bare name never resolves across tabs (see Delivery semantics).
+[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) infers peer scope from `cwd` / `git_root` / `PID` — heuristics that collide when the same repo is opened from two places. renga-peers uses **the renga session as the authoritative scope**: the panes the user literally put into this renga instance, across all of its tabs. That is a stronger signal than "they share a cwd", and renga owns pane lifecycle, so peer liveness is exact — no PID polling, no SQLite GC. Since #289 `list_peers` enumerates every tab (your own first) and a numeric pane id reaches a peer in any tab. What a *tab* still bounds is **name** resolution: pane names are unique per tab, so a bare name never resolves across tabs (see Delivery semantics).
 
 Channel names differ (`server:renga-peers` vs `server:claude-peers`), so the two can coexist in the same Claude Code install. Use renga-peers when you're inside renga, claude-peers-mcp for everything else.
 

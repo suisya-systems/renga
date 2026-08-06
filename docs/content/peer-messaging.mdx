@@ -8,9 +8,9 @@ import { Callout } from 'nextra/components'
   Claude 側は `<channel source="renga-peers">...</channel>` タグで受信するので、ユーザー入力と区別できます。Codex 側も pane layer で扱いますが、renga が PTY 経由で流し込むのは `check_messages` を促す one-shot nudge だけで、実際の依頼本文は MCP inbox に残します。
 </Callout>
 
-## スコープは「renga タブ」単位
+## スコープは「renga セッション」単位
 
-[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) は `cwd` / `git_root` / `PID` の組み合わせからペアを推測しますが、renga-peers は **「ユーザーがこのタブに並べて置いた」という物理配置** そのものをスコープの拠り所にします。推測に頼らないので、同じディレクトリを複数案件で開いていても取り違えませんし、同じリポジトリを別の場所で再オープンしても重複しません。renga がペインのライフサイクルを把握している以上、古くなったペアを掃除する仕組みも追加で要りません。なお #289 以降、権威スコープは renga **セッション**です: `list_peers` は全タブを列挙し (自分のタブが先頭)、数値 pane id を宛先にすればメッセージはタブをまたいで届きます。タブが今も律しているのは**名前の解決**で、pane 名はタブ内でのみ一意なため、名前指定は他タブへ解決されません (「配送の仕様」参照)。
+[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) は `cwd` / `git_root` / `PID` の組み合わせからペアを推測しますが、renga-peers は **「ユーザーがこの renga インスタンスに置いた」という物理配置** そのもの (全タブ横断) をスコープの拠り所にします。推測に頼らないので、同じディレクトリを複数案件で開いていても取り違えませんし、同じリポジトリを別の場所で再オープンしても重複しません。renga がペインのライフサイクルを把握している以上、古くなったペアを掃除する仕組みも追加で要りません。#289 以降、`list_peers` は全タブを列挙し (自分のタブが先頭)、数値 pane id を宛先にすればメッセージはタブをまたいで届きます。**タブ**が今も律しているのは**名前の解決**で、pane 名はタブ内でのみ一意なため、名前指定は他タブへ解決されません (「配送の仕様」参照)。
 
 チャンネル名は `server:renga-peers` と `server:claude-peers` で分かれているので、同じ Claude Code に両方インストールしていても衝突しません。renga 内では renga セッション単位、外では cwd / repo 単位、と使い分けられます。
 

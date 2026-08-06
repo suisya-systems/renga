@@ -1,14 +1,18 @@
 # renga v1.0 — Frozen API Surface
 
-> **Status**: design proposal. Defines the surface that v1.0 promises to keep
-> stable under the rules in [`semver-policy-2.0.md`](./semver-policy-2.0.md)
-> — the live policy from the 2.0 line onward, which adopts this file as its
-> companion doc (see its §1.1 on why the `v1.0` filename is retained). The
-> v1.0-line policy it supersedes is preserved at
+> **Status**: adopted and live. This is renga's current frozen-surface
+> inventory, kept in step with `main` rather than pinned to the 1.0 freeze —
+> the `v1.0` in the filename records the freeze it began as, not the version
+> it describes. It is the companion doc of
+> [`semver-policy-2.0.md`](./semver-policy-2.0.md), the live policy from the
+> 2.0 line onward; see that document's §1.1 for why the filename is retained.
+> The v1.0-line policy it supersedes is preserved at
 > [`semver-policy.md`](./semver-policy.md).
 >
-> **Source-of-truth commit**: `main` at the time this doc lands; cross-checked
-> against `Cargo.toml` `version = "0.18.5"` (the last pre-1.0 release).
+> **Source of truth**: `main`. The text as v1.0.0 actually shipped it is
+> recoverable from git history at the `v1.0.0` tag; the original design
+> proposal was cross-checked against `Cargo.toml` `version = "0.18.5"` (the
+> last pre-1.0 release).
 >
 > **Audience**: downstream callers (claude-org-ja workers, Codex peers,
 > third-party tooling that integrates with `renga-peers`).

@@ -322,14 +322,18 @@ minor preceding it.
 |---|---|---|---|
 | #289 cross-tab peer messaging | BREAKING | No — waived on the record by the owner, on the grounds that the anti-enumeration rationale for the silent drop belongs to the security layer outside renga | `cross_tab_peers` capability, fail closed |
 | #288 caller-tab scoping (7 tools) | *(no CHANGELOG entry of its own)* | No, and no waiver was recorded | `caller_scope` capability, fail closed |
-| #296 caller-tab scoping (`close_pane`, `set_pane_identity`) | Changed, not labelled BREAKING | No | `caller_scope_close_identity` capability, fail closed; qualifies under §3.1 |
+| #296 caller-tab scoping (`close_pane`, `set_pane_identity`) | Changed, not labelled BREAKING | No | `caller_scope_close_identity` capability, fail closed. Meets §3.1 conditions 1, 2 and 4 on the merits, but **not** condition 3: its CHANGELOG entry predates this policy and does not invoke the carve-out. Treated as an accepted break here, not as a §3.1 non-break |
 | #290 `MAX_TABS = 16` | Added | No | None — a 17th `new_tab` now returns `tab_limit_reached` where it previously succeeded |
 
 Two consequences for how this policy is read going forward:
 
 - **2.0.0 is the major release that legitimises #288, #289, #290's tab cap and
-  #296.** They are declared here rather than pretended away. §3.1 was written
-  to cover #296 honestly; the other three are accepted breaks.
+  #296.** All four are declared here rather than pretended away, and all four
+  are accepted breaks. §3.1 was written *because of* #296 — it is the shape
+  of change #296 was — but #296 itself cannot claim the carve-out, because
+  §3.1 condition 3 requires the CHANGELOG entry to invoke it and that entry
+  shipped before this policy existed. §3.1 governs the next such change, not
+  this one.
 - **The §4 window is now expected to actually run.** The reason it never has
   is that no removal or rename has been attempted yet — only semantic changes
   and one newly imposed limit. None of them took §4's flag path, and of the
