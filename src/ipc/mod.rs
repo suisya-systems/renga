@@ -455,6 +455,48 @@ pub enum Request {
     SetSummary { from_pane: usize, summary: String },
 }
 
+/// Strip every control character from a caller-supplied display label
+/// (pane name, role, tab label) before it is interpolated into text
+/// that some *other* pane's agent will read.
+///
+/// Three of those interpolation sites are not merely cosmetic:
+///
+/// * the Codex peer nudge types its text straight into the target
+///   pane's PTY and follows it with Enter a second later, so a bare
+///   `\r` inside a pane name submits whatever precedes it as a prompt
+///   in someone else's composer;
+/// * the `notifications/claude/channel` banner and the `check_messages`
+///   listing are prepended to the message body a receiving agent reads,
+///   so a `\n` lets a name forge banner lines around content it does
+///   not own;
+/// * `\x1b` reaches the PTY as a live ANSI escape — cursor moves,
+///   screen clears, and terminal queries that write a *reply* back onto
+///   the pane's stdin.
+///
+/// [`char::is_control`] is the Unicode `Cc` category, which is exactly
+/// the set that matters here: C0 (including `\t`, `\r`, `\n`), DEL, and
+/// C1. Printable confusables (RTL overrides, zero-width joiners) are
+/// deliberately left alone — they can mislead a human reading the tab
+/// bar, but they cannot forge a line or drive a terminal, and stripping
+/// them would mangle legitimate non-ASCII labels.
+///
+/// Removing rather than replacing can run two tokens together
+/// (`"a\nb"` → `"ab"`); that is preferred over leaving a placeholder
+/// that still has to be escaped everywhere downstream.
+pub(crate) fn strip_control_chars(raw: &str) -> String {
+    raw.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// [`strip_control_chars`] for an optional field, borrowing when the
+/// input is already clean so the common path allocates nothing.
+pub(crate) fn sanitized_label(raw: &str) -> std::borrow::Cow<'_, str> {
+    if raw.contains(char::is_control) {
+        std::borrow::Cow::Owned(strip_control_chars(raw))
+    } else {
+        std::borrow::Cow::Borrowed(raw)
+    }
+}
+
 /// Serde helper for the "missing / null / value" three-state pattern
 /// used by [`Request::SetPaneIdentity`]. Missing key deserializes to
 /// `None`, explicit `null` to `Some(None)`, and any value to
