@@ -1,7 +1,11 @@
 # renga v1.0 — Frozen API Surface
 
 > **Status**: design proposal. Defines the surface that v1.0 promises to keep
-> stable under the rules in [`semver-policy.md`](./semver-policy.md).
+> stable under the rules in [`semver-policy-2.0.md`](./semver-policy-2.0.md)
+> — the live policy from the 2.0 line onward, which adopts this file as its
+> companion doc (see its §1.1 on why the `v1.0` filename is retained). The
+> v1.0-line policy it supersedes is preserved at
+> [`semver-policy.md`](./semver-policy.md).
 >
 > **Source-of-truth commit**: `main` at the time this doc lands; cross-checked
 > against `Cargo.toml` `version = "0.18.5"` (the last pre-1.0 release).
@@ -12,7 +16,7 @@
 ## Stability legend
 
 - **stable** — frozen by v1.0. Breaking changes follow the deprecation window
-  in [`semver-policy.md`](./semver-policy.md).
+  in [`semver-policy-2.0.md`](./semver-policy-2.0.md) §4.
 - **stable-stub** — frozen as a no-op for wire-compat. Caller-visible inputs
   and outputs are part of the contract; behavior can be upgraded additively
   (a stub becoming a real implementation is *not* a break).

@@ -10,7 +10,7 @@ Let mixed Claude Code and Codex instances running under the same renga session e
 
 ## Scope authority: the renga tab
 
-[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) infers peer scope from `cwd` / `git_root` / `PID` — heuristics that collide when the same repo is opened from two places. renga-peers uses **the renga tab as the authoritative scope**: the user literally put these panes next to each other, which is a stronger signal than "they share a cwd". renga owns pane lifecycle, so peer liveness is exact — no PID polling, no SQLite GC.
+[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) infers peer scope from `cwd` / `git_root` / `PID` — heuristics that collide when the same repo is opened from two places. renga-peers uses **the renga tab as the authoritative scope**: the user literally put these panes next to each other, which is a stronger signal than "they share a cwd". renga owns pane lifecycle, so peer liveness is exact — no PID polling, no SQLite GC. Since #289 the authoritative scope is the renga **session**: `list_peers` enumerates every tab (your own first) and a numeric pane id reaches a peer in any tab. What the tab still governs is *name* resolution — pane names are unique per tab, so a bare name never resolves across tabs (see Delivery semantics).
 
 Channel names differ (`server:renga-peers` vs `server:claude-peers`), so the two can coexist in the same Claude Code install. Use renga-peers when you're inside renga, claude-peers-mcp for everything else.
 
@@ -90,9 +90,9 @@ Exposed by the MCP server to each Claude pane:
 | `spawn_pane(direction?, …)` | Splits a target pane. Optional `command`, `name`, `role`, `cwd`, and — since #290 — a `tab` placement selector (see below). A bare `command="claude"` (or `claude <args>`) is auto-upgraded to the `Alt+P` peer-enabled launch line so the new pane joins the `renga-peers` network without the caller having to remember `--dangerously-load-development-channels`. |
 | `spawn_claude_pane(direction?, …)` | Higher-level convenience for launching Claude. Accepts the same `tab` placement selector as `spawn_pane`. Takes structured `permission_mode` / `model` / `args[]` fields instead of a free-form command string, always enables the peer channel, and keeps launch policy in renga. Reserved flags (`--dangerously-load-development-channels` / `--permission-mode` / `--model`) inside `args[]` are rejected with `invalid-params`. |
 | `spawn_codex_pane(direction?, …)` | Higher-level convenience for launching Codex. Accepts the same `tab` placement selector as `spawn_pane`. Takes structured `args[]`, builds the final `codex ...` command with renga-owned shell quoting, and relies on `renga mcp install --client codex` for the MCP-side `RENGA_PEER_CLIENT_KIND=codex` registration. |
-| `close_pane(target)` | Closes a pane. Relative targets (`"focused"`, a name) resolve inside the caller's own tab; a numeric id may reach any tab (#296 — before it, `"focused"` meant the pane the *user* was looking at). Refuses with `last_pane` when it's the only pane of the only tab. |
+| `close_pane(target)` | Closes a pane. Relative targets (`"focused"`, a name) resolve inside the caller's own tab; a numeric id may reach any tab (#296 — before it, `"focused"` meant the pane the *user* was looking at). Closing the only pane of a tab closes that whole tab when other tabs exist; only the last pane of the only tab is refused with `last_pane`. |
 | `focus_pane(target)` | Moves keyboard focus. **If the resolved pane is not in the tab the user is currently viewing, the visible tab switches to it** — deliberately so, since focus the keyboard cannot reach is not focus, but it makes this the most disruptive pane tool. Use sparingly. |
-| `new_tab(…)` | Opens a brand-new tab with a fresh pane and switches focus to it. Accepts the same `cwd` option as `spawn_pane`, plus the same `claude` auto-upgrade when `command` starts with `claude`. For a **background** tab that leaves the user's view alone, use `spawn_pane` with `tab={"new": {}}` instead. Tab creation caps at 16 tabs (`tab_limit_reached`). |
+| `new_tab(…)` | Opens a brand-new tab with a fresh pane and switches focus to it. Accepts the same `cwd` option as `spawn_pane`, plus the same `claude` auto-upgrade when `command`'s leading token is exactly `claude`. For a **background** tab that leaves the user's view alone, use `spawn_pane` with `tab={"new": {}}` instead. Tab creation caps at 16 tabs (`tab_limit_reached`). |
 | `inspect_pane(target, …)` | Snapshots another pane's visible screen so an orchestrator can detect prompts, banners, or mode changes without asking the target Claude to describe itself. Text by default; `format="grid"` returns row-addressable JSON. `lines=N` returns the last N lines, reaching into scrollback history when N exceeds the visible height (2000-line cap) — recent output stays readable even in small panes. |
 | `send_keys(target, …)` | Sends raw PTY key input (`Enter`, `Esc`, arrows, `Ctrl+<letter>`, literal text, etc.) to another pane. Use this for interactive prompts or TUIs that cannot consume `send_message`. |
 | `set_pane_identity(target, name?, role?)` | Rename or (re)assign the stable `name` / `role` of an existing pane. Same caller-tab scoping as `close_pane` (#296). Three-state fields: omit a key to keep, `null` to clear, a string to set. Rejects all-digit names and name collisions inside the resolved pane's tab. Also exposed as `renga rename`. |
@@ -107,9 +107,9 @@ Exposed by the MCP server to each Claude pane:
 
 | Tool | Effect |
 |---|---|
-| `poll_events(timeout_ms?, since?, types?)` | Long-polls pane lifecycle events (`pane_started`, `pane_exited`, `events_dropped`) with a cursor-based API. Use this when an orchestrator needs to notice worker births / exits without polling the full pane list every turn. |
+| `poll_events(timeout_ms?, since?, types?)` | Long-polls pane lifecycle events (`pane_started`, `pane_exited`, `events_dropped`) with a cursor-based API. Use this when an orchestrator needs to notice worker births / exits without polling the full pane list every turn. Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. |
 
-Use `cwd` on `spawn_pane` / `new_tab` instead of embedding `cd <dir> && ...` inside `command`. That keeps path resolution structured and preserves the `claude` auto-upgrade behavior.
+Use `cwd` on `spawn_pane` / `new_tab` instead of embedding `cd <dir> && ...` inside `command`. That keeps path resolution structured and preserves the `claude` auto-upgrade, which only fires when `command`'s leading token is exactly `claude`.
 
 **Tab placement (#290).** The three `spawn_*` tools take an optional `tab` selector choosing which tab hosts the new pane: `{"name": "workers"}` (exact display-name match — zero matches fail `tab_not_found`, several fail `tab_ambiguous`), `{"index": 2}` (0-based, as reported by `list_peers`), `{"pane_id": 17}` (the tab owning that pane — the stable anchor), or `{"new": {}}` / `{"new": {"name": "workers"}}` for a fresh single-pane **background** tab (the visible tab does not change; omit `direction` / `target`, and an omitted `cwd` inherits the caller pane's cwd). With an existing-tab selector, `target` resolves inside the selected tab; a numeric target from another tab fails `target_tab_mismatch`. Requires a server advertising the `spawn_tab` capability — older servers are refused with `[server_too_old]` instead of spawning into the wrong tab.
 
@@ -217,7 +217,7 @@ Snapshot first with `inspect_pane(target=..., lines=20)` and send to a stable pa
 
 This is usually the `types=[...]` filter doing exactly what it says. A non-matching event can still wake the long-poll; `poll_events` then returns an empty `events` array but advances `next_since` past that event, so it will not be replayed.
 
-Loop with the returned `next_since` cursor. If you ever receive an `events_dropped` event, re-sync once with `list_panes` before continuing so your orchestrator has a fresh picture of the tab.
+Loop with the returned `next_since` cursor. If you ever receive an `events_dropped` event, re-sync once with `list_panes` before continuing — but that only refreshes the caller's own tab, so events dropped for panes in other tabs cannot be reconciled this way.
 
 ### `renga mcp install` fails
 

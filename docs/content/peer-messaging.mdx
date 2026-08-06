@@ -10,9 +10,9 @@ import { Callout } from 'nextra/components'
 
 ## スコープは「renga タブ」単位
 
-[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) は `cwd` / `git_root` / `PID` の組み合わせからペアを推測しますが、renga-peers は **「ユーザーがこのタブに並べて置いた」という物理配置** そのものをスコープの境界にします。推測に頼らないので、同じディレクトリを複数案件で開いていても混ざりませんし、同じリポジトリを別の場所で再オープンしても重複しません。renga がペインのライフサイクルを把握している以上、古くなったペアを掃除する仕組みも追加で要りません。
+[`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) は `cwd` / `git_root` / `PID` の組み合わせからペアを推測しますが、renga-peers は **「ユーザーがこのタブに並べて置いた」という物理配置** そのものをスコープの拠り所にします。推測に頼らないので、同じディレクトリを複数案件で開いていても取り違えませんし、同じリポジトリを別の場所で再オープンしても重複しません。renga がペインのライフサイクルを把握している以上、古くなったペアを掃除する仕組みも追加で要りません。なお #289 以降、権威スコープは renga **セッション**です: `list_peers` は全タブを列挙し (自分のタブが先頭)、数値 pane id を宛先にすればメッセージはタブをまたいで届きます。タブが今も律しているのは**名前の解決**で、pane 名はタブ内でのみ一意なため、名前指定は他タブへ解決されません (「配送の仕様」参照)。
 
-チャンネル名は `server:renga-peers` と `server:claude-peers` で分かれているので、同じ Claude Code に両方インストールしていても衝突しません。renga 内ではタブ単位、外では cwd / repo 単位、と使い分けられます。
+チャンネル名は `server:renga-peers` と `server:claude-peers` で分かれているので、同じ Claude Code に両方インストールしていても衝突しません。renga 内では renga セッション単位、外では cwd / repo 単位、と使い分けられます。
 
 ## セットアップ (1 回だけ)
 
@@ -72,7 +72,7 @@ renga split --direction vertical --role claude
 
 `renga new-tab --role claude` も同じ扱い (新しいタブを開いてそこで起動)。`--command "..."` を明示的に渡したときはそちらが優先されるので、別のコマンドを走らせたいときはそれで上書きできます。
 
-Codex ワーカーを会話の中から増やしたい場合は、`spawn_codex_pane(direction, …)` を使います。
+Codex の登録が済んでいれば、オーケストレータ側のペインから `spawn_codex_pane(direction, …)` で Codex ワーカーを会話の中から直接起動できます。
 
 ## 提供ツール
 
@@ -89,13 +89,13 @@ Codex ワーカーを会話の中から増やしたい場合は、`spawn_codex_p
 
 | ツール | 役割 |
 |---|---|
-| `list_panes` | 同じタブの全ペインを id / 名前 / role / フォーカス状態 / cwd / レイアウト位置込みで一覧します。 |
+| `list_panes` | **呼び出し元ペインが属するタブ** (ユーザーが表示中のタブではありません) の全ペインを、id / 任意の name・role / フォーカス状態 / cwd / 端末ジオメトリ込みで一覧します。 |
 | `spawn_pane(direction?, …)` | 指定ペインを分割して新ペインを生やします。`command`・`name`・`role`・`cwd`、そして #290 以降は配置先タブを選ぶ `tab` セレクタ (後述) もオプション。`command="claude"` (または `claude <args>`) を渡したときは `Alt+P` と同じ peer 対応コマンドに自動書き換えするので、毎回 `--dangerously-load-development-channels` を覚えていなくてもメッセージング付きの Claude が立ち上がります。 |
 | `spawn_claude_pane(direction?, …)` | Claude 起動専用の高レベル API。`spawn_pane` と同じ `tab` セレクタを受け付けます。`permission_mode` / `model` / `args[]` を構造化フィールドで受け取り、peer チャネルを必ず有効にした状態で Claude Code を立ち上げます。`args[]` に予約済みフラグ（`--dangerously-load-development-channels` / `--permission-mode` / `--model`）が入っていると `invalid-params` で拒否します。 |
 | `spawn_codex_pane(direction?, …)` | Codex 起動専用の高レベル API。`spawn_pane` と同じ `tab` セレクタを受け付けます。`args[]` から最終的な `codex ...` コマンドを renga 側で shell-quote して組み立てます。MCP サブプロセス側の `RENGA_PEER_CLIENT_KIND=codex` 登録は `renga mcp install --client codex` に委ねます。 |
-| `close_pane(target)` | ペインを閉じます。相対指定 (`"focused"`・名前) は呼び出し元自身のタブ内で解決され、数値 id のみ他タブに届きます (#296 — 修正前の `"focused"` は*ユーザーが表示中*のタブのフォーカスペインでした)。最後のタブの最後のペインを閉じようとしたときは `last_pane` で拒否します。 |
-| `focus_pane(target)` | 同じタブ内でフォーカス移動します。ユーザーの手元からフォーカスを奪うことになるので使いどころには注意が必要です。 |
-| `new_tab(…)` | 新しいタブを 1 枚開いてそこへフォーカスを移します。`spawn_pane` と同じ `cwd` オプションと `claude` 自動アップグレードが効きます。ユーザーの表示を切り替えない**バックグラウンド**新規タブが欲しい場合は `spawn_pane` の `tab={"new": {}}` を使ってください。タブ数の上限は 16 (`tab_limit_reached`) です。 |
+| `close_pane(target)` | ペインを閉じます。相対指定 (`"focused"`・名前) は呼び出し元自身のタブ内で解決され、数値 id のみ他タブに届きます (#296 — 修正前の `"focused"` は*ユーザーが表示中*のタブのフォーカスペインでした)。他にタブが残っている状態でタブ最後のペインを閉じると、そのタブごと閉じます — `last_pane` で拒否されるのは唯一のタブの最後のペインだけです。 |
+| `focus_pane(target)` | キーボードフォーカスを移します。**解決先のペインがユーザーの表示中タブに無い場合は、表示中のタブごとそのペインへ切り替わります** — キーボードが届かない focus は focus ではないので意図的な挙動ですが、その分ペイン操作系で最も割り込み度が高いツールです。多用しないでください。 |
+| `new_tab(…)` | 新しいタブを 1 枚開いてそこへフォーカスを移します。`spawn_pane` と同じ `cwd` オプションが使え、`command` の先頭トークンがちょうど `claude` のときは同じ `claude` 自動アップグレードが効きます。ユーザーの表示を切り替えない**バックグラウンド**新規タブが欲しい場合は `spawn_pane` の `tab={"new": {}}` を使ってください。タブ数の上限は 16 (`tab_limit_reached`) です。 |
 | `inspect_pane(target, …)` | 別ペインの可視画面をスナップショットし、プロンプト待ち・警告バナー・モード変化などをそのペイン自身に説明させず検出できます。デフォルトはプレーンテキスト、`format="grid"` で行アドレス付き JSON。`lines=N` は末尾 N 行を返し、ペインの可視高さを超える分はスクロールバック履歴から遡って継ぎ足します (合計上限 2000 行)。小さいペインでも直近の出力に届きます。 |
 | `send_keys(target, …)` | 別ペインの PTY に生のキー入力 (`Enter` / `Esc` / 矢印 / `Ctrl+<letter>` / 任意テキストなど) を送ります。`send_message` を解釈できない対話プロンプトや TUI を操作したいとき向けです。 |
 | `set_pane_identity(target, name?, role?)` | 既存ペインの安定 `name` / `role` を付け直す・クリアします。タブスコープは `close_pane` と同じ (#296)。3 ステート: キー省略 = 現状維持、`null` = クリア、文字列 = 設定。全桁数字の name は数値 id と曖昧化するため拒否、解決先ペインのタブ内での name 衝突も拒否します。CLI では `renga rename` でも同じ操作ができます。 |
@@ -110,9 +110,9 @@ Codex ワーカーを会話の中から増やしたい場合は、`spawn_codex_p
 
 | ツール | 役割 |
 |---|---|
-| `poll_events(timeout_ms?, since?, types?)` | `pane_started` / `pane_exited` / `events_dropped` を cursor 付き long-poll で受け取ります。オーケストレータが毎ターン pane 一覧を総当たりせずに、ワーカーの起動・終了だけを追いたいとき向けです。 |
+| `poll_events(timeout_ms?, since?, types?)` | `pane_started` / `pane_exited` / `events_dropped` を cursor 付き long-poll で受け取ります。オーケストレータが毎ターン pane 一覧を総当たりせずに、ワーカーの起動・終了だけを追いたいとき向けです。イベントは renga プロセス全体が対象で、呼び出し元のタブに限らず全タブのペインのライフサイクルが届きます。 |
 
-`spawn_pane` / `new_tab` の作業ディレクトリ指定は `cwd` フィールドを使うのが推奨です。`command` に `cd <dir> && ...` を埋め込むと、`claude` 自動アップグレードの恩恵を受けにくくなります。
+`spawn_pane` / `new_tab` の作業ディレクトリ指定は `cwd` フィールドを使ってください。パス解決が構造化されたまま保て、`claude` 自動アップグレードも維持されます。自動アップグレードは `command` の先頭トークンがちょうど `claude` のときだけ発火するので、`cd <dir> && ...` を埋め込むと一切効かなくなります。
 
 **タブ配置 (#290)。** 3 つの `spawn_*` ツールはオプションの `tab` セレクタで新ペインの配置先タブを選べます: `{"name": "workers"}` (表示名の完全一致 — 0 件は `tab_not_found`、複数件は `tab_ambiguous`)、`{"index": 2}` (0 始まり。`list_peers` の報告と同じ index)、`{"pane_id": 17}` (そのペインが属するタブ — 安定アンカー)、`{"new": {}}` / `{"new": {"name": "workers"}}` (単一ペインの**バックグラウンド**新規タブ。表示中のタブは切り替わらず、`direction` / `target` は省略必須、`cwd` 省略時は呼び出し元ペインの cwd を継承)。既存タブのセレクタでは `target` は選択タブの内側で解決され、別タブの数値 target は `target_tab_mismatch` で失敗します。サーバが `spawn_tab` capability を広告している必要があり、古いサーバへは誤ったタブに spawn する代わりに `[server_too_old]` で拒否されます。
 
@@ -221,7 +221,7 @@ Codex の MCP 承認は pane ごとです。Claude Code のような「一度許
 
 多くの場合は `types=[...]` フィルタの仕様どおりです。条件に合わないイベントでも long-poll 自体は解除され、そのイベントを飛び越えた `next_since` が返ります。つまり空配列でも cursor は進み、そのイベントは再送されません。
 
-返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときだけ、1 回 `list_panes` で再同期してから続行するとオーケストレータ側の認識が揃います。
+返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときだけ、1 回 `list_panes` で再同期してから続行します。ただし `list_panes` が返すのは呼び出し元自身のタブだけなので、他タブのペインで落ちたイベントはこの方法では埋め合わせられません。
 
 ### `renga mcp install` が失敗する
 
@@ -244,7 +244,7 @@ renga mcp install --client codex --force
 - **ブロードキャスト** — タブ横断の 1 対 1 メッセージングは #289 で入りましたが、`broadcast_tab` 的なツールはまだありません。引き続き検討候補です。
 - **履歴の永続化** — タブの寿命と同期する形で十分なので、SQLite などは入れていません。
 - **MCP 以外の peer** — mixed support は現状 Claude Code と Codex 向けです。renga 外部の IPC クライアントや普通のシェルペインは相手として登場しません。
-- **添付ファイル / 構造化リクエスト・レスポンス** — body はテキストのみで、相関 id もありません。必要になれば v1.1 で追加します。
+- **添付ファイル / 構造化リクエスト・レスポンス** — body はテキストのみで、相関 id もありません。
 
 ## 参考
 

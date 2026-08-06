@@ -30,14 +30,14 @@ renga mcp install --client codex --codex-auto-approve-peer-tools
 配送方式は client ごとに違います。
 
 - **Claude Code** は MCP の experimental channel 機能を使うので、起動時に毎回 `--dangerously-load-development-channels server:renga-peers` が必要です。
-- **Codex** は `renga mcp install --client codex` で入れた MCP 登録を使います。これが入っていれば plain `codex` 起動で足ります。非フォーカスの worker pane が落ち着いたら renga が `check_messages` を促す nudge を送り、実際の peer 本文は `check_messages` で読みます。対象の Codex pane がフォーカス中なら、PTY 注入を即座にせずローカル通知 overlay を表示します。
+- **Codex** は `renga mcp install --client codex` で入れた MCP 登録を使います。これが入っていれば plain `codex` 起動で足ります。非フォーカスの worker pane が PTY 入力を受けられる状態になったら renga が `check_messages` を促す nudge を送り、実際の peer 本文は `check_messages` で読みます。対象の Codex pane がフォーカス中なら、PTY 注入を即座にせずローカル通知 overlay を表示します。
 
 Claude の起動フラグを毎回手で打たなくて済むように、renga 側から 2 つの経路を用意しています:
 
 - **`Alt+P`** — フォーカス中のペインに `claude --dangerously-load-development-channels server:renga-peers ` を入力 (末尾にスペース、**Enter は押されない**)。そのまま Enter で起動してもいいし、追加引数を続けて書いてから Enter でも OK。シェルの種類を問わず動作します。
 - **`renga split --role claude`** / **`renga new-tab --role claude`** — 新しいペインを開いて、上記フラグ付きの Claude Code を自動起動。`--command "..."` を明示したらそちらが優先されるので、カスタム起動の逃げ道は残ります。
 
-Codex を会話の中から増やしたい場合は `spawn_codex_pane(direction, …)` を使います。
+Codex の登録が済んでいれば、orchestrator ペインは会話の中から `spawn_codex_pane(direction, …)` で Codex ワーカーを起動できます。
 
 ## 2 ペインでのやり取り
 
@@ -78,13 +78,13 @@ Claude B の次のターンのコンテキストに `<channel source="renga-peer
 ペイン操作系ツール (`list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `close_pane` / `focus_pane` / `new_tab` / `inspect_pane` / `send_keys` / `set_pane_identity` / `poll_events`) でオーケストレータが必要とする表面はほぼ揃います。各ツールのパラメータスキーマ、返り値の形、エラーコードの完全な一覧は [`api-surface-v1.0.md`](./api-surface-v1.0.md) §1 (英語) を参照してください。
 
 
-> **タブスコープ。** `list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` / `inspect_pane` / `send_keys` / `close_pane` / `set_pane_identity` の 9 つでいう「現在のタブ」は、**呼び出し元ペイン自身が属するタブ**であって、ユーザーがたまたま表示しているタブではありません。相対指定 (`target="focused"`、安定名) は自分のタブから出ず、数値のペイン id を明示した場合のみ他タブのペインに届きます。加えて `focus_pane` は解決先が表示中のタブに無い場合、ユーザーが**見ているタブ自体を切り替えます** — キーボードが届かない focus は focus ではないためです。
+> **タブスコープ。** `list_panes` / `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` / `focus_pane` / `inspect_pane` / `send_keys` / `close_pane` / `set_pane_identity` の 9 つでいう「現在のタブ」は、**呼び出し元ペイン自身が属するタブ**であって、ユーザーがたまたま表示しているタブではありません。相対指定 (`target="focused"`、安定名) は自分のタブから出ず、数値のペイン id を明示した場合のみ他タブのペインに届きます。加えて `focus_pane` は解決先が表示中のタブに無い場合、ユーザーが**見ているタブ自体を切り替えます** — キーボードが届かない focus は focus ではないためです。`close_pane` にも別の鋭さがあります: 解決先がそのタブで唯一のペインで、かつ他にタブが残っている場合、renga は**そのタブごと閉じて** success を返します (拒否 `last_pane` になるのは唯一のタブの最後のペインだけです)。
 >
 > 9 つのうち 7 つの修正が Issue #288、残る `close_pane` と `set_pane_identity` が Issue #296 です。修正前は表示中のタブを対象にしていたため、バックグラウンドタブで動くオーケストレータの `send_keys` がユーザーの切り替え先タブに黙って入り込み、`close_pane(target="focused")` はユーザーが今まさに触っているペインを終了させていました。ツールが `[server_too_old] ... restart renga` を返す場合、ディスク上のバイナリは新しくても renga の**プロセス**が修正前のものです。renga を再起動してください。
 
 > **`claude` 自動アップグレード。** `spawn_pane` / `new_tab` / `renga split` / `renga new-tab`、および layout TOML の `command = "claude"` 指定は、peer 対応の起動コマンドに自動で書き換えられます。各呼び出し側で `--dangerously-load-development-channels server:renga-peers` を覚えていなくても、新ペインが renga-peers ネットワークに参加します。orchestrator が Claude を起動したい場合は `spawn_pane(command="claude ...")` より `spawn_claude_pane` を推奨 — launch policy が renga 側に集約され、`args[]` に予約済みフラグが混入したら `invalid-params` で拒否されます。
 
-> **ペインの `cwd`。** `spawn_pane` / `new_tab` / `renga split --cwd` / `renga new-tab --cwd` / layout TOML `cwd = "..."` で新ペインの作業ディレクトリを指定できます。絶対パスはそのまま、相対パスは呼び出し元ペインの cwd (MCP)、シェルの cwd (CLI)、renga プロセスの cwd (layout TOML) を基準に解決されます。存在しないパスはレイアウト変更前に `cwd_invalid` で失敗するため、half-mutated なレイアウトになりません。`command` に `cd <dir> && ...` を書くと `claude` 自動アップグレードが効かなくなるので、`cwd` フィールドで指定するのが推奨です。
+> **ペインの `cwd`。** `spawn_pane` / `new_tab` / `renga split --cwd` / `renga new-tab --cwd` / layout TOML `cwd = "..."` で新ペインの作業ディレクトリを指定できます。絶対パスはそのまま、相対パスは呼び出し元ペインの cwd (MCP)、シェルの cwd (CLI)、renga プロセスの cwd (layout TOML) を基準に解決されます。無効なパス (存在しない、アクセスできない、ディレクトリでない) はレイアウト変更前に `cwd_invalid` で失敗するため、half-mutated なレイアウトになりません。`claude` 自動アップグレードは `command` の先頭の空白区切りトークンがちょうど `claude` のときだけ発火する (`claudex` / `claude-mobile` / `./claude` は意図的に対象外) ため、`cd <dir> && ...` を書くと効かなくなります。`cwd` フィールドで指定してください。
 
 > **タブ配置 (`tab`、Issue #290)。** 3 つの `spawn_*` ツールはオプションの `tab` セレクタを受け付け、新ペインを**どのタブに**作るかを明示できます (上記の数値 id による暗黙の cross-tab とは別の、明示的な機構です)。キーはちょうど 1 つ: `{"name": "workers"}` (表示名の完全一致。0 件は `tab_not_found`、複数件は `tab_ambiguous` — タブ名は一意ではないため renga は推測しません)、`{"index": 2}` (0 始まり。`list_peers` が報告する index と同じ)、`{"pane_id": 17}` (そのペインが属するタブ。id はタブの close や rename でずれない安定アンカー)、`{"new": {}}` / `{"new": {"name": "workers"}}` (単一ペインの**バックグラウンド**新規タブを作成。ユーザーが見ているタブは切り替わらず、新規タブには split 対象が無いため `direction` / `target` の指定は拒否されます)。既存タブのセレクタでは `target` は選択したタブの**内側で**解決され、別タブの数値 target は `target_tab_mismatch` で失敗します。`tab.new` で `cwd` を省略すると呼び出し元ペインの cwd を継承します。`tab` を使うにはサーバが `spawn_tab` capability を広告している必要があり、古い renga プロセスに対しては呼び出し元のタブへ黙って spawn する代わりに `[server_too_old]` で fail closed します。`new_tab` は従来どおり「作成してフォーカス」のままです。またタブ数は MAX_TABS = 16 で上限され、超過は `tab_limit_reached` になります。
 
@@ -92,12 +92,12 @@ Claude B の次のターンのコンテキストに `<channel source="renga-peer
 
 - **`list_peers` が "renga not reachable from this peer client" を返す** — client が renga の外で起動されたか、renga ペインの環境変数を引き継げていません。renga のペイン内から起動し直してください（Claude は `Alt+P` / `renga split --role claude`、Codex は `renga mcp install --client codex` 後の plain `codex` または `spawn_codex_pane`）。
 - **相手に送ったメッセージが `<channel>` タグで表示されない** — 起動時のフラグ `--dangerously-load-development-channels server:renga-peers` を付け忘れています。`claude` と打つ代わりに `Alt+P` を使えばフラグ付きのコマンドが挿入されるので事故りにくくなります。
-- **Codex に送ったのに反応がない** — renga は Codex ペインが PTY 入力を安全に受けられる状態で、かつ非フォーカスになってから `check_messages` を促す nudge を流し込みます。フォーカス中に届いたメッセージは、会話を汚さないように通知 overlay へ回します。`Alt+Enter` / `Ctrl+Enter` で `check_messages` を呼ぶための文面だけ挿入し、`Esc` なら無視、Enter を押して実行するかどうかは人間が決めます。フォーカスを外せば worker と同じ deferred nudge に戻ります。実際の依頼本文は MCP inbox 側にあり、`check_messages` の返り値が真実です。
+- **Codex に送ったのに反応がない** — renga は Codex ペインが PTY 入力を安全に受けられる状態で、かつ非フォーカスになってから `check_messages` を促す nudge を流し込みます。フォーカス中に届いたメッセージは、会話を汚さないように通知 overlay へ回します。`Alt+Enter` / `Ctrl+Enter` で `check_messages` を呼ぶための文面だけ挿入し、`Esc` なら無視、Enter を押して実行するかどうかは人間が決めます。overlay を放置してもリクエストは MCP inbox に残り、フォーカスを外せば worker と同じ deferred nudge に戻ります。実際の依頼本文は MCP inbox 側にあり、`check_messages` の返り値が真実です。
 - **新しい Codex pane で `check_messages` / `send_message` の承認がまた出る** — Codex の承認は pane-local に振る舞うことがあります。`renga mcp install --client codex --codex-auto-approve-peer-tools` で安全な peer messaging 系の承認を事前設定できますが、Codex のバージョンや実行形態によっては、新しい pane で一度だけ warm-up 承認が必要です。
 - **`spawn_codex_pane` が `[codex_not_installed]` で失敗する** — Codex の MCP 設定 (`~/.codex/config.toml`) に renga-peers エントリがない、ファイルが読めない、もしくは `[mcp_servers.renga-peers.env]` に `RENGA_PEER_CLIENT_KIND=codex` が登録されていません。`renga mcp install --client codex` を 1 回実行してください。env 値だけが欠けた既存エントリも install 経路で self-heal します。
 - **`send_keys` が効いていないように見える** — `send_keys` は target ペインの PTY に生の入力バイトを書き込むだけで、帯域外の「承認」操作ではありません。まず `inspect_pane(target=…, lines=20)` で本当に入力待ちか確認し、レイアウトが動く運用ではフォーカス推測ではなく安定した pane `name` を target に使ってください。
-- **`poll_events` が想定より早く `events: []` を返す** — `types=[…]` フィルタは返却結果を絞るだけで、非一致イベントでも long-poll は解除されて `next_since` は前進します。返ってきた cursor でそのまま再 poll してください。`events_dropped` が来た場合だけ、1 回 `list_panes` で再同期すると安全です。
-- **renga をアップグレードしたら繋がらなくなった** — 登録されているバイナリのパスが古いです。`renga mcp install --client claude --force` や `renga mcp install --client codex --force` で今の `renga` に更新してください。
+- **`poll_events` が想定より早く `events: []` を返す** — `types=[…]` フィルタは返却結果を絞るだけで、非一致イベントでも long-poll は解除されて `next_since` は前進します。返ってきた cursor でそのまま再 poll してください。`events_dropped` が来た場合は 1 回 `list_panes` で再同期すると安全ですが、`poll_events` はプロセス全体が対象で**全タブ**のペインライフサイクルが届くのに対し `list_panes` は自分のタブしか返さないため、他タブで落ちたイベントはこの再同期では埋められません。
+- **renga をアップグレードしたら** — `renga mcp install --client claude --force` / `renga mcp install --client codex --force` を実行し直し、登録済みの各 client が新しいバイナリを指すようにしてください。
 
 ## 関連ドキュメント
 

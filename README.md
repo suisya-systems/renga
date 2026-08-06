@@ -154,7 +154,8 @@ The first keys to learn. Full tables (Pane / File tree / Preview / Org sidebar /
 - [`docs/configuration.md`](./docs/configuration.md) — Canonical TOML schema (`[ime]`, `[ui]`), CLI flags, precedence.
 - [`docs/keymap.md`](./docs/keymap.md) — Full keybindings (Pane / File tree / Preview / Org sidebar / Mouse) plus macOS Option as Meta.
 - [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) — Wire-frozen v1.0 contract: MCP tools, CLI, IPC, config/layout/env.
-- [`docs/semver-policy.md`](./docs/semver-policy.md) — Semver rules for breaking vs. additive changes around the v1.0 freeze.
+- [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) — **Current** semver rules for breaking vs. additive changes (2.0 line onward).
+- [`docs/semver-policy.md`](./docs/semver-policy.md) — Semver rules for breaking vs. additive changes around the v1.0 freeze. Superseded by the above; kept for the 1.0–1.4 line.
 - [`BRANCHING.md`](./BRANCHING.md) — renga / upstream-ccmux divergence and cherry-pick policy.
 
 ## Architecture
@@ -173,7 +174,7 @@ Key design decisions: `vt100` crate for terminal emulation (not ANSI stripping) 
 
 ## Stability
 
-renga is approaching its v1.0 API freeze. The contract that v1.0 promises to keep stable — across MCP tools, CLI, IPC, and config/layout/env — is defined in [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md). The semver rules that govern breaking and additive changes are in [`docs/semver-policy.md`](./docs/semver-policy.md). Pre-1.0 releases (`0.y.z`) do not yet make these promises; downstream tooling that wants the freeze guarantees should pin to `>= 1.0`.
+renga is approaching its v1.0 API freeze. The contract that v1.0 promises to keep stable — across MCP tools, CLI, IPC, and config/layout/env — is defined in [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md). The semver rules that govern breaking and additive changes are in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (the v1.0-line policy it supersedes is preserved at [`docs/semver-policy.md`](./docs/semver-policy.md)). Pre-1.0 releases (`0.y.z`) do not yet make these promises; downstream tooling that wants the freeze guarantees should pin to `>= 1.0`.
 
 ## Tech Stack
 

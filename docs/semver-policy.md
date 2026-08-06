@@ -4,6 +4,12 @@
 >
 > **Companion doc**: [`api-surface-v1.0.md`](./api-surface-v1.0.md) — defines
 > the surface this policy promises to keep stable.
+>
+> **Superseded by**: [`semver-policy-2.0.md`](./semver-policy-2.0.md) — the
+> live policy from the 2.0 line onward. This document is preserved at its
+> final v1.0-line state: the rules below are unedited and continue to
+> describe releases 1.0.0 through 1.4.x. The successor inherits §1–§6 and
+> states explicitly what it changed.
 
 renga follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 This document specifies *what* counts as the public API for the purposes of
@@ -179,3 +185,13 @@ adopted:
 After 1.0.0 ships, this doc is the source of truth. Future major lines
 (2.0.0+) supersede it via a successor doc; the 1.0 doc is preserved at its
 final state for reference.
+
+---
+
+> **Superseded.** The successor doc the paragraph above calls for is
+> [`semver-policy-2.0.md`](./semver-policy-2.0.md), adopted for the 2.0 line.
+> This document is now frozen at its final v1.0-line state — the text above
+> is unedited and still describes releases 1.0.0 through 1.4.x. For the
+> current rules, including what §1–§6 carry over unchanged, what the 2.0 line
+> changed, and the deprecation-window ledger for the 2.0 breaking changes,
+> see the successor.

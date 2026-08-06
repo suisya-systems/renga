@@ -153,7 +153,8 @@ Claude のペインにフォーカスした状態で `Ctrl+;` を押すと、画
 - [`docs/configuration.ja.md`](./docs/configuration.ja.md) — canonical な TOML スキーマ (`[ime]`, `[ui]`)、CLI フラグ、優先順位
 - [`docs/keymap.ja.md`](./docs/keymap.ja.md) — フルキーバインド (ペイン / ファイルツリー / プレビュー / org サイドバー / マウス) と macOS Option as Meta
 - [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) — v1.0 wire-frozen コントラクト: MCP ツール / CLI / IPC / 設定・レイアウト・環境変数 (英語のみ)
-- [`docs/semver-policy.md`](./docs/semver-policy.md) — v1.0 freeze 前後の breaking / additive 変更ルール (英語のみ)
+- [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) — **現行**の breaking / additive 変更ルール (2.0 系以降、英語のみ)
+- [`docs/semver-policy.md`](./docs/semver-policy.md) — v1.0 freeze 前後の breaking / additive 変更ルール (英語のみ)。上記に置き換えられたが 1.0〜1.4 系の記録として保持
 - [`BRANCHING.md`](./BRANCHING.md) — renga / 上流 ccmux の divergence と cherry-pick ポリシー (英語のみ)
 
 ## 構成
@@ -172,7 +173,7 @@ src/
 
 ## 安定性
 
-renga は v1.0 API freeze に近づいています。v1.0 が安定維持を約束するコントラクト (MCP ツール / CLI / IPC / 設定・レイアウト・環境変数) は [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) に定義しています。breaking / additive 変更を支配する semver ルールは [`docs/semver-policy.md`](./docs/semver-policy.md)。pre-1.0 (`0.y.z`) リリースは未約束です。freeze 保証が必要な下流ツールは `>= 1.0` に pin してください。
+renga は v1.0 API freeze に近づいています。v1.0 が安定維持を約束するコントラクト (MCP ツール / CLI / IPC / 設定・レイアウト・環境変数) は [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) に定義しています。breaking / additive 変更を支配する現行の semver ルールは [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (置き換えられた v1.0 系ポリシーは [`docs/semver-policy.md`](./docs/semver-policy.md) に保存)。pre-1.0 (`0.y.z`) リリースは未約束です。freeze 保証が必要な下流ツールは `>= 1.0` に pin してください。
 
 ## 技術スタック
 
