@@ -305,6 +305,12 @@ impl App {
                 }
             }
         }
+        // `role` was only ever trimmed here; validate it alongside the
+        // name and before any mutation, so a rejected role cannot leave
+        // a half-applied identity change behind.
+        if let Some(Some(new_role)) = &role {
+            validate_display_label(new_role, "role")?;
+        }
 
         let ws = &mut self.workspaces[ws_idx];
         if let Some(name_change) = name {
@@ -599,6 +605,13 @@ impl App {
         role: Option<String>,
         cwd: Option<String>,
     ) -> std::result::Result<usize, ipc::CodedError> {
+        // Validate before `create_tab_with_cwd`, so a rejected label
+        // does not strand a newly created tab.
+        let (name, role) = Self::validated_split_identity(name, role)?;
+        let label = match label.as_deref() {
+            None => None,
+            Some(raw) => Some(validate_display_label(raw, "label")?.to_string()),
+        };
         let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let cwd_override = resolve_optional_cwd(cwd.as_deref(), &base)?;
         // The coded creation path, not `new_tab_with_cwd`: a full tab
@@ -659,6 +672,17 @@ impl App {
             None => None,
             Some(raw) if raw.trim().is_empty() => None,
             Some(raw) => Some(validate_pane_name(raw)?.to_string()),
+        };
+        // #290 validated `name` here but left `role` and `label`
+        // verbatim, so the two free-form fields kept the injection this
+        // check exists to close.
+        let role = match role.as_deref() {
+            None => None,
+            Some(raw) => Some(validate_display_label(raw, "role")?.to_string()),
+        };
+        let label = match label.as_deref() {
+            None => None,
+            Some(raw) => Some(validate_display_label(raw, "label")?.to_string()),
         };
         let base = from_pane
             .and_then(|id| self.workspaces[caller_ws].panes.get(&id))
@@ -757,6 +781,9 @@ impl App {
         from_pane: Option<usize>,
         tab: Option<&ipc::TabSelector>,
     ) -> std::result::Result<usize, ipc::CodedError> {
+        // Before any placement work, so an invalid label cannot leave a
+        // freshly split pane behind.
+        let (name, role) = Self::validated_split_identity(name, role)?;
         let (ws_idx, target_pane_id) = match tab {
             None => self.resolve_request_target(from_pane, target)?,
             Some(selector) => {
@@ -822,15 +849,66 @@ impl App {
         self.emit_pane_started_in(ws_idx, new_pane_id);
         Ok(new_pane_id)
     }
+
+    /// Validate the `name` / `role` a `split` or `new_tab` wants to
+    /// register, before either creates anything. Same ordering rule as
+    /// [`Self::handle_spawn_tab`]: a rejected label must not leave
+    /// behind a pane whose identity is not what the caller asked for.
+    /// Empty means "no name", which both requests have always allowed.
+    fn validated_split_identity(
+        name: Option<String>,
+        role: Option<String>,
+    ) -> std::result::Result<(Option<String>, Option<String>), ipc::CodedError> {
+        let name = match name.as_deref() {
+            None => None,
+            Some(raw) if raw.trim().is_empty() => None,
+            Some(raw) => Some(validate_pane_name(raw)?.to_string()),
+        };
+        let role = match role.as_deref() {
+            None => None,
+            Some(raw) => Some(validate_display_label(raw, "role")?.to_string()),
+        };
+        Ok((name, role))
+    }
+}
+
+/// Reject a control character in a free-form display label (`role`, tab
+/// label). Unlike [`validate_pane_name`] this imposes **no charset** —
+/// both fields are documented as free-form on the frozen v1.0 surface
+/// (`role` is literally "Optional free-form role label", and a tab
+/// label defaults to a cwd-derived directory name), so non-ASCII and
+/// spaces stay legal. Only the `Cc` category is refused, because those
+/// are the characters that stop being decoration once the label is
+/// interpolated into another pane's context or written toward a PTY.
+///
+/// Input-side twin of [`ipc::strip_control_chars`]: rejecting here
+/// keeps bad data out of the UI and out of `PaneInfo` / `PeerInfo`,
+/// while the strip stays as the backstop for values that predate this
+/// check (a layout file, or a name registered by an older build).
+fn validate_display_label<'a>(
+    label: &'a str,
+    field: &str,
+) -> std::result::Result<&'a str, ipc::CodedError> {
+    if label.contains(char::is_control) {
+        return Err(ipc::CodedError::new(
+            ipc::err_code::NAME_INVALID,
+            format!("{field} must not contain control characters"),
+        ));
+    }
+    Ok(label)
 }
 
 /// Validate a stable pane name and return its trimmed form: non-empty,
 /// not all-digits (digit strings parse as numeric pane ids, so an
 /// all-digit name could never be addressed), charset `[A-Za-z0-9_-]`.
-/// Shared by `set_pane_identity` and `spawn_tab` so the two paths that
-/// register names cannot drift apart. (`split` / `new_tab` predate the
-/// validation and keep accepting names verbatim — tightening them is a
-/// compat question out of #290's scope.)
+/// Shared by every path that registers a name — `set_pane_identity`,
+/// `spawn_tab`, `split` and `new_tab` — so they cannot drift apart.
+///
+/// `split` / `new_tab` accepted names verbatim until v2.0.0. That gap
+/// was reachable: a pane name flows into the Codex peer nudge, which
+/// types it into another pane's PTY and presses Enter, and into the
+/// channel banner a receiving agent reads. Closing it is a breaking
+/// change to the frozen v1.0 surface, hence the major.
 fn validate_pane_name(name: &str) -> std::result::Result<&str, ipc::CodedError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {

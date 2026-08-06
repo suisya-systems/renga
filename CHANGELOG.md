@@ -71,6 +71,47 @@ rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
 
 ### Changed
 
+- **BREAKING — `split` / `new_tab` now validate the pane `name`, and
+  every pane label refuses control characters.** Pane names registered
+  through `split` (the three `spawn_*` MCP tools, `renga split --id`)
+  and `new_tab` were stored verbatim; only `set_pane_identity` and
+  #290's `spawn_tab` ran them through `validate_pane_name`. That gap
+  was reachable, not theoretical: a pane name is interpolated into the
+  Codex peer nudge, which **types it into the target pane's PTY and
+  presses Enter a second later**, and into the
+  `notifications/claude/channel` banner a receiving Claude reads. A
+  name carrying `\r` therefore submitted attacker-chosen text in
+  another agent's composer, and a `\n` forged banner lines around
+  content it did not own. #289 widened the blast radius from one tab to
+  every tab. Concretely:
+
+  1. `split` / `new_tab` now apply the same rule the other two paths
+     always did — non-empty after trim, not all-digits (those collide
+     with numeric pane ids), charset `[A-Za-z0-9_-]`. **Names with
+     spaces, dots, or non-ASCII characters are now rejected with
+     `name_invalid`** where they were previously accepted; a name is
+     also stored trimmed. Existing names that already match the charset
+     are unaffected.
+  2. `role` and the tab `label` keep their documented **free-form**
+     contract — spaces and non-ASCII stay legal — but now reject
+     control characters (`name_invalid`) on `split`, `new_tab`,
+     `spawn_tab` and `set_pane_identity`. #290 validated `spawn_tab`'s
+     `name` while leaving its `role` and `label` verbatim, so those two
+     kept the injection the check existed to close.
+  3. As a backstop for labels registered by an older build or a layout
+     file, every site that renders a name / role / tab label into
+     another agent's context or toward a PTY — the Codex nudge, the
+     channel banner, `check_messages`, `list_peers`, `list_panes` —
+     strips control characters at output. Message **bodies** are
+     untouched; they are the payload and are legitimately multi-line.
+
+  The stripped set is Unicode `Cc` (C0 including `\t` / `\r` / `\n`,
+  DEL, and C1) — the characters that stop being decoration once a label
+  reaches a terminal. Printable confusables such as RTL overrides are
+  deliberately left alone: they can mislead a human reading the tab bar
+  but cannot forge a line or drive a terminal, and refusing them would
+  mangle legitimate non-ASCII labels.
+
 - **`close_pane` / `set_pane_identity` now resolve `focused` and names
   against the *caller's* tab.** (#296) The two tools #288 left behind
   still resolved relative targets against the tab the **user was

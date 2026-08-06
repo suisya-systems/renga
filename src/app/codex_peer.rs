@@ -175,7 +175,12 @@ fn pending_startup_looks_like_codex(pane: &Pane) -> bool {
 pub(crate) fn format_codex_peer_message(msg: &PendingCodexPeerMessage) -> String {
     let mut header = format!("Peer request from id={}", msg.from_pane);
     if let Some(name) = &msg.from_name {
-        header.push_str(&format!(" name={name}"));
+        // This string is typed into the target pane's PTY and followed
+        // by Enter, so a control character in the sender's name is a
+        // prompt injection into someone else's composer, not a display
+        // glitch. `split` / `new_tab` accepted names verbatim before
+        // #289 widened delivery to every tab.
+        header.push_str(&format!(" name={}", ipc::sanitized_label(name)));
     }
     if let Some(kind) = msg.from_kind {
         let kind = match kind {

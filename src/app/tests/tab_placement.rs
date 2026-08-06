@@ -377,6 +377,80 @@ fn spawn_tab_with_invalid_name_refuses_before_mutation() {
     app.shutdown();
 }
 
+/// #290 validated `spawn_tab`'s `name` but let `role` and `label`
+/// through verbatim. Both reach another agent's context via
+/// `list_peers` / `list_panes`, so a control character in either is the
+/// same forgery primitive an invalid name was.
+#[test]
+fn spawn_tab_refuses_control_characters_in_role_and_label() {
+    let (mut app, caller, _active) = two_tabs();
+    let tabs_before = app.workspaces.len();
+
+    let err = app
+        .handle_spawn_tab(
+            None,
+            None,
+            None,
+            Some("a\nworker".into()),
+            None,
+            Some(caller),
+        )
+        .expect_err("role with a newline");
+    assert_eq!(err.code, Some(ipc::err_code::NAME_INVALID));
+
+    let err = app
+        .handle_spawn_tab(
+            None,
+            None,
+            Some("a\rworkers".into()),
+            None,
+            None,
+            Some(caller),
+        )
+        .expect_err("label with a carriage return");
+    assert_eq!(err.code, Some(ipc::err_code::NAME_INVALID));
+
+    let err = app
+        .handle_spawn_tab(
+            None,
+            None,
+            None,
+            Some("a\u{1b}[2Jb".into()),
+            None,
+            Some(caller),
+        )
+        .expect_err("role with an ANSI escape");
+    assert_eq!(err.code, Some(ipc::err_code::NAME_INVALID));
+
+    assert_eq!(app.workspaces.len(), tabs_before, "no tab was created");
+    app.shutdown();
+}
+
+/// The charset restriction is deliberately *not* extended to the two
+/// free-form fields: `role` is documented as "Optional free-form role
+/// label" and a tab label defaults to a cwd-derived directory name, so
+/// spaces and non-ASCII must keep working.
+#[test]
+fn spawn_tab_still_accepts_free_form_role_and_label() {
+    let (mut app, caller, _active) = two_tabs();
+    let (_id, ws_idx) = app
+        .handle_spawn_tab(
+            None,
+            None,
+            Some("リリース v2.0.0".into()),
+            Some("code reviewer".into()),
+            None,
+            Some(caller),
+        )
+        .expect("free-form role and label stay legal");
+    assert_eq!(
+        app.workspaces[ws_idx].display_name(),
+        "リリース v2.0.0",
+        "a label with spaces and non-ASCII must survive"
+    );
+    app.shutdown();
+}
+
 #[test]
 fn spawn_tab_with_invalid_cwd_refuses_before_mutation() {
     let (mut app, caller, _active) = two_tabs();

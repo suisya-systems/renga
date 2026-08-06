@@ -152,6 +152,76 @@ fn handle_set_pane_identity_rejects_invalid_characters() {
     app.shutdown();
 }
 
+/// BREAKING in v2.0.0: `split` accepted pane names verbatim, so a name
+/// carrying `\r` reached the Codex peer nudge, which types it into
+/// another pane's PTY and presses Enter. It now goes through the same
+/// `validate_pane_name` as `set_pane_identity` / `spawn_tab`.
+#[test]
+fn handle_split_now_validates_the_pane_name() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let panes_before = app.ws().panes.len();
+    for bad in ["worker\rrm -rf ~", "has space", "123", "wörker"] {
+        let err = app
+            .handle_split(
+                &ipc::PaneRef::Focused,
+                ipc::Direction::Horizontal,
+                None,
+                Some(bad.into()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("invalid pane name must fail");
+        assert_eq!(err.code, Some(ipc::err_code::NAME_INVALID), "name={bad:?}");
+    }
+    assert_eq!(
+        app.ws().panes.len(),
+        panes_before,
+        "a rejected name must not leave a pane behind"
+    );
+    app.shutdown();
+}
+
+/// `role` keeps its documented free-form contract — only control
+/// characters are refused, so the split path does not start rejecting
+/// labels like `code reviewer`.
+#[test]
+fn handle_split_refuses_control_chars_in_role_but_keeps_it_free_form() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let err = app
+        .handle_split(
+            &ipc::PaneRef::Focused,
+            ipc::Direction::Horizontal,
+            None,
+            None,
+            Some("worker\n- id=99".into()),
+            None,
+            None,
+            None,
+        )
+        .expect_err("control character in role must fail");
+    assert_eq!(err.code, Some(ipc::err_code::NAME_INVALID));
+
+    let new_id = app
+        .handle_split(
+            &ipc::PaneRef::Focused,
+            ipc::Direction::Horizontal,
+            None,
+            None,
+            Some("コード レビュー".into()),
+            None,
+            None,
+            None,
+        )
+        .expect("free-form role stays legal");
+    assert_eq!(
+        app.ws().panes.get(&new_id).and_then(|p| p.role.as_deref()),
+        Some("コード レビュー")
+    );
+    app.shutdown();
+}
+
 #[test]
 fn handle_set_pane_identity_removes_all_stale_name_entries() {
     // Defense-in-depth: even though normal flow keeps at most one
