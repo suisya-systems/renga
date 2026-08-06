@@ -173,7 +173,7 @@ src/
 
 ## 安定性
 
-renga は v1.0 API freeze に近づいています。v1.0 が安定維持を約束するコントラクト (MCP ツール / CLI / IPC / 設定・レイアウト・環境変数) は [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) に定義しています。breaking / additive 変更を支配する現行の semver ルールは [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (置き換えられた v1.0 系ポリシーは [`docs/semver-policy.md`](./docs/semver-policy.md) に保存)。pre-1.0 (`0.y.z`) リリースは未約束です。freeze 保証が必要な下流ツールは `>= 1.0` に pin してください。
+renga の API freeze は v1.0.0 で完了済みです。安定維持を約束するコントラクト (MCP ツール / CLI / IPC / 設定・レイアウト・環境変数) は [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) に定義しています (このファイルは `main` に追随します。ファイル名の `v1.0` は「どの freeze として始まったか」の記録であって、記述対象のバージョンではありません)。breaking / additive 変更を支配する現行の semver ルールは [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (置き換えられた v1.0 系ポリシーは [`docs/semver-policy.md`](./docs/semver-policy.md) に保存)。pre-1.0 (`0.y.z`) リリースは約束の対象外でした。下流ツールは `>= 1.0` のような開いた指定ではなく、単一のメジャー範囲に pin してください。コントラクトの変更が許されるのはまさにメジャー bump のタイミングだからです。
 
 ## 技術スタック
 

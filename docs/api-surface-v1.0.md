@@ -416,6 +416,7 @@ already-running renga server).
 | `--ime-freeze-panes[=BOOL]` | bool | Suppress repaints while IME overlay open. Default `true`. |
 | `--ime-overlay-catchup-ms <MS>` | u64 | Periodic repaint interval while frozen. Default 3000, clamped ≥ 100; `0` = pure freeze. |
 | `--lang <auto\|ja\|en>` | enum | UI language. |
+| `--fps <FPS>` | u16 | Main event-loop target rate. Overrides `[ui] fps`. Default 30; `0` is accepted and clamped to 1 at runtime to avoid a busy loop. Added in 1.1.0 (#213). |
 | `--min-pane-width <COLS>` | u16 | Default 20. `0` clamps to 1. Process-global; not exposed per-call (see §6 *Out of scope*). |
 | `--min-pane-height <ROWS>` | u16 | Default 5. `0` clamps to 1. Same scope as `--min-pane-width`. |
 | `--no-macos-tip` / `--show-macos-tip` | bool | macOS Option-as-Meta first-launch banner override. Mutually exclusive. |
@@ -488,7 +489,7 @@ secrecy boundary — same-user processes are inside the trust boundary.
 Short-lived per request:
 
 1. Client opens connection, sends `Hello { client_pid }`.
-2. Server replies `Response::Hello { server_pid, session_token }`. Client
+2. Server replies `Response::Hello { server_pid, session_token, capabilities }`. Client
    verifies `session_token == $RENGA_TOKEN`; mismatch → reject (PID-reuse
    defense).
 3. Client sends exactly one `Request`.
@@ -617,6 +618,7 @@ overlay_catchup_ms = 3000        # default 3000; non-zero clamped >= 100; 0 = pu
 [ui]
 lang = "auto"             # "auto" (default) | "ja" | "en"; case-insensitive
 org_sidebar = "coexist"   # "coexist" (default) | "replace" | "off"; case-insensitive
+fps = 30                  # default 30; clamped to >= 1 (0 would busy-loop). Added in 1.1.0
 ```
 
 Missing or malformed file → warning to stderr, defaults apply (never fails
@@ -691,6 +693,7 @@ these as `[<code>] <human message>` in JSON-RPC error message strings.
 | `target_tab_mismatch` | `split` with `tab` | Numeric `target` lives in a different tab than the selector picked. The request contradicts itself; refused instead of following either half. |
 | `tab_limit_reached` | `new_tab`, `spawn_tab` | MAX_TABS = 16 tabs already open. Deliberately not `split_refused`, which is about pane capacity inside one tab. |
 | `codex_not_installed` | `spawn_codex_pane` | Codex's `~/.codex/config.toml` is missing the renga-peers entry, the file is unreadable, or the `RENGA_PEER_CLIENT_KIND=codex` env-var passthrough is absent. Surfaced from the MCP layer (not `renga::ipc::err_code`); branch on the `[code]` token same as the others. Run `renga mcp install --client codex` to remediate. |
+| `server_too_old` | any capability-gated call (§3.4) | The connected server did not advertise the capability the call needs, so the client refused to send it. Raised **client-side** by `require_capability` and surfaced from the MCP layer (not `renga::ipc::err_code`); branch on the `[code]` token same as the others. The message names the advertised set and the remedy: the running renga *process* predates the feature even when the binary on disk does not, so restart renga. |
 
 ### 5.2 JSON-RPC numeric codes (Q9)
 
@@ -799,12 +802,12 @@ minor release.
 | Section | Count |
 |---|---|
 | MCP tools (§1) | 16 |
-| CLI top-level flags (§2.1) | 11 |
+| CLI top-level flags (§2.1) | 12 |
 | CLI IPC subcommands (§2.2) | 13 |
 | Env vars (§2.3) | 6 |
 | IPC `Request` variants (§3.3) | 15 |
 | IPC `Response` variants (§3.4) | 4 |
 | IPC `Event` variants (§3.5) | 5 |
-| Error codes (§5.1) | 19 |
+| Error codes (§5.1) | 20 |
 | Config schema sections (§4.1) | 2 |
 | Layout TOML node types (§4.2) | 2 |

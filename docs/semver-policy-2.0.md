@@ -343,15 +343,18 @@ Two consequences for how this policy is read going forward:
   entry, naming who decided and why. "It is a bug fix" is §3.1 and must
   satisfy §3.1's four conditions.
 
-**Gaps that must be closed before 2.0.0 ships.** §1 defines the public API as
-exactly the companion doc's stable items, so anything shipped but missing from
-that inventory is not actually frozen by this policy. The §9 step 1 pass is
-what closes them, and it is a release blocker, not a nicety: the companion
-doc is missing the `--fps` CLI flag and the `[ui] fps` config key (both
-shipped in 1.1.0), the `server_too_old` error code
-(emitted today and referenced five times in its own prose), and the
-`capabilities` field on `Response::Hello`. Its appendix item counts are stale
-accordingly.
+**Inventory gaps found and closed while adopting this policy.** §1 defines the
+public API as exactly the companion doc's stable items, so anything shipped
+but missing from that inventory is not frozen by this policy at all. Running
+the §9 step 1 pass turned up four such omissions, all now added to the
+companion doc: the `--fps` CLI flag and the `[ui] fps` config key (both
+shipped in 1.1.0), the `server_too_old` code (raised today and referenced
+five times in the surface doc's own prose), and the `capabilities` field on
+`Response::Hello`. The appendix item counts were corrected to match.
+
+This is the cheapest step in §9 and the one most worth not skipping — four
+shipped interfaces had been outside the declared contract for three minor
+releases without anyone noticing.
 
 ## 9. Major release procedure
 
