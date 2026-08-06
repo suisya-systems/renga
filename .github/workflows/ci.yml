@@ -47,9 +47,22 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Matrixed over the two `cfg` worlds the codebase actually has, not
+  # over every runner we ship binaries for (#280). `src/` splits only on
+  # `cfg(windows)` vs `cfg(unix)` / `cfg(not(windows))` — there is no
+  # `cfg(target_os = "macos")` anywhere — so ubuntu lints every
+  # Unix-gated line and windows lints the rest (`src/win_job.rs` in
+  # full, plus the gated blocks in pane.rs, ipc/{endpoint,server,client}
+  # .rs, mcp_peer/{mod,install,parent_watch}.rs, app/layout_ops.rs and
+  # main.rs). Adding macos-latest would burn a runner to re-lint exactly
+  # what ubuntu already covers.
   clippy:
-    name: clippy
-    runs-on: ubuntu-latest
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,6 +71,38 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  # Dependency vulnerability gate (#69). Kept separate from `clippy` so
+  # a fresh RUSTSEC advisory reads as "renga's dependencies grew a CVE",
+  # not as a lint failure on whatever PR happened to be open.
+  #
+  # Advisories are platform-independent (they key off Cargo.lock), so one
+  # ubuntu runner is enough. Like the `-D warnings` jobs above, this can
+  # turn `main` red with no commit involved — that is the point of a
+  # security gate, and the weekly `schedule:` trigger is what surfaces it
+  # instead of the next contributor.
+  #
+  # `cargo audit` exits non-zero on *vulnerabilities* only; informational
+  # advisories (unmaintained / unsound / notice) are printed but do not
+  # fail the job. That is the behavior we want — an upstream crate going
+  # unmaintained is a thing to plan for, not a thing that should block a
+  # hotfix at 2am. Add `--deny warnings` here if that ever needs to
+  # tighten.
+  #
+  # cargo-audit is installed from source rather than via a marketplace
+  # action so this job adds no new third-party action to the supply chain
+  # (every `uses:` in this file is SHA-pinned for the same reason). The
+  # ~2-3 min build is why the timeout is 20, not 5.
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
 
   test:
     name: test (${{ matrix.os }})
