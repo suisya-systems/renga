@@ -310,6 +310,71 @@ different use cases; neither is deprecated.
 returns `events: []` with an **advanced** cursor. Callers must re-poll on
 empty responses to make progress.
 
+### 1.16 `server_info` — stable (#304)
+
+Input: `{}`.
+
+Reports the capability token set of the **running renga server** this pane is
+attached to, without sending any capability-gated request. This is the
+pre-flight surface: a client checks it before calling something gated (e.g.
+the `tab` selector on the `spawn_*` tools needs `spawn_tab`) instead of
+sending the call and reading the token out of a `[server_too_old]` failure.
+
+Result: text + `structuredContent`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | `"connected"\|"detached"\|"unreachable"` | The discriminant; read it first. |
+| `reason` | string \| null | Why `status` is not `connected`. `null` exactly when connected. |
+| `server.capabilities` | string[] \| **null** | What the running server advertised, verbatim (unknown/future tokens passed through). **`[]` means the server was asked and supports nothing; `null` means it was never asked.** Never conflate the two. |
+| `server.pid` | int \| null | PID of the **server** process, not this client's. |
+| `server.endpoint` | string \| null | Socket/pipe queried — disambiguates concurrent renga instances. Retained on `unreachable` (we know what we failed to reach); `null` only when `detached`. |
+| `client.name` | string | `"renga-peers"`. |
+| `client.version` | string | `CARGO_PKG_VERSION` of the **mcp-peer binary**, which is *not* the server's version — see below. |
+| `client.pane_id` | int \| null | Caller's pane; `null` when detached. |
+| `client.capabilities` | string[] | Tokens this build understands. **Never null** — a build always knows its own. |
+| `effective_capabilities` | string[] \| null | `server.capabilities` ∩ `client.capabilities`, in `SERVER_CAPABILITIES` order. **This is the field to gate on.** `null` whenever `server.capabilities` is. |
+
+Every key is always present, explicitly `null` when unknown, so a typed
+consumer gets `None` rather than a silently-plausible default. Two
+biconditionals are pinned by test: `server.capabilities != null` ⟺
+`status == "connected"`, and `effective_capabilities != null` ⟺
+`status == "connected"`.
+
+**Gate on `effective_capabilities`, not `server.capabilities`.** The token
+describes the last hop only; the real question is end-to-end. An older
+mcp-peer talking to a newer server sees a token advertised truthfully, yet
+its own handler never reads the corresponding argument — MCP arguments are
+read by key and unknown keys are dropped — so the request would be silently
+degraded. The intersection is what closes that.
+
+**Never returns a JSON-RPC error**, in any state — a caller pre-flighting
+capabilities must be able to read the answer out of a normal result, since
+being forced back to parsing failure strings is the problem this tool exists
+to remove. Ungated by construction: it completes only the `hello` handshake
+and sends no `Request` beyond it, so it answers against every renga server
+that has ever shipped, including pre-#288 ones that advertise nothing.
+
+**Version skew, and why `client.version` is not the server's version**: renga
+registers `renga mcp-peer` by absolute path, so upgrading the binary on disk
+leaves the *old* server process running while newly spawned mcp-peers are the
+*new* one. The two halves are reported separately and must not be conflated;
+`client.version` describes the on-disk binary, never the process serving the
+socket. This release exposes no server-side version field — capability tokens
+are the contract, and a version→feature table maintained client-side rots.
+
+**Pre-flight is advisory, not a lease.** The server can die between the probe
+and the call, and every tool call opens a fresh connection. The
+`send_request_requiring` gate and the `[server_too_old]` error remain the
+authoritative check. This tool converts a guaranteed-wrong operator
+configuration into a rare race; it does not remove the failure class.
+
+**Absence is itself the answer** (#304 acceptance): a renga too old to have
+this tool simply does not list it in `tools/list`, and a call yields
+`-32601 unknown tool`. That is distinguishable from a server that merely
+advertises fewer tokens, which returns `status: "connected"` with a short or
+empty `capabilities` list.
+
 ### Common error wire format
 
 JSON-RPC error `message` is `[<code>] <human message>` per `fmt_code`. Codes
@@ -468,7 +533,7 @@ stays addressable.
 | Variant | Fields | When |
 |---|---|---|
 | `ok` | `data: Value` (request-specific shape) | Most success paths. |
-| `hello` | `server_pid: u32`, `session_token: string` | Reply to `Hello` only. |
+| `hello` | `server_pid: u32`, `session_token: string`, `capabilities?: string[]` | Reply to `Hello` only. `capabilities` is `default` + `skip_serializing_if = "Vec::is_empty"`, so a pre-#288 server omits the key entirely and it decodes as `[]`. Exposed to peers by the `server_info` MCP tool (§1.16). |
 | `subscribed` | — | Ack of `Subscribe`; event lines follow on same connection. |
 | `err` | `message: string`, `code?: string` | Failure. `code` is `Option<String>` with `skip_serializing_if = "Option::is_none"`. |
 
@@ -725,7 +790,7 @@ minor release.
 
 | Section | Count |
 |---|---|
-| MCP tools (§1) | 15 |
+| MCP tools (§1) | 16 |
 | CLI top-level flags (§2.1) | 11 |
 | CLI IPC subcommands (§2.2) | 13 |
 | Env vars (§2.3) | 6 |

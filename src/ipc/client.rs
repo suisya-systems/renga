@@ -95,6 +95,119 @@ fn make_connection_name(endpoint: &EndpointName) -> Result<interprocess::local_s
     }
 }
 
+/// What the running renga server said about itself in its
+/// [`Response::Hello`].
+///
+/// Every field here has always been on the wire — the handshake that
+/// precedes *every* request already carries it. Before #304 it was
+/// parsed and dropped on the floor inside [`converse`], reachable only
+/// indirectly through the `[server_too_old]` string
+/// [`require_capability`] builds. This type is what stops it being
+/// thrown away, so a caller can ask "what does this server support?"
+/// instead of inferring it from a failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerHandshake {
+    /// PID of the renga process actually serving this endpoint. Note
+    /// this is the *server* process, which can be an older build than
+    /// the binary running this client — see [`send_request_requiring`].
+    pub server_pid: u32,
+    /// Feature tokens the server advertised (see
+    /// [`super::SERVER_CAPABILITIES`]). Empty from any pre-#288
+    /// server: they omit the field entirely, and `serde(default)`
+    /// turns that into an empty vec. Empty therefore means "asked, and
+    /// it supports nothing", which is a *different* fact from "could
+    /// not ask" — callers must not conflate the two.
+    pub capabilities: Vec<String>,
+}
+
+/// Complete the [`Request::Hello`] handshake and return what the
+/// server advertised, **without sending any command**.
+///
+/// This is the ungated introspection path behind the `server_info` MCP
+/// tool (#304). Three properties make it safe against arbitrarily old
+/// servers, which is the whole point:
+///
+/// 1. It writes only `hello`. The server answers the handshake before
+///    reading a command and treats the following EOF as a clean close
+///    (`read_line_or_eof` → `Ok(())` in [`super::server`]), so a
+///    handshake-only connection is valid against every renga server
+///    that has ever shipped.
+/// 2. It sends no [`Request`] variant beyond `hello`. A dedicated
+///    variant would be rejected as `protocol` by existing servers —
+///    that is learning-by-failed-attempt, exactly the pattern #304
+///    exists to replace.
+/// 3. It gates on nothing, so it still answers for a server that
+///    advertises no capabilities at all.
+///
+/// The session-token check is deliberately kept: reporting the
+/// capabilities of a renga instance that is not ours would be worse
+/// than reporting nothing, because the caller would pre-flight against
+/// one instance and then send commands to another.
+pub fn probe_server(endpoint: &EndpointName) -> Result<ServerHandshake> {
+    let name_string = endpoint.as_str().to_string();
+    let endpoint_clone = endpoint.clone();
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("renga-ipc-probe".into())
+        .spawn(move || {
+            let result = (|| -> Result<ServerHandshake> {
+                let name = make_connection_name(&endpoint_clone)?;
+                let conn = Stream::connect(name)
+                    .with_context(|| format!("connect to {}", endpoint_clone.as_str()))?;
+                perform_handshake(&mut BufReader::new(conn))
+            })();
+            let _ = tx.send(result);
+        })
+        .context("spawn IPC probe thread")?;
+
+    match rx.recv_timeout(RESPONSE_TIMEOUT) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow!(
+            "no response from renga within {:?} (endpoint: {})",
+            RESPONSE_TIMEOUT,
+            name_string
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(anyhow!("IPC probe thread panicked")),
+    }
+}
+
+/// Send `hello`, validate the reply, and hand back what the server
+/// advertised. Shared by [`converse`], [`subscribe_events`], and
+/// [`probe_server`] so the three cannot drift on token verification or
+/// on the error strings operators grep for.
+fn perform_handshake(reader: &mut BufReader<Stream>) -> Result<ServerHandshake> {
+    let hello = Request::Hello {
+        client_pid: std::process::id(),
+    };
+    write_request_line(reader.get_mut(), &hello)?;
+    match read_response_line(reader)? {
+        Response::Hello {
+            server_pid,
+            session_token,
+            capabilities,
+        } => {
+            // Verifying the token here is also what makes a cached
+            // capability answer safe without any staleness key: a
+            // `ServerHandshake` can only ever come from the instance
+            // that published this process's `RENGA_TOKEN`. If renga
+            // restarts, either the PID-derived endpoint no longer
+            // exists or the token no longer matches — both fail, and
+            // neither can masquerade as a successful probe of a server
+            // whose capabilities have silently changed.
+            verify_session_token(&session_token, std::env::var(ENV_TOKEN).ok().as_deref())?;
+            Ok(ServerHandshake {
+                server_pid,
+                capabilities,
+            })
+        }
+        Response::Err { message, code } => Err(anyhow!(
+            "server refused hello: {}",
+            fmt_err(&message, &code)
+        )),
+        Response::Ok { .. } | Response::Subscribed => Err(anyhow!("unexpected response to hello")),
+    }
+}
+
 fn converse(
     conn: Stream,
     request: &Request,
@@ -103,31 +216,9 @@ fn converse(
     let mut reader = BufReader::new(conn);
 
     // Handshake
-    let hello = Request::Hello {
-        client_pid: std::process::id(),
-    };
-    write_request_line(reader.get_mut(), &hello)?;
-    let hello_resp = read_response_line(&mut reader)?;
-    match hello_resp {
-        Response::Hello {
-            session_token,
-            capabilities,
-            ..
-        } => {
-            verify_session_token(&session_token, std::env::var(ENV_TOKEN).ok().as_deref())?;
-            if let Some(cap) = required_cap {
-                require_capability(cap, &capabilities)?;
-            }
-        }
-        Response::Err { message, code } => {
-            return Err(anyhow!(
-                "server refused hello: {}",
-                fmt_err(&message, &code)
-            ));
-        }
-        Response::Ok { .. } | Response::Subscribed => {
-            return Err(anyhow!("unexpected response to hello"));
-        }
+    let handshake = perform_handshake(&mut reader)?;
+    if let Some(cap) = required_cap {
+        require_capability(cap, &handshake.capabilities)?;
     }
 
     // Actual command
@@ -154,24 +245,11 @@ where
         Stream::connect(name).with_context(|| format!("connect to {}", endpoint.as_str()))?;
     let mut reader = BufReader::new(conn);
 
-    // Handshake (same as converse).
-    let hello = Request::Hello {
-        client_pid: std::process::id(),
-    };
-    write_request_line(reader.get_mut(), &hello)?;
-    let hello_resp = read_response_line(&mut reader)?;
-    match hello_resp {
-        Response::Hello { session_token, .. } => {
-            verify_session_token(&session_token, std::env::var(ENV_TOKEN).ok().as_deref())?;
-        }
-        Response::Err { message, code } => {
-            return Err(anyhow!(
-                "server refused hello: {}",
-                fmt_err(&message, &code)
-            ));
-        }
-        _ => return Err(anyhow!("unexpected response to hello")),
-    }
+    // Handshake (same as converse). Event subscribers don't gate on
+    // capabilities: unknown `Event` variants are skipped by the read
+    // loop below, so an old server is degraded-but-correct here rather
+    // than silently wrong.
+    perform_handshake(&mut reader)?;
 
     // Switch into event-stream mode.
     write_request_line(reader.get_mut(), &Request::Subscribe)?;
@@ -380,6 +458,26 @@ mod tests {
     }
 
     // ─── Issue #288 version-skew gate ─────────────────────
+
+    /// #304 exposes the capability set but must not mint a token for
+    /// doing so — that would be circular (you would have to read the
+    /// list to learn the list is readable) and would break its own
+    /// primary use case, since an old server cannot advertise a new
+    /// token and old servers are exactly what the probe must answer
+    /// for. Pinned so a future change has to be deliberate.
+    #[test]
+    fn capability_exposure_mints_no_new_token() {
+        assert_eq!(
+            super::super::SERVER_CAPABILITIES,
+            &[
+                super::super::CAP_CALLER_SCOPE,
+                super::super::CAP_CROSS_TAB_PEERS,
+                super::super::CAP_SPAWN_TAB,
+                super::super::CAP_CALLER_SCOPE_CLOSE_IDENTITY,
+            ],
+            "#304 is introspection only and adds no capability token"
+        );
+    }
 
     #[test]
     fn require_capability_accepts_an_advertised_token() {

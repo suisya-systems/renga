@@ -97,6 +97,12 @@ Exposed by the MCP server to each Claude pane:
 | `send_keys(target, …)` | Sends raw PTY key input (`Enter`, `Esc`, arrows, `Ctrl+<letter>`, literal text, etc.) to another pane. Use this for interactive prompts or TUIs that cannot consume `send_message`. |
 | `set_pane_identity(target, name?, role?)` | Rename or (re)assign the stable `name` / `role` of an existing pane. Same caller-tab scoping as `close_pane` (#296). Three-state fields: omit a key to keep, `null` to clear, a string to set. Rejects all-digit names and name collisions inside the resolved pane's tab. Also exposed as `renga rename`. |
 
+### Server introspection
+
+| Tool | Effect |
+|---|---|
+| `server_info` | Reports the capability token set of the **running** renga server, without attempting any capability-gated request (#304). Use it to pre-flight — check `spawn_tab` before sending a `tab` selector, rather than sending the call and reading the token out of a `[server_too_old]` failure. Read `status` first: `connected` means `server.capabilities` is the live advertisement, and an **empty list there means a genuinely old server**; `detached` (not launched by renga) and `unreachable` (socket gone) report `null`, meaning *unknown* — never conclude a token is missing from those. Gate on `effective_capabilities`, the subset both advertised by the server and understood by this mcp-peer build. Never returns a JSON-RPC error; if the tool is missing from the tool list entirely, that renga predates capability exposure, and the absence is itself the answer. |
+
 ### Event monitoring
 
 | Tool | Effect |

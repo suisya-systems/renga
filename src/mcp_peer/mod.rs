@@ -500,6 +500,11 @@ fn tools_spec() -> Value {
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
+            "name": "server_info",
+            "description": "Report the renga server this pane is attached to — its negotiated capability token set, its pid, and this mcp-peer's own version — WITHOUT attempting any capability-gated request. Use this to pre-flight before calling something that needs a capability (e.g. the `tab` selector on the spawn tools needs `spawn_tab`) instead of sending the call and reading a `[server_too_old]` error out of the failure. Check `status` FIRST, it is the discriminant: \"connected\" means `capabilities` is the live server's real advertisement, and an EMPTY list there means a genuinely old server that supports nothing; \"detached\" means this pane was not launched by renga; \"unreachable\" means renga's socket is gone or belongs to a different instance. In the latter two `capabilities` is null, NOT empty — capabilities are unknown, so never conclude a token is missing from those. Gate on `effective_capabilities` rather than `capabilities`: it is the subset that is both advertised by the running server and understood by this mcp-peer build, which can differ because upgrading the renga binary on disk leaves the old server process running. If you get a -32601 unknown-tool error, the renga binary that spawned this mcp-peer predates capability exposure — that absence is itself the answer.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
             "name": "list_panes",
             "description": "List every pane in the renga tab THIS pane lives in — not whichever tab the user is currently looking at — with stable id, optional name / role, focused flag, terminal geometry, cwd, and when known the peer client kind / receive mode. Complements list_peers (which only returns other panes and hides geometry).",
             "inputSchema": { "type": "object", "properties": {} }
@@ -1036,6 +1041,237 @@ fn fmt_code(message: &str, code: &Option<String>) -> String {
     }
 }
 
+// ── server_info: ungated capability exposure (#304) ───────────
+
+/// What a `server_info` call found out, before it is rendered.
+///
+/// Three states, deliberately distinct. Collapsing `Unreachable` into
+/// `Connected { capabilities: [] }` would destroy the distinction
+/// Issue #304's second acceptance criterion turns on: "this server
+/// supports nothing" is a fact about the server, while "I could not
+/// ask" is the absence of a fact, and a client that treats the second
+/// as the first will fail closed forever against a renga that is
+/// merely momentarily unreachable.
+enum ServerProbe {
+    /// Handshake completed. `handshake.capabilities` is the running
+    /// server's real advertisement — an empty vec means a genuinely
+    /// old server, not a failure.
+    Connected {
+        pane_id: usize,
+        endpoint: String,
+        handshake: client::ServerHandshake,
+    },
+    /// Inside renga, but the handshake failed (socket gone, server
+    /// died, or it belongs to a different renga instance). The
+    /// endpoint we *tried* is kept: it is the one useful fact we still
+    /// have, and it disambiguates concurrent renga instances.
+    Unreachable {
+        pane_id: usize,
+        endpoint: String,
+        reason: String,
+    },
+    /// This pane was never launched by renga at all.
+    Detached { reason: String },
+}
+
+/// Capability tokens *this mcp-peer build* knows how to drive.
+///
+/// Sourced from [`ipc::SERVER_CAPABILITIES`], which is the same const
+/// this binary's server half advertises. That is sound because both
+/// come from one crate compiled together: a build whose const carries
+/// token `T` necessarily also carries the request-side wiring for `T`.
+fn known_capability_tokens() -> Vec<String> {
+    ipc::SERVER_CAPABILITIES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// Tokens that are actually usable: advertised by the running server
+/// **and** understood by this mcp-peer build.
+///
+/// Both halves are required and the pair can genuinely differ, because
+/// renga registers `renga mcp-peer` by absolute path — upgrading the
+/// binary on disk leaves the old server process running, and a *newer*
+/// server can likewise advertise tokens an older mcp-peer has no code
+/// to send. Gating on the server's list alone would over-promise in
+/// the second case. Ordered by [`ipc::SERVER_CAPABILITIES`] so the
+/// output is stable rather than dependent on wire order.
+fn effective_capability_tokens(advertised: &[String]) -> Vec<String> {
+    ipc::SERVER_CAPABILITIES
+        .iter()
+        .filter(|cap| advertised.iter().any(|a| a == *cap))
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// Render a [`ServerProbe`] into the tool's structured payload.
+///
+/// Pure on purpose: everything that decides what a caller concludes
+/// lives here, so it is unit-testable without a live IPC server (this
+/// repo has no harness that connects a client to a real one).
+fn server_info_payload(probe: &ServerProbe) -> Value {
+    // Every key is always present, explicitly null when unknown, so a
+    // typed consumer gets `None` (or a type error) rather than a
+    // silently-plausible default, and is pushed to branch on `status`
+    // first.
+    let (status, server, pane_id, reason) = match probe {
+        ServerProbe::Connected {
+            pane_id,
+            endpoint,
+            handshake,
+        } => (
+            "connected",
+            json!({
+                "pid": handshake.server_pid,
+                "endpoint": endpoint,
+                "capabilities": handshake.capabilities,
+            }),
+            Some(*pane_id),
+            Value::Null,
+        ),
+        ServerProbe::Unreachable {
+            pane_id,
+            endpoint,
+            reason,
+        } => (
+            "unreachable",
+            json!({ "pid": null, "endpoint": endpoint, "capabilities": null }),
+            Some(*pane_id),
+            Value::String(reason.clone()),
+        ),
+        ServerProbe::Detached { reason } => (
+            "detached",
+            json!({ "pid": null, "endpoint": null, "capabilities": null }),
+            None,
+            Value::String(reason.clone()),
+        ),
+    };
+    let effective = match probe {
+        ServerProbe::Connected { handshake, .. } => {
+            Value::from(effective_capability_tokens(&handshake.capabilities))
+        }
+        // Not `[]`: nothing was learned, and a consumer must not read
+        // "unknown" as "supports nothing".
+        _ => Value::Null,
+    };
+    json!({
+        "status": status,
+        "reason": reason,
+        "server": server,
+        "client": {
+            "name": SERVER_NAME,
+            "version": SERVER_VERSION,
+            "pane_id": pane_id,
+            "capabilities": known_capability_tokens(),
+        },
+        "effective_capabilities": effective,
+    })
+}
+
+/// Human/LLM-readable summary mirroring [`server_info_payload`].
+fn format_server_info(probe: &ServerProbe) -> String {
+    match probe {
+        ServerProbe::Connected {
+            pane_id,
+            endpoint,
+            handshake,
+        } => {
+            let effective = effective_capability_tokens(&handshake.capabilities);
+            let mut out = format!(
+                "renga server: connected (pid {}, endpoint {endpoint})\n",
+                handshake.server_pid
+            );
+            if handshake.capabilities.is_empty() {
+                out.push_str(
+                    "advertised: (none — this server supports no gated features; restart \
+                     renga to pick up the newer binary)\n",
+                );
+            } else {
+                out.push_str(&format!(
+                    "advertised: {}\n",
+                    handshake.capabilities.join(", ")
+                ));
+            }
+            out.push_str(&format!(
+                "usable here (advertised AND supported by this client build): {}\n",
+                if effective.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    effective.join(", ")
+                }
+            ));
+            let unusable: Vec<&String> = handshake
+                .capabilities
+                .iter()
+                .filter(|c| !effective.contains(c))
+                .collect();
+            if !unusable.is_empty() {
+                out.push_str(&format!(
+                    "advertised but NOT usable (this client build is older than the \
+                     server): {}\n",
+                    unusable
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            out.push_str(&format!(
+                "this client: {SERVER_NAME} v{SERVER_VERSION} (pane {pane_id})\n"
+            ));
+            out
+        }
+        ServerProbe::Unreachable {
+            pane_id, reason, ..
+        } => format!(
+            "renga server: unreachable — {reason}\n\
+             capabilities: (UNKNOWN, which is not the same as \"none\" — the server was \
+             never asked; do not conclude a token is missing from this result)\n\
+             this client: {SERVER_NAME} v{SERVER_VERSION} (pane {pane_id})\n"
+        ),
+        ServerProbe::Detached { reason } => format!(
+            "renga server: detached — {reason}\n\
+             capabilities: (UNKNOWN, which is not the same as \"none\" — there is no renga \
+             server to ask; do not conclude a token is missing from this result)\n\
+             this client: {SERVER_NAME} v{SERVER_VERSION}\n"
+        ),
+    }
+}
+
+fn handle_server_info(id: &Value, ctx: &PeerCtx) -> Value {
+    let probe = match &ctx.mode {
+        Mode::Connected { pane_id, endpoint } => match client::probe_server(endpoint) {
+            Ok(handshake) => ServerProbe::Connected {
+                pane_id: *pane_id,
+                endpoint: endpoint.as_str().to_string(),
+                handshake,
+            },
+            Err(e) => ServerProbe::Unreachable {
+                pane_id: *pane_id,
+                endpoint: endpoint.as_str().to_string(),
+                reason: format!("{e}"),
+            },
+        },
+        Mode::Detached { reason } => ServerProbe::Detached {
+            reason: reason.clone(),
+        },
+    };
+    // Never a JSON-RPC error, in any state. A caller pre-flighting
+    // capabilities must be able to read the answer out of a normal
+    // result; turning "renga is unreachable" into a protocol error
+    // would push it straight back to parsing failure strings, which is
+    // what #304 exists to stop.
+    ok_response(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": format_server_info(&probe) }],
+            "structuredContent": server_info_payload(&probe),
+            "isError": false,
+        }),
+    )
+}
+
 fn handle_tools_call(id: &Value, params: &Value, ctx: &PeerCtx) -> Result<Value> {
     let name = params
         .get("name")
@@ -1047,6 +1283,7 @@ fn handle_tools_call(id: &Value, params: &Value, ctx: &PeerCtx) -> Result<Value>
         "send_message" => handle_send_message(id, &args, ctx),
         "set_summary" => handle_set_summary(id, &args, ctx),
         "check_messages" => handle_check_messages(id, ctx),
+        "server_info" => handle_server_info(id, ctx),
         "list_panes" => handle_list_panes(id, ctx),
         "spawn_pane" => handle_spawn_pane(id, &args, ctx),
         "spawn_claude_pane" => handle_spawn_claude_pane(id, &args, ctx),
@@ -5040,6 +5277,7 @@ Commands:
             ("inspect_pane", json!({ "target": "1" })),
             ("send_keys", json!({ "target": "1", "text": "y" })),
             ("poll_events", json!({ "timeout_ms": 0 })),
+            ("server_info", json!({})),
         ] {
             let params = json!({ "name": name, "arguments": args });
             let resp = handle_tools_call(&id, &params, &ctx).expect("dispatch");
@@ -5053,6 +5291,304 @@ Commands:
                 "{name} fell through to unknown-tool arm: {resp}"
             );
         }
+    }
+
+    // ── server_info (#304) ────────────────────────────────────
+
+    const TEST_ENDPOINT: &str = "/run/user/1000/renga/renga-4711.sock";
+
+    fn handshake_with(pid: u32, caps: &[&str]) -> client::ServerHandshake {
+        client::ServerHandshake {
+            server_pid: pid,
+            capabilities: caps.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn connected_probe(caps: &[&str]) -> ServerProbe {
+        ServerProbe::Connected {
+            pane_id: 7,
+            endpoint: TEST_ENDPOINT.to_string(),
+            handshake: handshake_with(4711, caps),
+        }
+    }
+
+    fn not_connected_probes() -> Vec<ServerProbe> {
+        vec![
+            ServerProbe::Unreachable {
+                pane_id: 7,
+                endpoint: TEST_ENDPOINT.to_string(),
+                reason: "connect to renga-4711.sock: No such file or directory".into(),
+            },
+            ServerProbe::Detached {
+                reason: "RENGA_PANE_ID not set — Claude Code was not launched by renga".into(),
+            },
+        ]
+    }
+
+    /// Issue #304 acceptance criterion 2, at its sharpest. "The server
+    /// supports nothing" and "I could not ask the server" must not
+    /// render the same way, or a client fails closed forever against a
+    /// renga that was merely momentarily unreachable.
+    #[test]
+    fn server_info_distinguishes_zero_capabilities_from_unknown_capabilities() {
+        let old_server = server_info_payload(&connected_probe(&[]));
+        assert_eq!(old_server["status"], "connected");
+        assert_eq!(
+            old_server["server"]["capabilities"],
+            json!([]),
+            "a server that advertises nothing must report an EMPTY LIST — that is a \
+             fact about the server, not an absence of information: {old_server}"
+        );
+        assert_eq!(
+            old_server["effective_capabilities"],
+            json!([]),
+            "and the derived set is likewise a known-empty, not unknown: {old_server}"
+        );
+
+        for unknown in not_connected_probes() {
+            let payload = server_info_payload(&unknown);
+            assert!(
+                payload["server"]["capabilities"].is_null(),
+                "capabilities must be NULL (not []) when the server was never asked: {payload}"
+            );
+            assert!(
+                payload["effective_capabilities"].is_null(),
+                "effective_capabilities must be NULL when the server was never asked: {payload}"
+            );
+            assert!(
+                payload["reason"].is_string(),
+                "an unknown result must say why it is unknown: {payload}"
+            );
+            assert_ne!(
+                payload["status"], "connected",
+                "status must not claim connected: {payload}"
+            );
+        }
+    }
+
+    /// The two nullability rules a typed consumer branches on. Pinned
+    /// as biconditionals so neither side can drift.
+    #[test]
+    fn server_info_nullability_tracks_status_exactly() {
+        let mut all = not_connected_probes();
+        all.push(connected_probe(&[crate::ipc::CAP_CALLER_SCOPE]));
+        all.push(connected_probe(&[]));
+        for probe in &all {
+            let p = server_info_payload(probe);
+            let connected = p["status"] == "connected";
+            assert_eq!(
+                !p["server"]["capabilities"].is_null(),
+                connected,
+                "server.capabilities non-null must mean exactly status==connected: {p}"
+            );
+            assert_eq!(
+                !p["effective_capabilities"].is_null(),
+                connected,
+                "effective_capabilities non-null must mean exactly status==connected: {p}"
+            );
+            assert!(
+                p["client"]["capabilities"].is_array(),
+                "the build's own token set is always knowable: {p}"
+            );
+            assert_eq!(
+                p["reason"].is_null(),
+                connected,
+                "a non-connected result must carry a reason, a connected one must not: {p}"
+            );
+        }
+    }
+
+    /// The three states must be readable off `status` alone, since the
+    /// tool description tells callers to branch on it first.
+    #[test]
+    fn server_info_status_names_each_distinct_state() {
+        assert_eq!(
+            server_info_payload(&connected_probe(&[]))["status"],
+            "connected"
+        );
+        assert_eq!(
+            server_info_payload(&ServerProbe::Unreachable {
+                pane_id: 1,
+                endpoint: TEST_ENDPOINT.into(),
+                reason: "boom".into()
+            })["status"],
+            "unreachable"
+        );
+        assert_eq!(
+            server_info_payload(&ServerProbe::Detached {
+                reason: "no RENGA_PANE_ID".into()
+            })["status"],
+            "detached"
+        );
+    }
+
+    /// A capability is only usable when BOTH halves have it. renga
+    /// registers mcp-peer by absolute path, so a *newer* server can
+    /// advertise tokens this build has no code to send; gating on the
+    /// server's raw list alone would over-promise.
+    #[test]
+    fn server_info_effective_capabilities_intersect_server_and_build() {
+        let payload = server_info_payload(&connected_probe(&[
+            crate::ipc::CAP_CALLER_SCOPE,
+            "some_future_token_this_build_never_heard_of",
+        ]));
+        let advertised = payload["server"]["capabilities"].as_array().unwrap();
+        let effective = payload["effective_capabilities"].as_array().unwrap();
+
+        assert!(
+            advertised.contains(&json!("some_future_token_this_build_never_heard_of")),
+            "the server's own advertisement must be reported verbatim: {payload}"
+        );
+        assert!(
+            !effective.contains(&json!("some_future_token_this_build_never_heard_of")),
+            "a token this build cannot drive must NOT be presented as usable: {payload}"
+        );
+        assert!(
+            effective.contains(&json!(crate::ipc::CAP_CALLER_SCOPE)),
+            "a token both sides have must be usable: {payload}"
+        );
+    }
+
+    /// The whole point of the pre-flight is defeated if the caller
+    /// mistakes the on-disk binary's version for the running server's.
+    /// They must be separate fields from separate sources.
+    #[test]
+    fn server_info_keeps_mcp_peer_identity_separate_from_server_identity() {
+        let payload = server_info_payload(&connected_probe(&[crate::ipc::CAP_SPAWN_TAB]));
+        assert_eq!(payload["server"]["pid"], json!(4711));
+        assert_eq!(payload["client"]["version"], json!(SERVER_VERSION));
+        assert_eq!(payload["client"]["pane_id"], json!(7));
+        assert!(
+            payload["client"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(crate::ipc::CAP_SPAWN_TAB)),
+            "the build's own token set must be reported so skew is diagnosable: {payload}"
+        );
+        assert!(
+            payload["client"].get("pid").is_none(),
+            "server pid must not be duplicated onto the client object: {payload}"
+        );
+        assert_eq!(
+            payload["server"]["endpoint"],
+            json!(TEST_ENDPOINT),
+            "the queried socket disambiguates concurrent renga instances: {payload}"
+        );
+        // The session token is what the client verifies against
+        // RENGA_TOKEN. Verification is retained inside the handshake,
+        // which is *why* no staleness key is needed here — but the
+        // token itself must never reach a transcript.
+        let serialized = payload.to_string();
+        assert!(
+            !serialized.contains("session_token") && !serialized.contains("token"),
+            "must not surface the session token: {serialized}"
+        );
+    }
+
+    /// `unreachable` still knows which socket it failed against — that
+    /// is the one fact worth keeping, and it tells an operator which
+    /// of several concurrent renga instances went away.
+    #[test]
+    fn server_info_keeps_the_attempted_endpoint_when_unreachable() {
+        let payload = server_info_payload(&ServerProbe::Unreachable {
+            pane_id: 7,
+            endpoint: TEST_ENDPOINT.into(),
+            reason: "No such file or directory".into(),
+        });
+        assert_eq!(payload["server"]["endpoint"], json!(TEST_ENDPOINT));
+        assert!(payload["server"]["pid"].is_null());
+        assert!(payload["server"]["capabilities"].is_null());
+    }
+
+    /// Server identity must never be invented when we never reached
+    /// one — but the client half is always knowable.
+    #[test]
+    fn server_info_never_invents_server_identity_when_not_connected() {
+        for probe in not_connected_probes() {
+            let payload = server_info_payload(&probe);
+            assert!(
+                payload["server"]["pid"].is_null(),
+                "must not invent a server pid: {payload}"
+            );
+            assert_eq!(payload["client"]["version"], json!(SERVER_VERSION));
+        }
+    }
+
+    /// Reading the capability set must never require parsing an error,
+    /// in ANY state — that is the failure mode #304 exists to remove.
+    #[test]
+    fn server_info_is_never_a_jsonrpc_error() {
+        let id = json!(1);
+        let resp = handle_server_info(&id, &detached_ctx("RENGA_PANE_ID not set"));
+        assert!(
+            resp.get("error").is_none(),
+            "server_info must not produce a JSON-RPC error: {resp}"
+        );
+        assert_eq!(resp["result"]["isError"], json!(false));
+        assert_eq!(resp["result"]["structuredContent"]["status"], "detached");
+        assert!(
+            resp["result"]["content"][0]["text"].is_string(),
+            "must carry a human-readable summary too: {resp}"
+        );
+    }
+
+    /// Not every MCP client surfaces `structuredContent` — Codex panes
+    /// notably do not — so the text block has to stand on its own, and
+    /// must not let a reader collapse "unknown" into "none".
+    #[test]
+    fn server_info_text_warns_that_unknown_is_not_none() {
+        for probe in not_connected_probes() {
+            let text = format_server_info(&probe);
+            assert!(
+                text.contains("UNKNOWN, which is not the same as \"none\""),
+                "prose must not let a reader collapse unknown into none: {text}"
+            );
+        }
+        let old = format_server_info(&connected_probe(&[]));
+        assert!(
+            old.contains("(none —") && old.contains("restart renga"),
+            "a zero-capability server should be named as such, with the remedy: {old}"
+        );
+    }
+
+    /// The text block must name the usable tokens, and must flag ones
+    /// the server offers that this build cannot actually drive.
+    #[test]
+    fn server_info_text_names_usable_tokens_and_flags_unusable_ones() {
+        let text = format_server_info(&connected_probe(&[
+            crate::ipc::CAP_CALLER_SCOPE,
+            "future_token",
+        ]));
+        assert!(
+            text.contains("usable here") && text.contains(crate::ipc::CAP_CALLER_SCOPE),
+            "must name what is usable: {text}"
+        );
+        assert!(
+            text.contains("advertised but NOT usable") && text.contains("future_token"),
+            "must flag a token this build is too old to drive: {text}"
+        );
+    }
+
+    /// Discoverability is the mechanism behind acceptance criterion 2:
+    /// on an older renga the tool is simply absent from tools/list, and
+    /// that absence is what a client interprets.
+    #[test]
+    fn server_info_is_discoverable_from_tools_list() {
+        let tools = tools_spec();
+        let entry = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "server_info")
+            .expect("server_info must appear in tools/list");
+        assert_eq!(
+            entry["inputSchema"]["type"], "object",
+            "must take an object (empty) input: {entry}"
+        );
+        assert!(
+            entry["inputSchema"].get("required").is_none(),
+            "server_info must be callable with no arguments: {entry}"
+        );
     }
 
     #[test]

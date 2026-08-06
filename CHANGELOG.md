@@ -35,6 +35,40 @@ rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
   dedicated `tab_limit_reached` error (the api-surface doc wrongly
   listed `new_tab` under `split_refused`; corrected).
 
+- **`server_info` — peers can now read the capability set instead of
+  inferring it from `[server_too_old]` errors.** (#304) renga has
+  negotiated capabilities since #288, but nothing exposed the token
+  set: a client could only try a gated request and parse the failure
+  string. That forced callers into static self-declaration —
+  claude-org-runtime shipped a `--server-capability spawn_tab` flag,
+  default off, that an operator had to set by hand after checking the
+  renga version. The new tool reports `status`
+  (`connected`/`detached`/`unreachable`), the running server's
+  advertised tokens, this build's own tokens, and
+  `effective_capabilities` (the intersection, and the field to gate
+  on — an older mcp-peer against a newer server sees a token
+  advertised truthfully but has no code to send the matching argument,
+  which MCP would silently drop). It never returns a JSON-RPC error, so
+  reading the answer never means parsing a failure again.
+  Implementation is pure client-side plumbing: the `hello` handshake
+  already carried the token list on every call and
+  `client::converse` discarded it, so **no IPC protocol change was
+  needed** — no new `Request`/`Response` variant, no new field, and no
+  new capability token (one meaning "I can report my tokens" would be
+  circular, and an old server could not advertise it anyway). We chose
+  a dedicated tool over folding the list into the `list_peers` /
+  `list_panes` envelope because both of those are themselves gated —
+  on `cross_tab_peers` and `caller_scope` — so against exactly the old
+  servers worth interrogating they fail before producing an envelope,
+  putting the pre-flight surface behind the gate it exists to
+  pre-flight. A new `Request` variant was rejected for the same reason
+  in a different costume: old servers reject unknown variants with
+  `protocol`, which is learning-by-failed-attempt. The probe completes
+  only the handshake and sends no command, so it answers against every
+  renga server ever shipped, including pre-#288 ones that advertise
+  nothing — and `[server_too_old]` stays as the authoritative
+  last-resort gate, since pre-flight is advisory, not a lease.
+
 ### Changed
 
 - **`close_pane` / `set_pane_identity` now resolve `focused` and names
