@@ -501,7 +501,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "server_info",
-            "description": "Report the renga server this pane is attached to — its negotiated capability token set, its pid, and this mcp-peer's own version — WITHOUT attempting any capability-gated request. Use this to pre-flight before calling something that needs a capability (e.g. the `tab` selector on the spawn tools needs `spawn_tab`) instead of sending the call and reading a `[server_too_old]` error out of the failure. Check `status` FIRST, it is the discriminant: \"connected\" means `capabilities` is the live server's real advertisement, and an EMPTY list there means a genuinely old server that supports nothing; \"detached\" means this pane was not launched by renga; \"unreachable\" means renga's socket is gone or belongs to a different instance. In the latter two `capabilities` is null, NOT empty — capabilities are unknown, so never conclude a token is missing from those. Gate on `effective_capabilities` rather than `capabilities`: it is the subset that is both advertised by the running server and understood by this mcp-peer build, which can differ because upgrading the renga binary on disk leaves the old server process running. If you get a -32601 unknown-tool error, the renga binary that spawned this mcp-peer predates capability exposure — that absence is itself the answer.",
+            "description": "Report the renga server this pane is attached to — its negotiated capability token set, its pid, and this client build's own version — WITHOUT attempting any capability-gated request. Use this to pre-flight before calling something that needs a capability (e.g. the `tab` selector on the spawn tools needs `spawn_tab`) instead of sending the call and reading a `[server_too_old]` error out of the failure. The result body (both `structuredContent` and the text block) has this shape: `{status, reason, server: {pid, endpoint, capabilities}, client: {name, version, pane_id, capabilities}, effective_capabilities}`. Check `status` FIRST, it is the discriminant: \"connected\" means `server.capabilities` is the live server's real advertisement, and an EMPTY list there means a genuinely old server that supports nothing; \"detached\" means this pane was not launched by renga; \"unreachable\" means renga's socket is gone or belongs to a different instance. In the latter two, `server.capabilities` and `effective_capabilities` are null, NOT empty — they are unknown, so never conclude a token is missing from those. Gate on `effective_capabilities` rather than `server.capabilities`: it is the subset that is both advertised by the running server and understood by this client build, which can differ because upgrading the renga binary on disk leaves the old server process running. `client.version` is this mcp-peer binary's version and is NOT the running server's version — do not gate on any version comparison. If you get a -32601 unknown-tool error, the renga binary that spawned this mcp-peer predates capability exposure — that absence is itself the answer.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -5589,6 +5589,55 @@ Commands:
             entry["inputSchema"].get("required").is_none(),
             "server_info must be callable with no arguments: {entry}"
         );
+    }
+
+    /// The description IS the contract for an LLM caller — no
+    /// `outputSchema` is declared (no tool in this repo declares one),
+    /// so a field named there that does not exist in the payload sends
+    /// the caller looking for `undefined`. Pin both directions so the
+    /// prose cannot drift away from the shape again.
+    #[test]
+    fn server_info_description_names_the_fields_the_payload_actually_has() {
+        let tools = tools_spec();
+        let description = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "server_info")
+            .unwrap()["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let payload = server_info_payload(&connected_probe(&[crate::ipc::CAP_SPAWN_TAB]));
+        let top_level: Vec<&String> = payload.as_object().unwrap().keys().collect();
+        assert_eq!(
+            top_level.len(),
+            5,
+            "payload shape changed; update the tool description too: {payload}"
+        );
+        for key in &top_level {
+            assert!(
+                description.contains(key.as_str()),
+                "top-level field `{key}` is absent from the tool description"
+            );
+        }
+        // Nested paths must be described by their real dotted path, not
+        // by a bare leaf name that does not exist at the top level.
+        for path in ["server.capabilities", "client.version"] {
+            assert!(
+                description.contains(path),
+                "description must reference `{path}` by its real path"
+            );
+        }
+        for nested in ["server", "client"] {
+            for key in payload[nested].as_object().unwrap().keys() {
+                assert!(
+                    payload[nested].get(key).is_some(),
+                    "sanity: {nested}.{key} exists"
+                );
+            }
+        }
     }
 
     #[test]
