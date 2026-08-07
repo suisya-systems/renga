@@ -5,9 +5,9 @@ All notable changes to renga are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and from v1.0 onward this project adheres to
 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) under the
-rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
+rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
 
-## [Unreleased]
+## [2.0.0] — 2026-08-07
 
 ### Added
 
