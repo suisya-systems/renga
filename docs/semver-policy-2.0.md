@@ -299,11 +299,24 @@ Rules:
    server** silently receives the new behavior. Nothing in this mechanism
    changes that, and §4's capability path must not be read as if it did.
 
-Note that the capability set is readable directly out of the `hello`
-handshake by any IPC client — that is how the bundled client gates its
-requests — but it is not surfaced to MCP peers, which today can observe it
-only by attempting a gated request and reading the error. Exposing it to peers
-is tracked as a follow-up (#304) and is not part of this policy.
+The capability set is readable directly out of the `hello` handshake by any
+IPC client — that is how the bundled client gates its requests — and, since
+#304, it is exposed to MCP peers too by the `server_info` tool (surface doc
+§1.16). A peer no longer has to send a gated request and read the token out of
+a `[server_too_old]` failure to find out what the server supports.
+
+Two properties of that tool matter to this policy:
+
+- **`server_info` is itself part of the frozen surface**, and it is ungated by
+  construction — it completes only the `hello` handshake and never returns a
+  JSON-RPC error, so it stays answerable against any server. Gating it would
+  defeat its purpose. The absence of the tool from a server's tool list is
+  itself interpretable: that renga predates capability exposure.
+- **`null` and `[]` are not the same answer.** `server.capabilities` is `null`
+  when the server was never asked (detached, or the socket is unreachable) and
+  `[]` when it was asked and advertises nothing. Callers gate on
+  `effective_capabilities` — the intersection with what the client build
+  understands — which is `null` under exactly the same condition.
 
 ## 8. The 2.0.0 ledger
 
