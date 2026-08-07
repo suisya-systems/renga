@@ -71,33 +71,45 @@ rules in [`docs/semver-policy.md`](./docs/semver-policy.md).
 
 ### Changed
 
-- **BREAKING — `split` / `new_tab` now validate the pane `name`, and
-  every pane label refuses control characters.** Pane names registered
-  through `split` (the three `spawn_*` MCP tools, `renga split --id`)
-  and `new_tab` were stored verbatim; only `set_pane_identity` and
-  #290's `spawn_tab` ran them through `validate_pane_name`. That gap
-  was reachable, not theoretical: a pane name is interpolated into the
-  Codex peer nudge, which **types it into the target pane's PTY and
-  presses Enter a second later**, and into the
-  `notifications/claude/channel` banner a receiving Claude reads. A
-  name carrying `\r` therefore submitted attacker-chosen text in
-  another agent's composer, and a `\n` forged banner lines around
-  content it did not own. #289 widened the blast radius from one tab to
-  every tab. Concretely:
+- **BREAKING — `split` / `new_tab` now enforce the pane `name` rule the
+  frozen API surface already documented, and every pane label refuses
+  control characters.** This closes a conformance gap, not a contract:
+  [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) §1.6 has said
+  since the v1.0 freeze that `name` "must satisfy `[A-Za-z0-9_-]`, not
+  all-digits", and §7 lists `name_invalid` for `split` and `new_tab` —
+  but only `set_pane_identity` and #290's `spawn_tab` ever called
+  `validate_pane_name`. `split` (the three `spawn_*` MCP tools, `renga
+  split --id`) and `new_tab` stored whatever they were handed.
 
-  1. `split` / `new_tab` now apply the same rule the other two paths
-     always did — non-empty after trim, not all-digits (those collide
-     with numeric pane ids), charset `[A-Za-z0-9_-]`. **Names with
-     spaces, dots, or non-ASCII characters are now rejected with
-     `name_invalid`** where they were previously accepted; a name is
-     also stored trimmed. Existing names that already match the charset
-     are unaffected.
+  The gap was reachable, not cosmetic: a pane name is interpolated into
+  the Codex peer nudge, which **types it into the target pane's PTY and
+  presses Enter a second later**, and into the
+  `notifications/claude/channel` banner a receiving Claude reads. A name
+  carrying `\r` therefore submitted attacker-chosen text in another
+  agent's composer, and a `\n` forged banner lines around content it did
+  not own. #289 widened the blast radius from one tab to every tab.
+  Concretely:
+
+  1. `split` / `new_tab` now apply the documented rule — non-empty after
+     trim, not all-digits (those collide with numeric pane ids), charset
+     `[A-Za-z0-9_-]`. **Names with spaces, dots, or non-ASCII characters
+     are now rejected with `name_invalid`** where the implementation
+     previously accepted them; a name is also stored trimmed. Names that
+     already match the charset are unaffected. It is flagged BREAKING
+     because the observable behavior changes on a frozen-surface request
+     ([`docs/semver-policy.md`](./docs/semver-policy.md) §3), even though
+     no caller was ever entitled to the laxity under the written
+     contract.
   2. `role` and the tab `label` keep their documented **free-form**
-     contract — spaces and non-ASCII stay legal — but now reject
-     control characters (`name_invalid`) on `split`, `new_tab`,
-     `spawn_tab` and `set_pane_identity`. #290 validated `spawn_tab`'s
-     `name` while leaving its `role` and `label` verbatim, so those two
-     kept the injection the check existed to close.
+     contract — the same §1.6 table calls `role` a "Free-form label",
+     so spaces and non-ASCII stay legal — but they now reject control
+     characters (`name_invalid`) on `split`, `new_tab`, `spawn_tab` and
+     `set_pane_identity`. #290 validated `spawn_tab`'s `name` while
+     leaving its `role` and `label` verbatim, so those two kept the
+     injection the check existed to close. Charset-restricting them
+     instead would have narrowed a contract the freeze deliberately left
+     open, and is unnecessary: control characters alone carry the
+     injection.
   3. As a backstop for labels registered by an older build or a layout
      file, every site that renders a name / role / tab label into
      another agent's context or toward a PTY — the Codex nudge, the
