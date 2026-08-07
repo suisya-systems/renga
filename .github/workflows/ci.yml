@@ -47,22 +47,38 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Matrixed over the two `cfg` worlds the codebase actually has, not
-  # over every runner we ship binaries for (#280). `src/` splits only on
-  # `cfg(windows)` vs `cfg(unix)` / `cfg(not(windows))` — there is no
-  # `cfg(target_os = "macos")` anywhere — so ubuntu lints every
-  # Unix-gated line and windows lints the rest (`src/win_job.rs` in
-  # full, plus the gated blocks in pane.rs, ipc/{endpoint,server,client}
-  # .rs, mcp_peer/{mod,install,parent_watch}.rs, app/layout_ops.rs and
-  # main.rs). Adding macos-latest would burn a runner to re-lint exactly
-  # what ubuntu already covers.
+  # Two jobs rather than one `os` matrix, because branch protection
+  # requires a status context named exactly `clippy`. A matrix reports
+  # `clippy (ubuntu-latest)` / `clippy (windows-latest)` and nothing
+  # named `clippy` ever arrives, so the required check stays pending
+  # forever and the PR can never merge — every leg green, mergeable
+  # BLOCKED. That is what happened to #319; keep this job's name
+  # verbatim unless the protection rule is updated in the same change.
   clippy:
-    name: clippy (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  # The other half of the lint surface (#280): `cfg(windows)` code was
+  # never linted at all while clippy ran only on ubuntu — `src/win_job.rs`
+  # in full, plus the gated blocks in pane.rs,
+  # ipc/{endpoint,server,client}.rs, mcp_peer/{mod,install,parent_watch}.rs,
+  # app/layout_ops.rs and main.rs.
+  #
+  # Two runners, not three: `src/` splits only on `cfg(windows)` vs
+  # `cfg(unix)` / `cfg(not(windows))` and has no
+  # `cfg(target_os = "macos")` anywhere, so a macos runner would re-lint
+  # exactly what the job above already covers.
+  clippy-windows:
+    name: clippy (windows)
+    runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
