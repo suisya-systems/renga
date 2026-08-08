@@ -112,7 +112,6 @@ fn handle_peer_send_emits_peer_inbox_to_sibling_in_same_tab() {
     // core happy-path of #97: without this event the MCP peer
     // subprocess has nothing to push as a channel notification.
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     let sibling_id = app
         .handle_split(
@@ -126,13 +125,21 @@ fn handle_peer_send_emits_peer_inbox_to_sibling_in_same_tab() {
             None,
         )
         .expect("split succeeds");
-    // Drain PaneStarted events from the split so the assertion below
-    // only sees the PeerInbox we care about.
-    while let Ok(ev) = rx.try_recv() {
-        if !matches!(ev, ipc::Event::PaneStarted { .. }) {
-            panic!("unexpected event before peer send: {ev:?}");
-        }
-    }
+    // Bind the receiver to the sibling. Since #306 that makes it a
+    // precise instrument: the only `PeerInbox` it can ever hold is one
+    // addressed to this pane, so a misroute reads as an empty stream
+    // rather than hiding among other panes' traffic. (An unscoped
+    // subscription would see this delivery too — it would just see
+    // everything else with it.) Subscribing after the split also means
+    // the split's own `PaneStarted` events are already behind us and
+    // the stream starts empty.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(sibling_id));
+    assert!(
+        rx.try_recv().is_err(),
+        "no events expected before the peer send"
+    );
     app.handle_peer_send(
         sender_id,
         &ipc::PaneRef::Id(sibling_id),
@@ -168,8 +175,13 @@ fn handle_peer_send_loops_back_to_sender_pane() {
     // loop picks it up. Prior to the fix the self-send was silently
     // dropped while JSON-RPC reported Delivered.
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
+    // A self-send targets the sender pane, so that is the pane to bind
+    // to: the receiver then holds nothing but mail addressed back to
+    // the sender, which is the whole claim under test.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(sender_id));
     while rx.try_recv().is_ok() {}
 
     app.handle_peer_send(
@@ -205,7 +217,6 @@ fn handle_peer_send_delivers_to_cross_tab_target_by_id() {
     // another tab is a legitimate cross-tab address and must produce
     // exactly one PeerInbox event, same as a same-tab send.
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     // Open a fresh tab; its pane id is distinct from sender's.
     let other_tab_pane = app
@@ -215,6 +226,12 @@ fn handle_peer_send_delivers_to_cross_tab_target_by_id() {
         other_tab_pane, sender_id,
         "new_tab must allocate a fresh pane id"
     );
+    // Pane ids are globally unique, so #306 routing is tab-agnostic:
+    // binding to the other tab's pane id is all a subscriber over
+    // there has to do.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(other_tab_pane));
     // Drain PaneStarted / tab-switch events.
     while rx.try_recv().is_ok() {}
 
@@ -251,7 +268,6 @@ fn handle_peer_send_resolves_name_in_sender_workspace_not_active_tab() {
     // not the visible one, or background-tab orchestrators misroute
     // (Issue #289 design review, Major 2).
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     let same_tab_worker = app
         .handle_split(
@@ -271,7 +287,18 @@ fn handle_peer_send_resolves_name_in_sender_workspace_not_active_tab() {
         .handle_new_tab(None, Some("worker".into()), None, None, None)
         .expect("new tab succeeds");
     assert_eq!(app.active_tab, 1, "new tab should be the visible one");
-    while rx.try_recv().is_ok() {}
+    // One subscriber per candidate. Under #306 the misroute would show
+    // up as an empty `mine` *and* a non-empty `theirs`, so watching
+    // both keeps the failure diagnosable instead of just "nothing
+    // arrived".
+    let (_mine_id, mine) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(same_tab_worker));
+    let (_theirs_id, theirs) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(other_tab_worker));
+    while mine.try_recv().is_ok() {}
+    while theirs.try_recv().is_ok() {}
 
     app.handle_peer_send(
         sender_id,
@@ -279,17 +306,23 @@ fn handle_peer_send_resolves_name_in_sender_workspace_not_active_tab() {
         "task for MY worker".to_string(),
     )
     .expect("name send succeeds");
-    let targets: Vec<usize> = std::iter::from_fn(|| rx.try_recv().ok())
-        .filter_map(|ev| match ev {
-            ipc::Event::PeerInbox { target_pane, .. } => Some(target_pane),
-            _ => None,
-        })
-        .collect();
+    let inbox_targets = |rx: &std::sync::mpsc::Receiver<ipc::Event>| -> Vec<usize> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|ev| match ev {
+                ipc::Event::PeerInbox { target_pane, .. } => Some(target_pane),
+                _ => None,
+            })
+            .collect()
+    };
     assert_eq!(
-        targets,
+        inbox_targets(&mine),
         vec![same_tab_worker],
         "name must resolve to the sender's own tab, not the visible tab \
          (other-tab worker is {other_tab_worker})"
+    );
+    assert!(
+        inbox_targets(&theirs).is_empty(),
+        "the identically named pane in the visible tab must receive nothing"
     );
     app.shutdown();
 }
@@ -300,10 +333,18 @@ fn handle_peer_send_rejects_a_name_that_only_exists_in_another_tab() {
     // name never leaves the sender's workspace, and an unresolvable
     // target errors instead of faking "Delivered".
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
-    app.handle_new_tab(None, Some("far-worker".into()), None, None, None)
+    let far_worker = app
+        .handle_new_tab(None, Some("far-worker".into()), None, None, None)
         .expect("new tab succeeds");
+    // Bind to the only pane the name could have wrongly resolved to.
+    // An unscoped subscription carries every pane's `PeerInbox`, so the
+    // assertion below would have to re-check `target_pane` to mean
+    // anything; binding states it structurally — this receiver holds
+    // far-worker's mail or it holds nothing.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(far_worker));
     while rx.try_recv().is_ok() {}
 
     let err = app
@@ -488,7 +529,6 @@ fn flush_cancels_half_delivered_nudge_once_target_pane_is_watched() {
 #[test]
 fn handle_peer_send_queues_codex_nudge_and_emits_peer_inbox() {
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     let sibling_id = app
         .handle_split(
@@ -506,6 +546,12 @@ fn handle_peer_send_queues_codex_nudge_and_emits_peer_inbox() {
         .insert(sibling_id, PeerClientKind::Codex);
     app.handle_focus(&ipc::PaneRef::Id(sender_id), None)
         .expect("refocus sender");
+    // #306: bound to the target pane. A Codex target is no exception —
+    // the nudge is an extra delivery path, not a replacement for the
+    // event, so this receiver must still see one.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(sibling_id));
     while rx.try_recv().is_ok() {}
 
     app.handle_peer_send(
@@ -681,7 +727,6 @@ fn forward_paste_to_pty_clears_codex_transcript_overlay_hint() {
 #[test]
 fn handle_peer_send_defers_codex_nudge_while_target_is_focused() {
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     let sibling_id = app
         .handle_split(
@@ -699,6 +744,11 @@ fn handle_peer_send_defers_codex_nudge_while_target_is_focused() {
         .insert(sibling_id, PeerClientKind::Codex);
     app.handle_focus(&ipc::PaneRef::Id(sibling_id), None)
         .expect("focus sibling");
+    // #306: bound to the target pane, the same one the deferred nudge
+    // is queued for.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(sibling_id));
     while rx.try_recv().is_ok() {}
 
     app.handle_peer_send(
@@ -1255,7 +1305,6 @@ fn handle_peer_send_dedupes_identical_payload_within_window() {
     // worker can paper the receiver's transcript with phantom
     // Human: turns.
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     let sibling_id = app
         .handle_split(
@@ -1269,6 +1318,11 @@ fn handle_peer_send_dedupes_identical_payload_within_window() {
             None,
         )
         .expect("split succeeds");
+    // #306: bound to the target pane, so the "how many arrived" count
+    // is read off a receiver that can hold nothing else.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(sibling_id));
     while rx.try_recv().is_ok() {}
 
     app.handle_peer_send(sender_id, &ipc::PaneRef::Id(sibling_id), "ack".to_string())
@@ -1297,7 +1351,6 @@ fn handle_peer_send_distinct_bodies_are_not_deduped() {
     // "every reply gets the same prefix" pattern would silently
     // swallow follow-ups.
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_id = app.ws().focused_pane_id;
     let sibling_id = app
         .handle_split(
@@ -1311,6 +1364,10 @@ fn handle_peer_send_distinct_bodies_are_not_deduped() {
             None,
         )
         .expect("split succeeds");
+    // #306: bound to the target pane.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(sibling_id));
     while rx.try_recv().is_ok() {}
 
     app.handle_peer_send(
@@ -1342,7 +1399,6 @@ fn handle_peer_send_dedupe_does_not_collapse_distinct_senders() {
     // sending the same text must both deliver, since they really
     // are independent messages in the human sense.
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let sender_a = app.ws().focused_pane_id;
     let sender_b = app
         .handle_split(
@@ -1368,6 +1424,12 @@ fn handle_peer_send_dedupe_does_not_collapse_distinct_senders() {
             None,
         )
         .expect("split succeeds (target)");
+    // #306: both sends address the same pane, so one bound receiver
+    // sees both deliveries — which is exactly the fan-in this test is
+    // about.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(target));
     while rx.try_recv().is_ok() {}
 
     app.handle_peer_send(sender_a, &ipc::PaneRef::Id(target), "ping".to_string())

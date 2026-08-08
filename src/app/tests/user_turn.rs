@@ -524,8 +524,15 @@ fn user_turn_result(
 #[test]
 fn refusal_writes_nothing_and_emits_no_peer_inbox() {
     let mut app = App::new(40, 80).expect("App::new");
-    let (_sub_id, rx) = app.event_bus.subscribe();
     let pane_id = app.ws().focused_pane_id;
+    // Bound to the pane the refused turn addresses. A leaked
+    // `PeerInbox` could only carry `target_pane == pane_id`, so this is
+    // the narrowest receiver that would still catch one — and the one
+    // that catches it with no other pane's traffic mixed in. An
+    // unscoped subscription would work too, just noisily.
+    let (_sub_id, rx) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(pane_id));
     while rx.try_recv().is_ok() {}
 
     // Plain shell pane: no turn-taking agent behind it.
@@ -811,6 +818,95 @@ fn a_multiline_body_is_accepted_when_bracketed_paste_is_on() {
     );
     assert!(rx.try_recv().is_err(), "accepted, so deferred");
     assert_eq!(app.pending_user_turns.len(), 1);
+    app.shutdown();
+}
+
+/// Drain `rx` and return just the `PeerInbox` events it held, as
+/// `(target_pane, body)`. Every subscriber also sees pane lifecycle
+/// traffic from `App::new`, and none of that is under test here.
+fn drained_peer_inboxes(rx: &Receiver<ipc::Event>) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let ipc::Event::PeerInbox {
+            target_pane, body, ..
+        } = event
+        {
+            out.push((target_pane, body));
+        }
+    }
+    out
+}
+
+/// The two delivery modes against the #306 routing, pinned together.
+///
+/// Both halves live in one test on purpose. "A user turn emits no
+/// `PeerInbox`" is only worth anything next to evidence that this very
+/// harness *does* observe one when the other mode runs: if pane-scoped
+/// routing regressed into never matching, or the subscriber were bound
+/// to the wrong pane, a `UserTurn`-only test would keep passing for
+/// entirely the wrong reason. Running the channel send first through the
+/// same bus, the same target pane and the same receiver removes that
+/// vacuous-pass mode.
+///
+/// The unscoped subscriber earns its keep on both halves. On the channel
+/// half it is the guard on #306 being non-breaking: a subscription that
+/// names no pane must still see the `PeerInbox`, exactly as it did
+/// before the issue. On the user-turn half it makes "no `PeerInbox` for
+/// anyone" literal — a user turn is typed into the composer, and must
+/// never *also* arrive as a channel tag, no matter how a subscriber
+/// registered.
+#[test]
+fn channel_delivery_reaches_the_bound_subscriber_and_a_user_turn_emits_no_peer_inbox() {
+    let (mut app, pane_id) = app_with_ready_claude_pane();
+    let (_bound_id, bound) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(pane_id));
+    let (_unscoped_id, unscoped) = app.event_bus.subscribe();
+
+    // Channel delivery, unchanged by #306: the subscriber that bound
+    // itself to the target pane gets it, which is what opting in buys.
+    app.handle_peer_send(
+        pane_id,
+        &ipc::PaneRef::Id(pane_id),
+        "channel body".to_string(),
+    )
+    .expect("channel send accepted");
+    assert_eq!(
+        drained_peer_inboxes(&bound),
+        vec![(pane_id, "channel body".to_string())],
+        "a channel send must still reach the subscriber bound to its target pane"
+    );
+    // And so does the one that named no pane: that subscription keeps
+    // the pre-#306 stream verbatim, which is the guarantee that makes
+    // #306 a minor rather than a break. Draining here also keeps the
+    // second half's absence assertion honest.
+    assert_eq!(
+        drained_peer_inboxes(&unscoped),
+        vec![(pane_id, "channel body".to_string())],
+        "a subscription that named no pane must still receive every channel send, as before #306"
+    );
+
+    // User-turn delivery: accepted (bytes written, reply parked) and
+    // yet no PeerInbox for anyone.
+    let (tx, rx) = oneshot::channel();
+    app.handle_peer_send_user_turn(pane_id, &ipc::PaneRef::Id(pane_id), "/loop".into(), tx);
+    assert!(
+        rx.try_recv().is_err(),
+        "the delivery must have been accepted and parked, not refused"
+    );
+    assert_eq!(
+        app.user_turn_writes,
+        vec![(pane_id, b"/loop".to_vec())],
+        "the body must have gone to the composer"
+    );
+    assert!(
+        drained_peer_inboxes(&bound).is_empty(),
+        "a user turn must not also arrive as a channel tag on the target's own subscriber"
+    );
+    assert!(
+        drained_peer_inboxes(&unscoped).is_empty(),
+        "nor on a subscription that named no pane, which just saw the channel send arrive"
+    );
     app.shutdown();
 }
 

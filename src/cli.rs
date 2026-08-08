@@ -228,6 +228,15 @@ pub enum IpcCommand {
     /// line to stdout until the renga server closes the connection or
     /// one of `--timeout` / `--count` stops the drain. Pipeable into
     /// `while read -r line` for reactive shell scripts.
+    ///
+    /// The stream is unscoped, exactly as it has always been: it carries
+    /// `pane_started`, `pane_exited`, `events_dropped` and `heartbeat`,
+    /// plus every `peer_inbox` no matter which pane the message was
+    /// addressed to. Since #306 an IPC client may narrow that by sending
+    /// `from_pane` on its `subscribe` request and receive only the
+    /// `peer_inbox` for that one pane; this command deliberately does
+    /// not, so its output is unchanged. Use the `renga mcp-peer` tools
+    /// if you want just one pane's peer messages.
     Events {
         /// Stop after this duration (e.g. "2s", "500ms", "1m"). If
         /// unset the stream continues until the server closes the
@@ -484,7 +493,17 @@ impl IpcCommand {
                     from_pane: None,
                 })
             }
-            IpcCommand::Events { .. } => Ok(Request::Subscribe),
+            // `renga events` subscribes unscoped: it is a generic tap
+            // for shell scripts, not a pane's inbox, and it has no pane
+            // identity of its own to declare (it runs from whatever
+            // shell the operator typed it in, which may not be a renga
+            // pane at all). `from_pane: None` therefore declines #306's
+            // opt-in narrowing, which is what keeps this stream exactly
+            // what it was before #306 — `peer_inbox` lines for every pane
+            // included. `from_pane` is for consumers that want one pane's
+            // mail and nothing else; a CLI tap is the opposite of that,
+            // so there is deliberately no flag for it here.
+            IpcCommand::Events { .. } => Ok(Request::Subscribe { from_pane: None }),
             IpcCommand::Inspect {
                 name,
                 id,
@@ -897,11 +916,24 @@ mod tests {
         }
     }
 
+    /// `renga events` must stay *unscoped* (`from_pane: None`). That is
+    /// what keeps its output identical to every previous release under
+    /// #306, and it keeps its wire form byte-identical too
+    /// (`skip_serializing_if` drops the `None`, so the line is still
+    /// exactly `{"cmd":"subscribe"}` and an older server sees nothing
+    /// new). Pinning the exact variant rather than just "is a Subscribe"
+    /// is the point: wiring some pane id in here would silently narrow
+    /// the CLI's long-standing output to one pane's `peer_inbox`, which
+    /// is the regression #306 must not cause.
     #[test]
-    fn events_to_request_is_subscribe() {
+    fn events_to_request_is_an_unscoped_subscribe() {
         let cli = Cli::try_parse_from(["renga", "events", "--count", "3"]).unwrap();
         let req = cli.command.unwrap().to_request().unwrap();
-        assert!(matches!(req, crate::ipc::Request::Subscribe));
+        assert_eq!(req, crate::ipc::Request::Subscribe { from_pane: None });
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"cmd":"subscribe"}"#
+        );
     }
 
     #[test]

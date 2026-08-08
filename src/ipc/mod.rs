@@ -50,7 +50,7 @@ pub mod endpoint;
 pub mod events;
 pub mod server;
 
-pub use events::EventBus;
+pub use events::{EventBus, EventScope};
 
 /// Hard cap on the total number of lines an [`Request::Inspect`] call
 /// returns (visible screen + scrollback continuation). The vt100
@@ -132,6 +132,29 @@ pub const CAP_CALLER_SCOPE_CLOSE_IDENTITY: &str = "caller_scope_close_identity";
 /// closed when it is absent.
 pub const CAP_PEER_USER_TURN: &str = "peer_user_turn";
 
+/// Capability token advertised by servers that **honor** `from_pane`
+/// on [`Request::Subscribe`] — i.e. that route [`Event::PeerInbox`] to
+/// the subscribers bound to its `target_pane` rather than handing it to
+/// every subscriber (Issue #306). It says nothing about a subscription
+/// that omits `from_pane`: those keep receiving the full broadcast on
+/// every server, old or new.
+///
+/// Deliberately distinct from every token above in one important way:
+/// it is **advertise-only**. No client gates on it, nothing calls
+/// [`client::send_request_requiring`] with it, and its absence changes
+/// no client behaviour. That is safe here — unlike the wrong-tab
+/// accidents `caller_scope` / `spawn_tab` / `caller_scope_close_identity`
+/// exist to prevent, an older server that ignores the field merely does
+/// what it always did (broadcast everything), and the client-side
+/// `target_pane` check still discards events addressed elsewhere. So
+/// the fallback for a client that asked to be scoped is client-side
+/// filtering of a wider stream — a performance regression at worst,
+/// never a wrong result. The token exists so operators and integration
+/// tests can tell from `Response::Hello` whether the `from_pane` they
+/// send will actually be honored, without having to infer it from
+/// observed traffic.
+pub const CAP_SUBSCRIBE_PANE_SCOPE: &str = "subscribe_pane_scope";
+
 /// Every capability token this build's server advertises. Additive by
 /// construction — clients match on tokens they know and ignore the
 /// rest.
@@ -141,6 +164,7 @@ pub const SERVER_CAPABILITIES: &[&str] = &[
     CAP_SPAWN_TAB,
     CAP_CALLER_SCOPE_CLOSE_IDENTITY,
     CAP_PEER_USER_TURN,
+    CAP_SUBSCRIBE_PANE_SCOPE,
 ];
 
 /// One IPC call from a client to the running renga instance.
@@ -349,7 +373,53 @@ pub enum Request {
     /// server acknowledges with [`Response::Subscribed`], it emits
     /// [`Event`] JSON Lines until the client disconnects. No further
     /// [`Request`]s are accepted on this connection.
-    Subscribe,
+    ///
+    /// `from_pane` **opts** this subscription into a pane inbox (Issue
+    /// #306). Note this is *not* the caller-tab scoping the field
+    /// means on the requests above — nothing about tabs is involved.
+    /// It selects which slice of the stream this connection receives:
+    ///
+    /// - `from_pane: Some(id)` — lifecycle events, plus **only** the
+    ///   [`Event::PeerInbox`] whose `target_pane` is `id`; peer traffic
+    ///   for other panes is never enqueued on this connection. This is
+    ///   what the bundled `renga mcp-peer` sends, naming the pane it
+    ///   runs in.
+    /// - `from_pane: None` — unchanged pre-#306 behavior: every event,
+    ///   including every `PeerInbox` whatever its `target_pane`. Every
+    ///   pre-#306 client and `renga events` land here and see exactly
+    ///   the stream they always saw. Omitting the field costs nothing
+    ///   and changes nothing, which is what makes #306 a minor rather
+    ///   than a break (`docs/semver-policy-2.0.md` §3: a new optional
+    ///   input whose default preserves prior behavior).
+    ///
+    /// A client opts in when it only ever cares about one pane's
+    /// inbox, as `mcp-peer` does. What it gains is defense in depth,
+    /// not authentication — any process running as this user can name
+    /// any pane id (see the module threat model). Concretely: other
+    /// panes' peer traffic stops being copied into this connection's
+    /// bounded queue, which removes both unintended delivery to other
+    /// panes and the queue pressure those copies caused. A client that
+    /// genuinely wants the whole firehose (`renga events`) simply does
+    /// not send the field.
+    ///
+    /// Wire note: this was a unit variant before #306. With
+    /// `skip_serializing_if` on the added field, `Subscribe {
+    /// from_pane: None }` still serializes to exactly
+    /// `{"cmd":"subscribe"}` and the bare `{"cmd":"subscribe"}` still
+    /// deserializes — see
+    /// `subscribe_request_raw_json_shape_is_unchanged_without_from_pane`.
+    /// In the other direction, a pre-#306 server parsing the new
+    /// `{"cmd":"subscribe","from_pane":N}` ignores the unknown key
+    /// (`Request` has no `deny_unknown_fields`) and broadcasts as it
+    /// always did; the client's own `target_pane` check then discards
+    /// what is not its own — so a new client degrades to client-side
+    /// filtering rather than erroring. That is why this needs no
+    /// [`client::send_request_requiring`] gate, unlike the other
+    /// capability-bearing fields on this enum.
+    Subscribe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane: Option<usize>,
+    },
     /// Snapshot the rendered contents of the target pane. Returns
     /// plain text in row-addressable form so orchestrators can detect
     /// prompts like "Allow this tool use?", error banners, or mode
@@ -1043,10 +1113,32 @@ pub enum Event {
     /// A peer message destined for `target_pane`. Emitted by the server
     /// in response to a `Request::PeerSend` whose target resolved to a
     /// live pane — in any tab, since Issue #289 removed the same-tab
-    /// restriction. Subscribers filter on `target_pane` to pick out
-    /// their own inbox (pane ids are unique across the whole session,
-    /// so the filter needs no tab awareness); all other subscribers
-    /// ignore the event.
+    /// restriction.
+    ///
+    /// This is the **only** `Event` variant whose delivery depends on
+    /// who is listening. Every other variant above goes to every live
+    /// subscriber, full stop. This one is delivered as follows since
+    /// Issue #306:
+    ///
+    /// - To a subscription that sent
+    ///   [`from_pane`](Request::Subscribe::from_pane) — routed: it is
+    ///   enqueued only if `target_pane` equals that pane, and every
+    ///   subscription bound to that pane gets it, not just one.
+    /// - To a subscription that did not — broadcast, exactly as
+    ///   before #306: it receives every `PeerInbox` whatever the
+    ///   `target_pane`. `renga events` is such a subscription.
+    ///
+    /// Pane ids are unique across the whole session, so the routing
+    /// needs no tab awareness. Clients retain their own `target_pane`
+    /// check as a backstop — that check is what keeps a scoped client
+    /// correct against a pre-#306 server, which ignores `from_pane`
+    /// and broadcasts to everyone.
+    ///
+    /// Server-side routing is defense in depth, not a boundary: any
+    /// process running as this user can bind any pane id (see the
+    /// module threat model). What it removes, for the subscribers that
+    /// ask for it, is unintended delivery to other panes and the queue
+    /// pressure of copying every peer message into every subscriber.
     PeerInbox {
         /// Pane the message is addressed to.
         target_pane: usize,
@@ -1787,7 +1879,73 @@ mod tests {
 
     #[test]
     fn subscribe_request_roundtrips() {
-        assert_eq!(roundtrip(&Request::Subscribe), Request::Subscribe);
+        let r = Request::Subscribe { from_pane: None };
+        assert_eq!(roundtrip(&r), r);
+    }
+
+    // ─── Issue #306 wire compatibility ────────────────────
+    //
+    // `Subscribe` gained an optional `from_pane` exactly the way the
+    // five #288 requests gained theirs, and — because omitting it
+    // preserves the prior stream verbatim — with the same
+    // non-breaking status. The same two proofs apply: byte-identical
+    // output for the old shape, old input still decoding — plus a
+    // third, in the new-client → old-server direction, since that is
+    // the case whose fallback the design relies on.
+
+    /// `Subscribe` changed from a unit variant to a struct variant.
+    /// That is only safe because a fully-skipped struct variant
+    /// serializes to the same object an internally-tagged unit variant
+    /// does.
+    #[test]
+    fn subscribe_request_raw_json_shape_is_unchanged_without_from_pane() {
+        let s = serde_json::to_string(&Request::Subscribe { from_pane: None }).unwrap();
+        assert_eq!(s, r#"{"cmd":"subscribe"}"#);
+    }
+
+    /// The verbatim line every pre-#306 client puts on the wire. It
+    /// must still decode, and must land on `from_pane: None` — the
+    /// unscoped, full-broadcast semantics it has always had.
+    #[test]
+    fn pre_306_raw_subscribe_decodes_as_unscoped() {
+        let parsed: Request = serde_json::from_str(r#"{"cmd":"subscribe"}"#).unwrap();
+        assert_eq!(parsed, Request::Subscribe { from_pane: None });
+    }
+
+    #[test]
+    fn scoped_subscribe_request_carries_from_pane() {
+        let r = Request::Subscribe { from_pane: Some(7) };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains(r#""from_pane":7"#), "missing from_pane: {s}");
+        assert_eq!(roundtrip(&r), r);
+    }
+
+    /// New client → old server. A pre-#306 server modelled the request
+    /// as an internally-tagged **unit** variant; serde ignores keys a
+    /// unit variant does not know, so the new wire form still parses
+    /// there. That is what makes the fallback a degradation (server
+    /// broadcasts, client-side `target_pane` check filters) rather than
+    /// a hard `parse_error` on subscribe.
+    #[test]
+    fn new_subscribe_wire_form_still_parses_on_a_pre_306_server() {
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(tag = "cmd", rename_all = "snake_case")]
+        enum LegacyRequest {
+            Subscribe,
+        }
+
+        let parsed: LegacyRequest =
+            serde_json::from_str(r#"{"cmd":"subscribe","from_pane":7}"#).unwrap();
+        assert_eq!(parsed, LegacyRequest::Subscribe);
+    }
+
+    #[test]
+    fn subscribe_pane_scope_capability_is_advertised() {
+        assert!(
+            SERVER_CAPABILITIES.contains(&CAP_SUBSCRIBE_PANE_SCOPE),
+            "operators inspect Hello.capabilities to tell whether a \
+             `from_pane` on subscribe will actually be honored"
+        );
     }
 
     #[test]

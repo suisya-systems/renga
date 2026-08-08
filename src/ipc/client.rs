@@ -14,7 +14,7 @@ use interprocess::local_socket::{prelude::*, Stream};
 use subtle::ConstantTimeEq;
 
 use super::endpoint::{EndpointName, ENV_TOKEN};
-use super::{Event, Request, Response, RESPONSE_TIMEOUT};
+use super::{Event, EventScope, Request, Response, RESPONSE_TIMEOUT};
 
 /// Send a single request to the endpoint and return the response.
 ///
@@ -172,7 +172,7 @@ pub fn probe_server(endpoint: &EndpointName) -> Result<ServerHandshake> {
 }
 
 /// Send `hello`, validate the reply, and hand back what the server
-/// advertised. Shared by [`converse`], [`subscribe_events`], and
+/// advertised. Shared by [`converse`], [`subscribe_events_scoped`], and
 /// [`probe_server`] so the three cannot drift on token verification or
 /// on the error strings operators grep for.
 fn perform_handshake(reader: &mut BufReader<Stream>) -> Result<ServerHandshake> {
@@ -227,8 +227,21 @@ fn converse(
     Ok(resp)
 }
 
-/// Open a long-lived connection, complete the handshake, send
-/// [`Request::Subscribe`], then stream [`Event`]s into `on_event`
+/// Subscribe to the **whole** event stream: every lifecycle event
+/// (`pane_started`, `pane_exited`, `events_dropped`, `heartbeat`) *and*
+/// every [`Event::PeerInbox`], whatever pane it is addressed to. This is
+/// the tap behind `renga events` and it behaves exactly as it did before
+/// Issue #306 — the request it puts on the wire declares no pane, so the
+/// server applies no routing to it.
+///
+/// Scoping is opt-in and this entry point declines it. A caller that
+/// only cares about one pane's mail should use [`subscribe_inbox_events`]
+/// instead: it gets the same lifecycle events without the rest of the
+/// session's peer traffic passing through its queue. Everything else
+/// about the two is identical.
+///
+/// Opens a long-lived connection, completes the handshake, sends
+/// [`Request::Subscribe`], then streams [`Event`]s into `on_event`
 /// until either the server closes the connection, the callback
 /// returns `false`, or an I/O error occurs.
 ///
@@ -236,7 +249,62 @@ fn converse(
 /// thread for the full lifetime of the stream. Callers that want a
 /// finite stream should wrap it in a thread or return `false` from
 /// `on_event` when done.
-pub fn subscribe_events<F>(endpoint: &EndpointName, mut on_event: F) -> Result<()>
+pub fn subscribe_events<F>(endpoint: &EndpointName, on_event: F) -> Result<()>
+where
+    F: FnMut(Event) -> bool,
+{
+    subscribe_events_scoped(endpoint, EventScope::Unscoped, on_event)
+}
+
+/// Subscribe to lifecycle events **plus only** the [`Event::PeerInbox`]
+/// messages addressed to `pane_id` — the opt-in narrowing added by Issue
+/// #306. Otherwise identical to [`subscribe_events`], including the
+/// blocking / `false`-to-stop contract; the difference is purely that
+/// other panes' peer messages are never sent down this connection.
+///
+/// `pane_id` is the pane the caller itself runs in, read from
+/// `RENGA_PANE_ID`. It travels as `Request::Subscribe { from_pane }` and
+/// is the *only* thing that binds this connection to an inbox: the
+/// server deliberately does not infer it from the handshake pid or from
+/// an earlier `PeerRegisterClient`, since neither describes *this*
+/// subscription.
+///
+/// **The caller must still check `target_pane` on every `PeerInbox` it
+/// receives.** Server-side routing is an optimisation layered on top of
+/// that check, not a replacement for it, for a concrete reason: a renga
+/// binary can be upgraded on disk while the old server process keeps
+/// running, so this client may well be talking to a pre-#306 server that
+/// broadcasts every peer message to every subscriber. The client-side
+/// comparison is what keeps that combination correct. It also costs
+/// nothing to keep — see `classify_inbox_event` in the `mcp_peer`
+/// module.
+///
+/// Naming a pane here is not authentication; any process running as this
+/// user can name any pane id (see the threat model in [`super`]). What
+/// it buys is defense in depth: another pane's peer messages are no
+/// longer copied into *this* subscriber's queue, which removes both the
+/// unintended delivery to a pane the message was not meant for and the
+/// queue pressure those copies caused. Callers that decline the opt-in
+/// keep the full stream and give up nothing else.
+pub fn subscribe_inbox_events<F>(endpoint: &EndpointName, pane_id: usize, on_event: F) -> Result<()>
+where
+    F: FnMut(Event) -> bool,
+{
+    subscribe_events_scoped(endpoint, EventScope::PaneInbox(pane_id), on_event)
+}
+
+/// Shared body of [`subscribe_events`] and [`subscribe_inbox_events`].
+///
+/// The two public entry points exist so a caller has to say which slice
+/// of the stream it wants; the wire difference between them is exactly
+/// the `from_pane` field this function derives from `scope`. Keeping the
+/// I/O in one place means the handshake, the `Subscribed` ack handling
+/// and the forward-compat skip logic cannot drift between them.
+fn subscribe_events_scoped<F>(
+    endpoint: &EndpointName,
+    scope: EventScope,
+    mut on_event: F,
+) -> Result<()>
 where
     F: FnMut(Event) -> bool,
 {
@@ -246,13 +314,17 @@ where
     let mut reader = BufReader::new(conn);
 
     // Handshake (same as converse). Event subscribers don't gate on
-    // capabilities: unknown `Event` variants are skipped by the read
-    // loop below, so an old server is degraded-but-correct here rather
-    // than silently wrong.
+    // capabilities — not on `subscribe_pane_scope` either: unknown
+    // `Event` variants are skipped by the read loop below, and a
+    // pre-#306 server drops the unknown `from_pane` and simply
+    // broadcasts, which the caller's own `target_pane` check absorbs. An
+    // old server is therefore degraded-but-correct here rather than
+    // silently wrong, and failing closed would only take away a stream
+    // that still works.
     perform_handshake(&mut reader)?;
 
     // Switch into event-stream mode.
-    write_request_line(reader.get_mut(), &Request::Subscribe)?;
+    write_request_line(reader.get_mut(), &subscribe_request_for(scope))?;
     match read_response_line(&mut reader)? {
         Response::Subscribed => {}
         Response::Err { message, code } => {
@@ -300,10 +372,35 @@ where
     }
 }
 
+/// Translate a client-side [`EventScope`] into the `subscribe` request
+/// that asks for it.
+///
+/// Split out of [`subscribe_events_scoped`] so the wire consequence of
+/// each entry point can be asserted without standing up a server — in
+/// particular that [`subscribe_events`] names no pane and therefore
+/// keeps serializing to exactly `{"cmd":"subscribe"}`, the shape every
+/// renga server ever shipped already understands and answers with the
+/// full broadcast.
+fn subscribe_request_for(scope: EventScope) -> Request {
+    Request::Subscribe {
+        from_pane: match scope {
+            EventScope::Unscoped => None,
+            EventScope::PaneInbox(pane_id) => Some(pane_id),
+        },
+    }
+}
+
 /// True when `line` is valid JSON for an object whose `type` field is
 /// a string but not one of the [`Event`] variants this client knows
 /// about. Only this narrow case is swallowed by the subscribe loop;
 /// malformed JSON or wrong shapes on known variants still surface.
+///
+/// [`KNOWN_EVENT_TAGS`] must name **every** [`Event`] variant. A missing
+/// tag is not a harmless omission: it reclassifies a shape error on a
+/// real variant as "some future server sent something new", and the
+/// subscribe loop then discards the line without a word. `peer_inbox`
+/// was missing here until Issue #306, which meant a malformed peer
+/// message vanished instead of surfacing as a parse error.
 fn is_unknown_event_variant(line: &str) -> bool {
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -313,11 +410,27 @@ fn is_unknown_event_variant(line: &str) -> bool {
         Some(s) => s,
         None => return false,
     };
-    !matches!(
-        ty,
-        "pane_started" | "pane_exited" | "events_dropped" | "heartbeat"
-    )
+    !KNOWN_EVENT_TAGS.contains(&ty)
 }
+
+/// The serde `type` tag of every [`Event`] variant this client can
+/// parse.
+///
+/// **Adding an `Event` variant means adding its tag here.** Rust cannot
+/// enforce that on its own — a `&str` match has no exhaustiveness check
+/// — so the guard is split across two places that a new variant does
+/// break: `wire_tag` in this module's tests is an exhaustive `match` and
+/// stops compiling, and `every_event_variant_tag_is_known_to_the_client`
+/// asserts this list and the sample set agree in length. Between them a
+/// maintainer has to touch this constant deliberately rather than by
+/// remembering to.
+const KNOWN_EVENT_TAGS: &[&str] = &[
+    "pane_started",
+    "pane_exited",
+    "events_dropped",
+    "heartbeat",
+    "peer_inbox",
+];
 
 /// Render an error `message` plus optional machine-readable `code` as
 /// a single human string. Shell-visible so operators can grep by code.
@@ -435,6 +548,157 @@ mod tests {
         assert!(!is_unknown_event_variant(r#"{"id":1,"ts_ms":1}"#));
     }
 
+    /// The wire tag serde derives for each [`Event`] variant.
+    ///
+    /// Exhaustive by construction: no wildcard arm, so adding an
+    /// `Event` variant stops this file compiling until someone states
+    /// its tag here. That is the one compile-time hook available —
+    /// [`KNOWN_EVENT_TAGS`] is a `&str` list and `is_unknown_event_variant`
+    /// matches against it at runtime, neither of which Rust can check
+    /// for exhaustiveness. So this arm is where a maintainer is
+    /// *stopped*, and the length assertion in
+    /// `every_event_variant_tag_is_known_to_the_client` is what then
+    /// sends them to [`KNOWN_EVENT_TAGS`] and to
+    /// [`one_of_every_event_variant`] rather than letting a green suite
+    /// imply the work is finished. `peer_inbox` was silently absent
+    /// from the matcher for as long as that list was maintained purely
+    /// by hand.
+    fn wire_tag(event: &Event) -> &'static str {
+        match event {
+            Event::PaneStarted { .. } => "pane_started",
+            Event::PaneExited { .. } => "pane_exited",
+            Event::EventsDropped { .. } => "events_dropped",
+            Event::Heartbeat { .. } => "heartbeat",
+            Event::PeerInbox { .. } => "peer_inbox",
+        }
+    }
+
+    /// One sample of every [`Event`] variant, so the pin below can
+    /// serialize each and check the real serde output rather than a
+    /// hand-written string that could drift from it.
+    fn one_of_every_event_variant() -> Vec<Event> {
+        vec![
+            Event::PaneStarted {
+                id: 1,
+                name: None,
+                role: None,
+                ts_ms: 1,
+            },
+            Event::PaneExited {
+                id: 1,
+                name: None,
+                role: None,
+                ts_ms: 1,
+            },
+            Event::EventsDropped { count: 2, ts_ms: 1 },
+            Event::Heartbeat { ts_ms: 1 },
+            Event::PeerInbox {
+                target_pane: 3,
+                from_pane: 4,
+                from_name: Some("sender".into()),
+                from_kind: None,
+                body: "hi".into(),
+                ts_ms: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn every_event_variant_tag_is_known_to_the_client() {
+        let samples = one_of_every_event_variant();
+        // Catches the half `wire_tag`'s exhaustive match cannot: a new
+        // variant that was given a tag there but never added to
+        // `KNOWN_EVENT_TAGS`, or added to the constant but left without
+        // a sample, so that the loop below silently exercises nothing.
+        let mut tags: Vec<&str> = samples.iter().map(wire_tag).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(
+            tags.len(),
+            samples.len(),
+            "one_of_every_event_variant must not sample the same variant twice"
+        );
+        let mut known = KNOWN_EVENT_TAGS.to_vec();
+        known.sort_unstable();
+        assert_eq!(
+            tags, known,
+            "KNOWN_EVENT_TAGS and the sample set have diverged — a new Event \
+             variant needs a tag in the constant AND a sample here, or a \
+             malformed line of that type will be silently discarded"
+        );
+        for event in samples {
+            let json = serde_json::to_string(&event).expect("serialize event");
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                parsed.get("type").and_then(|v| v.as_str()),
+                Some(wire_tag(&event)),
+                "serde tag drifted from wire_tag for {event:?}"
+            );
+            assert!(
+                !is_unknown_event_variant(&json),
+                "{} is a real Event variant but the client treats it as unknown \
+                 and would silently drop it",
+                wire_tag(&event)
+            );
+        }
+    }
+
+    // ─── Issue #306 subscribe scoping ─────────────────────
+
+    /// The split API only helps if the two entry points really do put
+    /// different things on the wire. Pin both directions, plus the byte
+    /// shape of the unscoped one: `renga events` and every pre-#306
+    /// client send exactly `{"cmd":"subscribe"}`, and a new client must
+    /// keep doing so — both so old servers never see an unfamiliar line,
+    /// and so that declining the #306 opt-in really is a no-op on the
+    /// wire rather than a subtly different request.
+    #[test]
+    fn unscoped_sends_the_legacy_subscribe() {
+        let req = subscribe_request_for(EventScope::Unscoped);
+        assert_eq!(req, Request::Subscribe { from_pane: None });
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"cmd":"subscribe"}"#
+        );
+    }
+
+    #[test]
+    fn inbox_scope_names_the_pane_on_the_wire() {
+        let req = subscribe_request_for(EventScope::PaneInbox(7));
+        assert_eq!(req, Request::Subscribe { from_pane: Some(7) });
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"cmd":"subscribe","from_pane":7}"#
+        );
+    }
+
+    /// Pane 0 is a real pane id in renga, and `Option` makes it easy to
+    /// write a mapping where a falsy pane silently degrades to "no pane
+    /// named". A subscriber for pane 0 must bind pane 0; degrading it to
+    /// the unscoped stream would not lose events — the unscoped stream is
+    /// a superset — but it would silently hand pane 0 the whole session's
+    /// peer traffic, i.e. the firehose it explicitly opted out of.
+    #[test]
+    fn pane_zero_binds_the_pane_instead_of_degrading_to_unscoped() {
+        assert_eq!(
+            subscribe_request_for(EventScope::PaneInbox(0)),
+            Request::Subscribe { from_pane: Some(0) }
+        );
+    }
+
+    /// The bug the missing `peer_inbox` tag caused, pinned directly: a
+    /// `peer_inbox` line whose shape is wrong (here `target_pane` is a
+    /// string, and the required fields are absent) must be reported as
+    /// a parse error by the subscribe loop, not swallowed as "a future
+    /// server sent a variant we don't know".
+    #[test]
+    fn malformed_peer_inbox_is_not_swallowed_as_a_future_variant() {
+        assert!(!is_unknown_event_variant(
+            r#"{"type":"peer_inbox","target_pane":"not-a-number"}"#
+        ));
+        assert!(!is_unknown_event_variant(r#"{"type":"peer_inbox"}"#));
+    }
+
     #[test]
     fn write_request_line_is_newline_terminated() {
         let mut out: Vec<u8> = Vec::new();
@@ -471,6 +735,15 @@ mod tests {
     /// reason #304 does not: it changes what a request *does*, and an
     /// older server would ignore the new `deliver` field and perform a
     /// channel send while answering `Ok`.
+    ///
+    /// `subscribe_pane_scope` is #306's, and is a third kind again:
+    /// advertise-only. Nothing in this file passes it to
+    /// [`send_request_requiring`], because an old server's fallback
+    /// (ignore `from_pane`, broadcast everything — which is also what a
+    /// new server does for a subscription that names no pane) is still
+    /// correct once the subscriber applies its own `target_pane` check.
+    /// It is on the list purely so `server_info` can report whether a
+    /// `from_pane` on subscribe will actually be honored.
     #[test]
     fn capability_exposure_mints_no_new_token() {
         assert_eq!(
@@ -481,6 +754,7 @@ mod tests {
                 super::super::CAP_SPAWN_TAB,
                 super::super::CAP_CALLER_SCOPE_CLOSE_IDENTITY,
                 super::super::CAP_PEER_USER_TURN,
+                super::super::CAP_SUBSCRIBE_PANE_SCOPE,
             ],
             "#304 is introspection only and adds no capability token"
         );

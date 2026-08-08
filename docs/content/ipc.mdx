@@ -98,6 +98,27 @@ renga events --timeout 5s --count 10
 - `events_dropped`: 購読が遅くて event がドロップされた合算数 (subscriber 側でリコンサイル推奨)
 - `heartbeat`: 30 秒おきに出る keep-alive。接続が生きていることの確認以外に意味はない (無視して良い)
 
+#### 購読スコープと `peer_inbox`
+
+このコマンドの実体である IPC リクエスト `subscribe` は、購読を 1 つの pane の peer inbox にスコープするオプション項目 `from_pane` を取る (Issue #306):
+
+| `from_pane` | 流れてくる event |
+|---|---|
+| 省略 | #306 以前とまったく同じで全 event。ライフサイクル event (`pane_started` / `pane_exited` / `events_dropped` / `heartbeat`) に加えて、宛先 pane が何であれ `peer_inbox` も全部流れてくる |
+| `N` | 同じライフサイクル event に加えて、`target_pane` が `N` の `peer_inbox` **だけ** |
+
+```json
+{ "type": "peer_inbox", "target_pane": 3, "from_pane": 2, "from_name": "secretary", "from_kind": "claude", "body": "please run the tests", "ts_ms": 1700000014000 }
+```
+
+`renga events` は `from_pane` を送らないので、CLI のストリームは従来どおり変わらない — これまでと同じように、どの pane 宛のものであれ `peer_inbox` 行が流れてくる。`from_pane` はもう一方の種類の利用者向けの opt-in で、特定の 1 pane を代表して IPC を話す統合 — 同梱の `renga mcp-peer` のように、自分が担当する pane 宛のメッセージにしか反応しない側 — のためにある。指定しなくても失うものは無い。なお、pane を名乗らなかった購読に対して server が pane を推測することはない (`hello` の pid も、先行する peer 登録も、購読しているその接続に紐づく保証が無いため、推測すればいずれ別 pane に結び付いてしまう)。peer メッセージング自体はどちらの場合も従来どおりで、メッセージは受信側 pane にこれまでと同じ経路で届く (Claude は `<channel>` タグ、Codex は `check_messages` を促す nudge)。
+
+そもそもルーティングされる event 種別は `peer_inbox` **だけ**で、しかも pane を名乗った購読に対してだけである。他の種別は従来どおり全 subscriber へ broadcast される。同じ pane を名乗った購読が複数あれば、その全員にその pane 宛のメッセージが届く。pane を名乗って得られるのはキュー負荷の削減で、スコープが受け取らない event はそもそもその購読のチャネルに渡されないため、上限 256 件のキューを埋めることも、その subscriber の `events_dropped` に計上されることもない。
+
+`from_pane` を尊重する server は `hello` 応答で `subscribe_pane_scope` capability を広告する。広告専用でどのクライアントもこれを gate に使わないため、接続方法を変えずに「`from_pane` を送れば実際にストリームが絞られるか」だけを判定できる。クライアント側も従来どおり `target_pane` を自分の pane と突き合わせる backstop を残しており、`from_pane` を無視して全 broadcast する古い renga に対してもこれで正しく動く (その場合のコストは余分なトラフィックだけで、結果が間違うことはない)。
+
+購読のスコープ指定は defense in depth であって、何らかの境界ではない: 同一ユーザーで動くプロセスなら誰でも購読して任意の pane id を名乗れるので、pane を名乗ること自体は認証ではない (下の「セキュリティモデル」参照)。効果はもっと限定的だが実在するもの — 自分が対象とする pane を宣言した購読に、別の pane 宛の peer メッセージがコピーされなくなり、意図しない別 pane への配送と、そのコピーが生んでいたキュー負荷の両方が減る。
+
 #### 典型的なワンライナー
 
 ワーカーペイン終了だけを拾う:

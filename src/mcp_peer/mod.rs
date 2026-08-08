@@ -16,11 +16,31 @@
 //!    `claude/channel` experimental capability, and spawns a background
 //!    thread that subscribes to renga's event bus.
 //! 3. Inbound `Request::PeerSend` deliveries land on the event bus as
-//!    [`crate::ipc::Event::PeerInbox`]. The background thread filters
-//!    on `target_pane == our RENGA_PANE_ID` and pushes a
-//!    `notifications/claude/channel` frame to stdout — the only thing
-//!    that makes peer messages show up as a channel tag instead of an
-//!    ordinary tool result.
+//!    [`crate::ipc::Event::PeerInbox`]. The background thread pushes a
+//!    `notifications/claude/channel` frame to stdout for the ones
+//!    addressed to us — the only thing that makes peer messages show up
+//!    as a channel tag instead of an ordinary tool result.
+//!
+//!    Since Issue #306 the subscription *opts in* to pane-scoped
+//!    routing by declaring our `RENGA_PANE_ID`
+//!    (`Request::Subscribe { from_pane }`), and a current server then
+//!    routes `PeerInbox` to the subscribers that named its
+//!    `target_pane`. Opting in is what this client wants: it only ever
+//!    cares about one pane, so nobody else's mail has to travel through
+//!    its bounded queue. Naming no pane is still legal and still means
+//!    the full pre-#306 broadcast — that is the default, which is why
+//!    #306 did not change behaviour for anyone who did not ask for it.
+//!
+//!    The `target_pane == our pane id` comparison in
+//!    [`classify_inbox_event`] therefore decides nothing against a
+//!    current server; it stays as a backstop, because a pre-#306 server
+//!    ignores the new field and still broadcasts every peer message to
+//!    every subscriber. Keeping both is defense-in-depth: the opt-in
+//!    removes unintended delivery to other panes and the queue pressure
+//!    of copies nobody wanted, and the check keeps us correct on the
+//!    servers where that routing does not happen. It is not a boundary
+//!    of any kind — any process running as this user can declare any
+//!    pane id (see the threat model in [`crate::ipc`]).
 //!
 //! # Outside-renga fallback
 //!
@@ -3170,11 +3190,25 @@ fn stdio_loop(ctx: &PeerCtx) -> Result<()> {
 
 // ── event bus subscriber (background thread) ──────────────────
 
-/// Subscribe to renga's event bus and push any [`ipc::Event::PeerInbox`]
-/// whose `target_pane` matches our own pane id as a
-/// `notifications/claude/channel` frame on stdout. The thread is
+/// Subscribe to renga's event bus and turn the events addressed to this
+/// pane into either a `notifications/claude/channel` frame on stdout
+/// (push clients) or a queued message (pull clients). The thread is
 /// detached — it dies naturally when the IPC stream closes (renga
 /// exited) or when the subprocess is killed.
+///
+/// The subscription opts in to pane-scoped routing by naming our pane
+/// id ([`client::subscribe_inbox_events`], Issue #306), so a current
+/// server only ever enqueues an [`ipc::Event::PeerInbox`] whose
+/// `target_pane` is ours. That is the whole payoff of opting in: this
+/// thread's bounded queue never carries another pane's mail, and the
+/// bus never has to copy it there. Subscribing without a pane id — what
+/// `renga events` does — still yields the full pre-#306 stream, so the
+/// narrowing is ours alone and costs no other consumer anything.
+/// [`classify_inbox_event`] still checks `target_pane` itself; against a
+/// pre-#306 server — which ignores the binding and broadcasts every peer
+/// message to every subscriber — that check is the only thing keeping
+/// this client from announcing another pane's mail, so it stays as a
+/// backstop rather than being deleted as redundant.
 fn spawn_inbox_subscriber(ctx: PeerCtx) {
     let Mode::Connected { pane_id, endpoint } = ctx.mode.clone() else {
         return;
@@ -3186,15 +3220,14 @@ fn spawn_inbox_subscriber(ctx: PeerCtx) {
     thread::Builder::new()
         .name("renga-mcp-peer-inbox".into())
         .spawn(move || {
-            let result = client::subscribe_events(&endpoint_clone, |event| {
-                // Buffer lifecycle events for `poll_events` before we
-                // consume `event` in the match below. Heartbeat is a
-                // wire-keepalive (not a lifecycle signal) and PeerInbox
-                // is delivered out-of-band via channel notifications,
-                // so neither belongs in the poll buffer. Everything
-                // else — PaneStarted / PaneExited / EventsDropped plus
-                // any forward-compatible variants added later — gets
-                // stashed.
+            let result = client::subscribe_inbox_events(&endpoint_clone, pane_id, |event| {
+                // Buffer lifecycle events for `poll_events` first, as
+                // always. Heartbeat is a wire-keepalive (not a lifecycle
+                // signal) and PeerInbox is delivered out-of-band via
+                // channel notifications, so neither belongs in the poll
+                // buffer. Everything else — PaneStarted / PaneExited /
+                // EventsDropped plus any forward-compatible variants
+                // added later — gets stashed.
                 if should_buffer_for_poll(&event) {
                     match serde_json::to_value(&event) {
                         Ok(value) => {
@@ -3203,74 +3236,55 @@ fn spawn_inbox_subscriber(ctx: PeerCtx) {
                             buf.push(value);
                             cvar.notify_all();
                         }
-                        Err(e) => log_stderr(&format!(
-                            "failed to serialize event for poll buffer: {e}"
-                        )),
+                        Err(e) => {
+                            log_stderr(&format!("failed to serialize event for poll buffer: {e}"))
+                        }
                     }
                 }
-                match event {
-                    ipc::Event::PeerInbox {
-                        target_pane,
-                        from_pane,
-                        from_name,
-                        from_kind,
-                        body,
-                        ..
-                    } if target_pane == pane_id => {
-                        if client_kind.receive_mode() == ipc::PeerReceiveMode::Pull {
-                            queue_pull_message(&inbox, QueuedPeerMessage {
-                                from_id: from_pane.to_string(),
-                                from_name: from_name.clone(),
+                // The EventBus bounds each subscriber at 256 events and
+                // drops new events for slow consumers, reporting the gap
+                // via EventsDropped. Log it here — the operator-facing
+                // half of the notice, which the classifier deliberately
+                // has no way to emit.
+                if let ipc::Event::EventsDropped { count, .. } = &event {
+                    log_stderr(&format!(
+                        "event bus dropped {count} event(s) due to slow subscriber"
+                    ));
+                }
+                if let InboxDelivery::Deliver {
+                    from_id,
+                    from_name,
+                    from_kind,
+                    body,
+                } = classify_inbox_event(&event, pane_id)
+                {
+                    if client_kind.receive_mode() == ipc::PeerReceiveMode::Pull {
+                        queue_pull_message(
+                            &inbox,
+                            QueuedPeerMessage {
+                                from_id,
+                                from_name,
                                 from_kind,
-                                body: body.clone(),
-                                sent_at: now_ts_string(),
-                            });
-                        } else {
-                            let note = channel_notification(
-                                &body,
-                                &from_pane.to_string(),
-                                from_name.as_deref(),
-                            );
-                            if let Err(e) = write_frame(&note) {
-                                log_stderr(&format!("failed to push channel notification: {e}"));
-                            }
-                        }
-                    }
-                    // The EventBus bounds each subscriber at 256 events
-                    // and drops new events for slow consumers, reporting
-                    // the gap via EventsDropped. If this thread couldn't
-                    // keep up, a peer message may have been silently
-                    // lost — surface that as a channel notice so Claude
-                    // knows to ask the peer to resend instead of
-                    // assuming all is well.
-                    ipc::Event::EventsDropped { count, .. } => {
-                        log_stderr(&format!(
-                            "event bus dropped {count} event(s) due to slow subscriber"
-                        ));
-                        let body = format!(
-                            "renga event bus dropped {count} event(s) before they reached this peer client. A peer message may have been lost — consider asking the sender to retry."
-                        );
-                        if client_kind.receive_mode() == ipc::PeerReceiveMode::Pull {
-                            queue_pull_message(&inbox, QueuedPeerMessage {
-                                from_id: "renga".to_string(),
-                                from_name: Some("renga runtime".to_string()),
-                                from_kind: None,
                                 body,
                                 sent_at: now_ts_string(),
-                            });
-                        } else {
-                            let note = channel_notification(&body, "renga", Some("renga runtime"));
-                            if let Err(e) = write_frame(&note) {
-                                log_stderr(&format!("failed to push drop notice: {e}"));
-                            }
+                            },
+                        );
+                    } else {
+                        // Both notices go out through the same sink, but
+                        // their write failures have always been
+                        // distinguishable in the log and operators grep
+                        // for them. Pick the label off the variant
+                        // rather than teaching `InboxDelivery` about its
+                        // own provenance.
+                        let failure_label = match &event {
+                            ipc::Event::EventsDropped { .. } => "drop notice",
+                            _ => "channel notification",
+                        };
+                        let note = channel_notification(&body, &from_id, from_name.as_deref());
+                        if let Err(e) = write_frame(&note) {
+                            log_stderr(&format!("failed to push {failure_label}: {e}"));
                         }
                     }
-                    // PaneStarted / PaneExited / Heartbeat / other
-                    // PeerInbox not addressed to us: intentionally
-                    // ignored for channel-push purposes. Lifecycle
-                    // variants were already buffered above for
-                    // poll_events to surface.
-                    _ => {}
                 }
                 true
             });
@@ -3280,6 +3294,82 @@ fn spawn_inbox_subscriber(ctx: PeerCtx) {
             }
         })
         .expect("spawn inbox subscriber thread");
+}
+
+/// What the inbox subscriber should do with one event.
+///
+/// Deliberately free of timestamps, I/O and any handle to the
+/// subprocess' sinks: the decision is a pure function of the event and
+/// our pane id, so it can be asserted on directly. The caller stamps
+/// [`now_ts_string`] and picks push
+/// ([`channel_notification`] + [`write_frame`]) versus pull
+/// ([`queue_pull_message`]) from the client's
+/// [`ipc::PeerClientKind::receive_mode`].
+#[derive(Debug, Clone, PartialEq)]
+enum InboxDelivery {
+    /// Nothing reaches the agent: no channel notification, no pull-queue
+    /// entry. (Lifecycle variants may still have been buffered for
+    /// `poll_events` by the caller — that is a separate stream.)
+    Ignore,
+    /// Surface this to the agent as a peer message.
+    Deliver {
+        from_id: String,
+        from_name: Option<String>,
+        from_kind: Option<PeerClientKind>,
+        body: String,
+    },
+}
+
+/// Decide what an event coming off the subscription means for the pane
+/// this subprocess serves.
+///
+/// - [`ipc::Event::PeerInbox`] addressed to `pane_id` → deliver it,
+///   attributed to the sending pane.
+/// - [`ipc::Event::PeerInbox`] addressed to any other pane → ignore.
+///   Since Issue #306 a current server never routes one of these to us
+///   at all — but only because *this* client names its pane when it
+///   subscribes, not because the server withholds peer mail from
+///   everyone. A subscription that names no pane still receives every
+///   `PeerInbox` exactly as it did before #306. So this arm remains the
+///   backstop for the two cases the opt-in cannot cover: a pre-#306
+///   server that ignores the binding and broadcasts to every
+///   subscriber, and any future caller that reaches this classifier
+///   from an unscoped stream. It is not a boundary — see the module
+///   docs and the threat model in [`crate::ipc`] — it is what stops
+///   another pane's mail from being announced in this pane's context.
+/// - [`ipc::Event::EventsDropped`] → deliver a runtime notice
+///   attributed to renga itself, so the agent knows a peer message may
+///   have been lost and can ask the sender to retry rather than
+///   assuming all is well.
+/// - everything else (PaneStarted / PaneExited / Heartbeat and any
+///   forward-compatible variant added later) → ignore. Lifecycle
+///   variants reach the agent through `poll_events`, not through the
+///   channel.
+fn classify_inbox_event(event: &ipc::Event, pane_id: usize) -> InboxDelivery {
+    match event {
+        ipc::Event::PeerInbox {
+            target_pane,
+            from_pane,
+            from_name,
+            from_kind,
+            body,
+            ..
+        } if *target_pane == pane_id => InboxDelivery::Deliver {
+            from_id: from_pane.to_string(),
+            from_name: from_name.clone(),
+            from_kind: *from_kind,
+            body: body.clone(),
+        },
+        ipc::Event::EventsDropped { count, .. } => InboxDelivery::Deliver {
+            from_id: "renga".to_string(),
+            from_name: Some("renga runtime".to_string()),
+            from_kind: None,
+            body: format!(
+                "renga event bus dropped {count} event(s) before they reached this peer client. A peer message may have been lost — consider asking the sender to retry."
+            ),
+        },
+        _ => InboxDelivery::Ignore,
+    }
 }
 
 /// True for events that belong in the `poll_events` ring buffer. A
@@ -5348,6 +5438,113 @@ Commands:
             count: 3,
             ts_ms: 1,
         }));
+    }
+
+    // ── inbox classification (Issue #306 client-side backstop) ──
+
+    fn peer_inbox_for(target_pane: usize) -> ipc::Event {
+        ipc::Event::PeerInbox {
+            target_pane,
+            from_pane: 42,
+            from_name: Some("dispatcher".into()),
+            from_kind: Some(PeerClientKind::Codex),
+            body: "ship it".into(),
+            ts_ms: 7,
+        }
+    }
+
+    /// The negative case that #306's routing makes unreachable *for a
+    /// client that opts in the way this one does* — and that this client
+    /// must keep handling anyway, because a pre-#306 server ignores the
+    /// opt-in and broadcasts every peer message to every subscriber.
+    ///
+    /// There are exactly two ways an event can surface to the agent:
+    /// the channel/pull path fed by [`classify_inbox_event`], and the
+    /// `poll_events` buffer gated by [`should_buffer_for_poll`]. Both
+    /// are asserted here, because "it isn't pushed" would be a hollow
+    /// guarantee if the same message came back out of a `poll_events`
+    /// call a second later.
+    #[test]
+    fn a_peer_inbox_for_another_pane_enters_neither_the_channel_nor_the_pull_queue() {
+        let event = peer_inbox_for(9);
+        assert_eq!(
+            classify_inbox_event(&event, 1),
+            InboxDelivery::Ignore,
+            "pane 9's mail must not be announced in pane 1"
+        );
+        assert!(
+            !should_buffer_for_poll(&event),
+            "and it must not reappear through poll_events either"
+        );
+    }
+
+    /// The positive half of the same rule: our own mail is delivered
+    /// with the sender's identity intact, since that is what the channel
+    /// banner and the `list_peers`-style `from_id` are built from.
+    #[test]
+    fn a_peer_inbox_for_our_pane_is_delivered_with_sender_attribution() {
+        assert_eq!(
+            classify_inbox_event(&peer_inbox_for(1), 1),
+            InboxDelivery::Deliver {
+                from_id: "42".to_string(),
+                from_name: Some("dispatcher".to_string()),
+                from_kind: Some(PeerClientKind::Codex),
+                body: "ship it".to_string(),
+            }
+        );
+    }
+
+    /// A gap in the stream is delivered too — attributed to renga rather
+    /// than to a peer — so the agent learns a message may have been lost
+    /// instead of silently assuming it received everything.
+    #[test]
+    fn events_dropped_is_delivered_as_a_renga_runtime_notice() {
+        let delivery = classify_inbox_event(&ipc::Event::EventsDropped { count: 3, ts_ms: 1 }, 1);
+        match delivery {
+            InboxDelivery::Deliver {
+                from_id,
+                from_name,
+                from_kind,
+                body,
+            } => {
+                assert_eq!(from_id, "renga");
+                assert_eq!(from_name.as_deref(), Some("renga runtime"));
+                assert_eq!(from_kind, None);
+                assert!(body.contains("dropped 3 event(s)"), "body was {body:?}");
+                assert!(
+                    body.contains("asking the sender to retry"),
+                    "body was {body:?}"
+                );
+            }
+            InboxDelivery::Ignore => panic!("a dropped-event gap must reach the agent"),
+        }
+    }
+
+    /// Lifecycle events are not peer mail: they must not be dressed up
+    /// as a channel message, but they do belong in the `poll_events`
+    /// buffer. The two paths are independent, and this pins that.
+    #[test]
+    fn lifecycle_variants_are_ignored_by_the_classifier_but_still_buffered() {
+        let started = ipc::Event::PaneStarted {
+            id: 3,
+            name: None,
+            role: None,
+            ts_ms: 1,
+        };
+        let exited = ipc::Event::PaneExited {
+            id: 3,
+            name: None,
+            role: None,
+            ts_ms: 2,
+        };
+        for event in [&started, &exited] {
+            assert_eq!(classify_inbox_event(event, 1), InboxDelivery::Ignore);
+            assert!(should_buffer_for_poll(event));
+        }
+        // Heartbeat is a wire keepalive: neither path wants it.
+        let beat = ipc::Event::Heartbeat { ts_ms: 3 };
+        assert_eq!(classify_inbox_event(&beat, 1), InboxDelivery::Ignore);
+        assert!(!should_buffer_for_poll(&beat));
     }
 
     #[test]

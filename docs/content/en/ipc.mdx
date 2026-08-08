@@ -107,6 +107,27 @@ If neither flag is set the stream runs until the server closes the connection �
 - `events_dropped`: number of events the server had to drop for this subscriber (slow consumer signal; reconcile with `renga list` if you see these).
 - `heartbeat`: emitted every 30 s as a keep-alive. Consumers can safely ignore it.
 
+#### Subscription scope and `peer_inbox`
+
+The IPC request behind this command, `subscribe`, takes an optional `from_pane` that scopes the subscription to one pane's peer inbox (Issue #306):
+
+| `from_pane` | What the stream carries |
+|---|---|
+| absent | Every event, exactly as before #306 — `pane_started`, `pane_exited`, `events_dropped`, `heartbeat`, **and** every `peer_inbox`, whichever pane it is addressed to. |
+| `N` | Those same lifecycle events, **plus only** the `peer_inbox` events whose `target_pane` is `N`. |
+
+```json
+{ "type": "peer_inbox", "target_pane": 3, "from_pane": 2, "from_name": "secretary", "from_kind": "claude", "body": "please run the tests", "ts_ms": 1700000014000 }
+```
+
+`renga events` sends no `from_pane`, so the CLI stream is unchanged — it still carries `peer_inbox` lines for every pane, as it always has. `from_pane` is an opt-in for the other kind of consumer: an integration that speaks IPC on behalf of a single pane, like the bundled `renga mcp-peer`, which only ever acts on the messages addressed to the pane it serves. Declining costs nothing, and the server never guesses a pane for a subscription that named none — neither the `hello` pid nor an earlier peer registration belongs to the connection doing the subscribing, so a guess would eventually bind the wrong pane. Peer messaging itself is untouched either way: messages reach the recipient pane the usual way (a `<channel>` tag for Claude, a `check_messages` nudge for Codex).
+
+`peer_inbox` is the **only** event type that is routed at all, and only for the subscriptions that named a pane; every other type still goes to every subscriber. If several subscriptions name the same pane, they all receive that pane's messages. What naming a pane buys is queue pressure: an event a scope declines is never offered to that subscription's channel, so it can neither fill the bounded 256-event queue nor count toward that subscriber's `events_dropped`.
+
+Servers that honor `from_pane` advertise a `subscribe_pane_scope` capability in the `hello` reply. It is advertise-only — nothing gates on it — so a client can tell whether sending `from_pane` will actually narrow its stream, without changing how it connects. Clients still compare `target_pane` against their own pane as a backstop, which is what keeps them correct against an older renga that broadcasts everything regardless; there the cost is the extra traffic, never a wrong result.
+
+Scoping a subscription is defense in depth, not a boundary of any kind: any process running as your user can subscribe and name any pane id, so naming a pane is not authentication (see **Security model** below). What it removes is real but narrower — a peer message addressed elsewhere is no longer copied into a subscription that said which pane it cares about, which cuts both unintended delivery to other panes and the queue pressure those copies caused.
+
 #### Typical one-liner
 
 Watch worker pane exits only:

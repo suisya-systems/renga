@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use interprocess::local_socket::{prelude::*, ListenerOptions, Stream};
 
 use super::endpoint::{EndpointKind, EndpointName};
-use super::events::EventBus;
+use super::events::{EventBus, EventScope};
 use super::{err_code, Event, PeerDelivery, Request, Response, APP_REPLY_TIMEOUT};
 use crate::app::AppCommand;
 
@@ -271,14 +271,43 @@ fn handle_connection(
             );
         }
     };
-    if matches!(req, Request::Subscribe) {
+    // Matched by reference: `Subscribe` takes over the connection and
+    // never reaches `dispatch_request`, but `req` is still needed on
+    // the fall-through path below.
+    if let Request::Subscribe { from_pane } = &req {
+        // The pane binding comes from this explicit field and from
+        // nothing else (Issue #306). The handshake's `client_pid` and
+        // any `PeerRegisterClient` the same process made earlier both
+        // describe a *process*; neither is tied to this particular
+        // subscription, so inferring a scope from them would bind the
+        // wrong stream as soon as a process holds two of them.
+        //
+        // No field ⇒ the caller did not opt in, so it stays
+        // `EventScope::Unscoped` and keeps the full pre-#306 broadcast:
+        // every event, including every `PeerInbox` whatever its
+        // `target_pane`. Every pre-#306 client and `renga events` land
+        // here and see exactly the stream they always saw — that is
+        // deliberate, and it is what keeps #306 a minor rather than a
+        // break (`docs/semver-policy-2.0.md` §3: a new optional input
+        // whose default preserves prior behavior). Scoping is a
+        // narrowing a client asks for, never one the server imposes.
+        //
         // Register the subscriber *before* acking so no event emitted
         // after `Response::Subscribed` hits the wire can be lost
-        // between the ack and `EventBus::subscribe`. The contract is
-        // "any event that occurs after the client sees Subscribed is
+        // between the ack and the subscription. The contract is "any
+        // event that occurs after the client sees Subscribed is
         // observable", which requires the registration to happen
-        // first.
-        let (sub_id, rx) = event_bus.subscribe();
+        // first. Binding the scope at registration time is part of the
+        // same contract: there is no window in which this subscriber is
+        // registered under a different scope than the one it asked for.
+        let (sub_id, rx) = match *from_pane {
+            Some(pane_id) => event_bus.subscribe_scoped(EventScope::PaneInbox(pane_id)),
+            // Identical to `subscribe_scoped(EventScope::Unscoped)`;
+            // spelled with the plain entry point so the unchanged,
+            // opted-out path reads as "the ordinary subscription" at
+            // the call site — because that is exactly what it is.
+            None => event_bus.subscribe(),
+        };
         if let Err(e) = write_response_line(reader.get_mut(), &Response::Subscribed) {
             event_bus.unsubscribe(sub_id);
             return Err(e);
@@ -295,6 +324,17 @@ fn handle_connection(
 /// registered by `handle_connection` before the Subscribed ack was
 /// written, so any event observed from here on is part of the
 /// post-ack stream the client can rely on.
+///
+/// Note there is deliberately **no filtering here**. What routing there
+/// is happens in [`EventBus::emit`], before the event is offered to this
+/// subscriber's bounded channel (Issue #306). For a connection that
+/// opted into a pane scope, another pane's `PeerInbox` therefore never
+/// occupies a slot in that channel and never counts toward its
+/// dropped-event tally; for a connection that did not opt in, nothing is
+/// filtered anywhere and it drains the full stream as it always has.
+/// Filtering at this end of the pipe would get the observable behaviour
+/// right and the queue pressure wrong, which is the whole payoff of
+/// opting in.
 ///
 /// If no real event shows up within [`HEARTBEAT_INTERVAL`], the loop
 /// wakes up and writes a [`Event::Heartbeat`] to the wire. Its only
@@ -538,7 +578,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
         // switches the wire into event-stream mode rather than
         // round-tripping through App commands. If we see it here, the
         // handler called us by mistake; refuse rather than hang.
-        Request::Subscribe => {
+        Request::Subscribe { .. } => {
             Response::err_coded(err_code::PROTOCOL, "subscribe should be handled inline")
         }
         Request::Inspect {
@@ -1296,5 +1336,425 @@ mod tests {
         assert!(!sock_path.exists(), "socket file not removed on drop");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Issue #306: wire-level PeerInbox routing ──────────────
+    //
+    // The unit tests in `super::super::events` pin the routing rule
+    // itself. These pin the half that only exists once a real socket is
+    // involved: `Subscribe.from_pane` travelling over the wire, the
+    // `EventScope` it binds on the bus, and which JSON lines actually
+    // come back out of `client::subscribe_events` /
+    // `client::subscribe_inbox_events`.
+    //
+    // Unix-only because the harness needs a filesystem path it can make
+    // unique per test. Nothing platform-specific is left unverified —
+    // the routing decision is transport-independent.
+
+    #[cfg(unix)]
+    use crate::ipc::client;
+    #[cfg(unix)]
+    use crate::ipc::endpoint::ENV_TOKEN;
+
+    /// The token the harness publishes as `RENGA_TOKEN` *and* hands to
+    /// `IpcServer::spawn`, so the real client handshake
+    /// (`verify_session_token`) accepts the connection instead of
+    /// refusing it as a foreign instance.
+    #[cfg(unix)]
+    const WIRE_TOKEN: &str = "renga-306-wire-test-token";
+
+    /// Ceiling on every blocking wait in these tests. Long enough that
+    /// a loaded CI runner never trips it, short enough that a routing
+    /// regression fails the suite in seconds instead of hanging it
+    /// until the harness is killed — which is why the assertions below
+    /// use `recv_timeout` rather than `recv`. Also well under
+    /// [`HEARTBEAT_INTERVAL`], so no keep-alive can arrive mid-test.
+    #[cfg(unix)]
+    const WIRE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Pane id carried by the barrier event. Deliberately far outside
+    /// the ids the tests use as real panes, so a mis-routed event can
+    /// never be mistaken for the barrier.
+    #[cfg(unix)]
+    const BARRIER_PANE: usize = 999_000;
+
+    /// `cargo test` runs test functions on several threads in one
+    /// process, and the client handshake reads `RENGA_TOKEN` from the
+    /// environment on each subscriber thread. Serialize the wire tests
+    /// among themselves so one test's restore cannot land in the middle
+    /// of another's handshake.
+    #[cfg(unix)]
+    static WIRE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Distinguishes concurrent harnesses inside one test process
+    /// without spending path bytes on a nanosecond timestamp — see
+    /// [`WireHarness::start`] for why every byte matters here.
+    #[cfg(unix)]
+    static WIRE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// Longest socket path these tests will build before refusing to
+    /// run. `sockaddr_un::sun_path` is 108 bytes on Linux but only
+    /// **104** on macOS, and the bind failure it produces surfaces as
+    /// an opaque "length exceeds capacity" error from deep inside the
+    /// socket library. Checking here turns that into a message naming
+    /// the actual cause. 100 leaves headroom under the smaller limit.
+    #[cfg(unix)]
+    const WIRE_SOCKET_PATH_MAX: usize = 100;
+
+    /// A live `IpcServer` on a private socket, plus the `EventBus` the
+    /// test emits into and the environment it needs to be reachable.
+    ///
+    /// Teardown runs in `Drop` rather than at the end of each test so a
+    /// failed assertion still unlinks the socket and puts `RENGA_TOKEN`
+    /// back.
+    #[cfg(unix)]
+    struct WireHarness {
+        /// `Option` only so `Drop` can shut the server down before the
+        /// directory is removed.
+        server: Option<IpcServer>,
+        endpoint: EndpointName,
+        bus: EventBus,
+        dir: std::path::PathBuf,
+        /// No wire test drives an `AppCommand`; the receiver is kept
+        /// alive only so the server's sender never looks disconnected.
+        _command_rx: mpsc::Receiver<AppCommand>,
+        _env_guard: std::sync::MutexGuard<'static, ()>,
+        prev_token: Option<String>,
+    }
+
+    #[cfg(unix)]
+    impl WireHarness {
+        fn start(tag: &str) -> Self {
+            let env_guard = WIRE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // The path has to stay *short*, which is why `tag` names the
+            // harness in panic messages instead of appearing in the
+            // directory name. A unix socket path must fit
+            // `sockaddr_un::sun_path`: 104 bytes on macOS, where
+            // `std::env::temp_dir()` is already ~49 of them
+            // (`/var/folders/<2>/<30>/T/`). A descriptive
+            // `renga-306-<tag>-<pid>-<nanos>` directory plus a
+            // `renga-test.sock` leaf overflows that on every macos-latest
+            // CI run while passing comfortably on Linux's 108-byte limit
+            // and short `/tmp`. Pid plus a process-local counter is just
+            // as unique — against a real renga instance, a sibling test,
+            // and a rerun — in a fraction of the bytes.
+            let dir = std::env::temp_dir().join(format!(
+                "r306-{}-{}",
+                std::process::id(),
+                WIRE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir)
+                .unwrap_or_else(|e| panic!("create wire-test dir for {tag}: {e}"));
+            let sock_path = dir.join("s");
+            assert!(
+                sock_path.as_os_str().len() <= WIRE_SOCKET_PATH_MAX,
+                "wire-test socket path for {tag} is {} bytes ({}); \
+                 sockaddr_un::sun_path caps this at 104 on macOS. \
+                 Shorten it or point TMPDIR somewhere shallower.",
+                sock_path.as_os_str().len(),
+                sock_path.display()
+            );
+            let endpoint = EndpointName::socket(sock_path);
+
+            let prev_token = std::env::var(ENV_TOKEN).ok();
+            std::env::set_var(ENV_TOKEN, WIRE_TOKEN);
+
+            let bus = EventBus::new();
+            let (command_tx, command_rx) = mpsc::channel::<AppCommand>();
+            let server = IpcServer::spawn(
+                endpoint.clone(),
+                command_tx,
+                WIRE_TOKEN.to_string(),
+                bus.clone(),
+            )
+            .expect("bind wire-test IPC server");
+
+            Self {
+                server: Some(server),
+                endpoint,
+                bus,
+                dir,
+                _command_rx: command_rx,
+                _env_guard: env_guard,
+                prev_token,
+            }
+        }
+
+        /// Start a subscriber and wait until the bus has actually
+        /// registered it. Without the wait the test would race the
+        /// handshake and could emit into an empty subscriber table.
+        fn subscribe(&self, scope: EventScope) -> Collector {
+            let want = self.bus.subscriber_count() + 1;
+            let collector = spawn_collector(self.endpoint.clone(), scope);
+            let deadline = std::time::Instant::now() + WIRE_TIMEOUT;
+            loop {
+                let have = self.bus.subscriber_count();
+                if have >= want {
+                    return collector;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "only {have} of {want} subscribers registered on the bus"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for WireHarness {
+        fn drop(&mut self) {
+            // Server first: its own Drop unlinks the socket file, and
+            // doing that before the directory disappears keeps the
+            // unlink from racing the removal.
+            drop(self.server.take());
+            match self.prev_token.take() {
+                Some(v) => std::env::set_var(ENV_TOKEN, v),
+                None => std::env::remove_var(ENV_TOKEN),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// One real subscriber process-side: a thread blocked in
+    /// `client::subscribe_*`, plus the channel it forwards events into.
+    #[cfg(unix)]
+    struct Collector {
+        rx: mpsc::Receiver<Event>,
+        handle: thread::JoinHandle<()>,
+    }
+
+    #[cfg(unix)]
+    impl Collector {
+        /// Everything this subscriber received, up to (and excluding)
+        /// the barrier event.
+        ///
+        /// The barrier is what makes these tests deterministic instead
+        /// of timing-based: proving a subscriber did *not* get an event
+        /// otherwise means waiting some arbitrary interval and hoping.
+        /// Emitting a lifecycle event that every scope accepts, after
+        /// the events under test, turns "did not receive" into "reached
+        /// the barrier without it".
+        fn drain_to_barrier(&self, who: &str) -> Vec<Event> {
+            let mut seen = Vec::new();
+            loop {
+                match self.rx.recv_timeout(WIRE_TIMEOUT) {
+                    Ok(event) if is_barrier(&event) => return seen,
+                    Ok(event) => seen.push(event),
+                    Err(e) => {
+                        panic!("{who} never reached the barrier event ({e:?}); saw {seen:?}")
+                    }
+                }
+            }
+        }
+
+        fn join(self) {
+            self.handle.join().expect("subscriber thread panicked");
+        }
+    }
+
+    #[cfg(unix)]
+    fn is_barrier(event: &Event) -> bool {
+        matches!(event, Event::PaneExited { id, .. } if *id == BARRIER_PANE)
+    }
+
+    #[cfg(unix)]
+    fn spawn_collector(endpoint: EndpointName, scope: EventScope) -> Collector {
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let forward = move |event: Event| -> bool {
+                // Heartbeats are transport keep-alives, not part of what
+                // these tests assert. (WIRE_TIMEOUT is below
+                // HEARTBEAT_INTERVAL so one should never appear at all;
+                // dropping them keeps a slow runner from turning that
+                // into a spurious failure.)
+                if matches!(event, Event::Heartbeat { .. }) {
+                    return true;
+                }
+                let stop = is_barrier(&event);
+                if tx.send(event).is_err() {
+                    return false;
+                }
+                !stop
+            };
+            // The two entry points differ only in the `from_pane` they
+            // put on the wire, which is exactly what is under test —
+            // so drive the real ones rather than a shared helper.
+            let result = match scope {
+                EventScope::Unscoped => client::subscribe_events(&endpoint, forward),
+                EventScope::PaneInbox(pane_id) => {
+                    client::subscribe_inbox_events(&endpoint, pane_id, forward)
+                }
+            };
+            // Surfacing this here beats letting a failed subscribe show
+            // up only as a barrier timeout on the other side.
+            result.expect("subscriber stream ended with an error");
+        });
+        Collector { rx, handle }
+    }
+
+    #[cfg(unix)]
+    fn wire_inbox(target_pane: usize, body: &str) -> Event {
+        Event::PeerInbox {
+            target_pane,
+            from_pane: 42,
+            from_name: Some("sender".into()),
+            from_kind: None,
+            body: body.to_string(),
+            ts_ms: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    fn wire_started(id: usize) -> Event {
+        Event::PaneStarted {
+            id,
+            name: None,
+            role: None,
+            ts_ms: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    fn wire_barrier() -> Event {
+        Event::PaneExited {
+            id: BARRIER_PANE,
+            name: None,
+            role: None,
+            ts_ms: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wire_peer_inbox_skips_a_pane_scope_it_is_not_addressed_to_but_still_reaches_the_unscoped() {
+        const PANE_A: usize = 11;
+        const PANE_B: usize = 22;
+
+        let harness = WireHarness::start("inbox-routing");
+        let a = harness.subscribe(EventScope::PaneInbox(PANE_A));
+        let b = harness.subscribe(EventScope::PaneInbox(PANE_B));
+        let unscoped = harness.subscribe(EventScope::Unscoped);
+
+        harness.bus.emit(wire_inbox(PANE_A, "for pane A"));
+        harness.bus.emit(wire_started(PANE_B));
+        harness.bus.emit(wire_barrier());
+
+        let got_a = a.drain_to_barrier("pane A subscriber");
+        let got_b = b.drain_to_barrier("pane B subscriber");
+        let got_unscoped = unscoped.drain_to_barrier("unscoped subscriber");
+        a.join();
+        b.join();
+        unscoped.join();
+
+        // (a) The peer message reaches the pane it is addressed to.
+        assert_eq!(
+            got_a,
+            vec![wire_inbox(PANE_A, "for pane A"), wire_started(PANE_B)],
+            "pane A must receive its own inbox event and the lifecycle event"
+        );
+        // (b) It does not reach a subscriber that opted into a *different*
+        // pane — the narrowing #306 sells. The lifecycle event still
+        // arrives, so this is routing rather than a dead stream.
+        assert_eq!(
+            got_b,
+            vec![wire_started(PANE_B)],
+            "pane B must see the lifecycle event but not pane A's inbox"
+        );
+        // (c) The wire-level proof that #306 is **non-breaking**: a
+        // subscription that sent no `from_pane` — `renga events` and
+        // every pre-#306 client — still receives pane A's `PeerInbox`,
+        // in the same order, exactly as it did before the change. If
+        // this ever flips to lifecycle-only the change has silently
+        // become a break and needs a major, not a minor.
+        assert_eq!(
+            got_unscoped,
+            vec![wire_inbox(PANE_A, "for pane A"), wire_started(PANE_B)],
+            "an unscoped subscriber must still receive every PeerInbox, as it did before #306"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wire_every_subscriber_bound_to_the_same_pane_receives_the_inbox_event() {
+        const PANE: usize = 8;
+
+        // Two clients can legitimately watch one pane at the same
+        // moment — e.g. a restarted `renga mcp-peer` subprocess whose
+        // predecessor has not been reaped yet. Routing must fan out to
+        // both; picking one would silently drop peer messages for the
+        // duration of the overlap.
+        let harness = WireHarness::start("same-pane-fanout");
+        let first = harness.subscribe(EventScope::PaneInbox(PANE));
+        let second = harness.subscribe(EventScope::PaneInbox(PANE));
+        let other = harness.subscribe(EventScope::PaneInbox(PANE + 1));
+
+        harness
+            .bus
+            .emit(wire_inbox(PANE, "to everyone on this pane"));
+        harness.bus.emit(wire_barrier());
+
+        let got_first = first.drain_to_barrier("first subscriber on the pane");
+        let got_second = second.drain_to_barrier("second subscriber on the pane");
+        let got_other = other.drain_to_barrier("subscriber on a different pane");
+        first.join();
+        second.join();
+        other.join();
+
+        let expected = vec![wire_inbox(PANE, "to everyone on this pane")];
+        assert_eq!(got_first, expected);
+        assert_eq!(got_second, expected);
+        assert!(
+            got_other.is_empty(),
+            "a neighbouring pane id must not receive the event: {got_other:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wire_peer_inbox_for_a_pane_in_another_tab_is_routed_the_same_way() {
+        // Pane ids are unique across the whole renga session, not per
+        // tab, so this layer has no concept of tabs at all: a
+        // `PeerSend` that resolved to a pane in another tab produces
+        // exactly the same `PeerInbox { target_pane }` as a same-tab
+        // one, and routing neither can nor needs to tell them apart.
+        // Resolving a cross-tab target to a pane id in the first place
+        // is the App's job and is covered in
+        // `src/app/tests/codex_peer.rs`.
+        const LOCAL_PANE: usize = 3;
+        const OTHER_TAB_PANE: usize = 4_097;
+
+        let harness = WireHarness::start("cross-tab-routing");
+        let local = harness.subscribe(EventScope::PaneInbox(LOCAL_PANE));
+        let other_tab = harness.subscribe(EventScope::PaneInbox(OTHER_TAB_PANE));
+        let unscoped = harness.subscribe(EventScope::Unscoped);
+
+        harness.bus.emit(wire_inbox(OTHER_TAB_PANE, "across tabs"));
+        harness.bus.emit(wire_barrier());
+
+        let got_local = local.drain_to_barrier("same-tab subscriber");
+        let got_other_tab = other_tab.drain_to_barrier("other-tab subscriber");
+        let got_unscoped = unscoped.drain_to_barrier("unscoped subscriber");
+        local.join();
+        other_tab.join();
+        unscoped.join();
+
+        assert_eq!(
+            got_other_tab,
+            vec![wire_inbox(OTHER_TAB_PANE, "across tabs")],
+            "the addressed pane must receive it regardless of which tab it lives in"
+        );
+        assert!(
+            got_local.is_empty(),
+            "wrong pane received it: {got_local:?}"
+        );
+        // A cross-tab pane id is not special to an unscoped subscriber
+        // either: it opted out of routing, so it sees this message just
+        // like it saw every peer message before #306.
+        assert_eq!(
+            got_unscoped,
+            vec![wire_inbox(OTHER_TAB_PANE, "across tabs")],
+            "an unscoped subscriber must still receive a cross-tab PeerInbox"
+        );
     }
 }

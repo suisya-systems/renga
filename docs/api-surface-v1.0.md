@@ -438,7 +438,7 @@ command (clap `conflicts_with_all`). When no selector is given, the default is
 | `renga new-tab` | `--command`, `--id`, `--label`, `--role`, `--cwd` | `Request::NewTab` |
 | `renga split` | `--target-name\|--target-id\|--target-focused`, `--direction <vertical\|horizontal>`, `--command`, `--id`, `--role`, `--cwd` | `Request::Split` |
 | `renga inspect` | `--name\|--id\|--focused`, `--lines`, `--cursor` | `Request::Inspect` |
-| `renga events` | `--timeout <humantime::Duration>`, `--count <usize>` | `Request::Subscribe` + stream |
+| `renga events` | `--timeout <humantime::Duration>`, `--count <usize>` | `Request::Subscribe { from_pane: None }` + stream |
 | `renga rename` | `--name\|--id\|--focused`, `--to-name`/`--clear-name` (mutex), `--to-role`/`--clear-role` (mutex) | `Request::SetPaneIdentity` |
 | `renga mcp-peer` | — | (not IPC) handed off to `mcp_peer::run` for the stdio MCP loop |
 | `renga mcp install` | `--client <claude\|codex>` (default `claude`), `--force`, `--codex-auto-approve-peer-tools` | (writes Claude/Codex MCP config; not an IPC call) |
@@ -452,6 +452,15 @@ three-state via `--to-X` / `--clear-X` flags. Frozen in v1.0.
 connection (good for shell pipelines and `tail -F`-style tooling); the MCP
 form cursor-paginates (good for cooperative pull from peer agents). Both are
 frozen.
+
+**`renga events` is an unscoped subscriber (#306)**: it sends no `from_pane`,
+so its stream is the full one it has always been — every event, `peer_inbox`
+lines included, whatever pane they are addressed to (§3.3, §3.5). The
+`from_pane` added in #306 is there for the *other* kind of consumer, one that
+speaks IPC on behalf of a single pane and wants only that pane's peer traffic;
+the CLI deliberately does not send it, because narrowing this stream would
+change output that has been observable since v1.0. `poll_events` is untouched
+either way: it never surfaced `peer_inbox` to MCP callers.
 
 ### 2.3 Environment variables — stable (Q7)
 
@@ -499,6 +508,9 @@ Short-lived per request:
 Exception: `Request::Subscribe` switches the connection to event-stream mode —
 server replies `Response::Subscribed`, then emits `Event` JSON Lines until the
 client disconnects. No further `Request`s are accepted on that connection.
+Since #306 a `from_pane` on that request, when present, also narrows *which*
+slice of the stream the connection gets; absent, the connection gets the whole
+stream as it always did (§3.3).
 
 Server budgets: 5 s `APP_REPLY_TIMEOUT` (server → app event loop) +
 5 s `CLIENT_MARGIN` → 10 s `RESPONSE_TIMEOUT` from the client's perspective.
@@ -517,7 +529,7 @@ Server budgets: 5 s `APP_REPLY_TIMEOUT` (server → app event loop) +
 | `close` | `target: PaneRef`, `from_pane?: usize` | `from_pane` added in #296; optional and omitted on the wire when absent, so `{"cmd":"close","target":"focused"}` is unchanged. Unlike the #288 five, the **legacy** (`from_pane` absent) branch searches every workspace — `renga close --id/--name` has always been cross-tab. Senders must gate `from_pane` on `caller_scope_close_identity` (§3.4). |
 | `new_tab` | `command?`, `id?`, `label?`, `role?`, `cwd?` | Creates **and focuses** — unchanged by #290. |
 | `spawn_tab` | `command?`, `id?`, `label?`, `role?`, `cwd?`, `from_pane?: usize` | #290. Creates a single-pane tab **in the background**: the active tab is untouched, geometry (rects + PTY size) is finalized before the reply, exactly one `pane_started` is emitted after name/role attach. Relative / omitted `cwd` follows the **caller pane** (falls back to the server cwd without `from_pane`). Replies `{ id, tab }` with the new pane id and 0-based tab index. Senders must gate on `spawn_tab` (§3.4). |
-| `subscribe` | — | Switches to event-stream mode after ack. |
+| `subscribe` | `from_pane?: usize` | Switches to event-stream mode after ack. `from_pane` (#306) scopes the subscription to a pane **inbox** — note this is not the caller-tab scoping the same-named field means on the requests above. Present → lifecycle events plus only the `peer_inbox` whose `target_pane` is that pane; **absent → unchanged pre-#306 behavior**: every event, including every `peer_inbox` whatever its `target_pane`. Optional and omitted on the wire when absent, so `{"cmd":"subscribe"}` is unchanged and so is what that request yields — a new optional input whose default preserves prior behavior, not a break (`docs/semver-policy-2.0.md` §3). Needs no capability gate (see `subscribe_pane_scope` in §3.4). |
 | `inspect` | `target: PaneRef`, `lines?`, `include_cursor: bool` (default false) | `lines` beyond the visible height reads scrollback since v1.4 (#278) — see §1.12. |
 | `peer_list` | `from_pane: usize` | |
 | `peer_send` | `from_pane: usize`, `target: PaneRef`, `body: string` | Cross-tab ids deliver since #289; names resolve in the sender's tab only; unresolvable targets fail `pane_not_found`. |
@@ -581,6 +593,20 @@ earlier tokens yet drops the unknown `from_pane` and closes a pane in the
 visible tab — irreversibly. A token of its own, for the same reason
 `cross_tab_peers` and `spawn_tab` are separate.
 
+Servers that honor `subscribe.from_pane` advertise `subscribe_pane_scope`
+(#306). Unlike every token above it is **advertise-only**: no client gates on
+it, nothing is sent with it required, and its absence changes no client
+behavior. That is safe here because the skew is benign in a way the wrong-tab
+accidents are not — a pre-#306 server drops the unknown `from_pane` and
+broadcasts as it always did, and the client's own `target_pane` check
+discards what is not addressed to it, so a new client degrades to client-side
+filtering instead of acting on someone else's message: a cost in queue
+pressure, never a wrong result. The token says nothing about subscriptions
+that omit `from_pane` — those behave identically on either server. It exists
+so a caller, an operator, or a test can read off `hello` / `server_info`
+(§1.16) whether a `from_pane` it sends will actually narrow the stream,
+rather than inferring it from observed traffic.
+
 ### 3.5 Event envelope — stable
 
 `#[serde(tag = "type", rename_all = "snake_case")]`.
@@ -591,7 +617,7 @@ visible tab — irreversibly. A token of its own, for the same reason
 | `pane_exited` | `id`, `name?`, `role?`, `ts_ms` | Exactly once per pane id. |
 | `events_dropped` | `count: u64`, `ts_ms` | Synthesized when a slow subscriber missed events. Per-subscriber. |
 | `heartbeat` | `ts_ms` | Periodic; only purpose is to detect half-closed connections. Buffer cap 256/subscriber. |
-| `peer_inbox` | `target_pane: usize`, `from_pane: usize`, `from_name?`, `from_kind?`, `body`, `ts_ms` | May originate from any tab since #289 (previously intra-tab by construction). Subscribers filter on `target_pane`; pane ids are session-unique so the filter needs no tab awareness. |
+| `peer_inbox` | `target_pane: usize`, `from_pane: usize`, `from_name?`, `from_kind?`, `body`, `ts_ms` | May originate from any tab since #289 (previously intra-tab by construction). **The only variant whose delivery depends on who is listening**: since #306 a subscription that sent `subscribe.from_pane` (§3.3) receives only the ones matching its pane — all such subscriptions, if several named it — while a subscription that sent no `from_pane`, `renga events` among them, still receives every one of them as before. Pane ids are session-unique, so the routing needs no tab awareness. Clients keep their own `target_pane` check as a backstop, which is what keeps them correct against a pre-#306 server that broadcasts to scoped subscriptions too. |
 
 **`heartbeat` audience (Q10)**: emitted into the subscribe-stream
 (`renga events` / `Request::Subscribe`). The MCP-side `poll_events` consumes

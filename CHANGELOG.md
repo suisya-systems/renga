@@ -67,6 +67,66 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   key input, `send_message(deliver="user_turn")` for "make this agent
   take this as a turn".
 
+- **`subscribe` can scope itself to one pane's inbox.** (#306) The IPC
+  `subscribe` request gained an optional `from_pane`. Naming a pane
+  scopes the subscription: it receives the pane lifecycle events
+  (`pane_started`, `pane_exited`, `events_dropped`, `heartbeat`) plus
+  only the `peer_inbox` events whose `target_pane` is that pane. The
+  bundled `renga mcp-peer` opts in — the pane it serves is the only one
+  whose messages it was ever going to act on.
+
+  **Behavior for existing subscribers is unchanged.** A `subscribe`
+  that sends no `from_pane` receives exactly what it always received:
+  every event, including every `peer_inbox` whatever its `target_pane`.
+  `renga events` sends no `from_pane`, so it prints the same lines it
+  has always printed, and a consumer that never learns this field
+  exists never notices that it was added. That is a new optional input
+  with a default that preserves prior behavior, which
+  [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) §3 lists
+  under "a change is **not** breaking" — this ships in a minor, and
+  nothing on the frozen surface changed meaning.
+
+  What opting in buys is queue pressure. The server used to hand every
+  `peer_inbox` to every open subscriber and let each client throw away
+  the ones addressed elsewhere, so one peer message was copied into the
+  bounded 256-event queue of every subscriber in the session, including
+  subscribers that only ever wanted pane lifecycle. A scope is now
+  applied *before* the send: an event a subscription declines is never
+  offered to that channel at all, so it cannot fill the queue and
+  cannot count toward that subscriber's `events_dropped` tally.
+  Everything else is as it was — every other event type is broadcast to
+  every subscriber, several subscriptions naming the same pane all
+  receive that pane's messages, and clients keep their own
+  `target_pane` check as a backstop.
+
+  **Wire compatibility holds in both directions.** A subscription that
+  names no pane serializes to exactly `{"cmd":"subscribe"}` —
+  byte-identical to the pre-#306 request — so an existing client is
+  untouched on the wire. A new client talking to an older server sends
+  `{"cmd":"subscribe","from_pane":N}`; that server ignores the unknown
+  key and broadcasts as it always did, and the client's own
+  `target_pane` check keeps the result correct. New-client × old-server
+  degrades to client-side filtering rather than erroring.
+
+  Servers advertise a new **`subscribe_pane_scope`** capability token.
+  It is **advertise-only**: no client gates on it, nothing refuses to
+  run without it, and existing clients and downstream integrations need
+  no changes. It exists so a client, an operator, or a test can read
+  off the `hello` reply whether a `from_pane` sent on `subscribe` will
+  actually be honored — the one thing that is otherwise only observable
+  from traffic.
+
+  Scoping is **defense in depth, not a boundary of any kind**. Any
+  process running as this user can open the socket and name any pane id
+  in its `subscribe`, so naming a pane is not authentication — the
+  trust boundary is still OS-level user isolation, exactly as the IPC
+  security model says
+  ([`docs/content/en/ipc.mdx`](./docs/content/en/ipc.mdx) → Security
+  model). What a scope removes is narrower and real: peer messages
+  addressed elsewhere are no longer copied into a subscription that
+  declared which pane it cares about, which cuts both unintended
+  delivery to other panes and the queue pressure those copies caused.
+
 ## [2.0.0] — 2026-08-07
 
 ### Added
