@@ -9,6 +9,8 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-08-10
+
 ### Added
 
 - **`list_panes` can enumerate other tabs, and its records name the tab

@@ -1,6 +1,6 @@
 {
   "name": "@suisya-systems/renga",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Claude Code Multiplexer — manage multiple Claude Code instances in TUI split panes.",
   "bin": {
     "renga": "bin/cli.js"

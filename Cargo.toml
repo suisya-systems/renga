@@ -237,7 +237,7 @@ name = "renga"
 # input (the old height clamp and scroll-position dependence were both
 # undocumented), so no frozen v1.0 API surface item (MCP wire shape,
 # CLI flags, config keys, env vars) changes incompatibly.
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "AI-native terminal for orchestrating multiple Claude Code and Codex agents in one workspace"
 
