@@ -393,7 +393,10 @@ impl IpcCommand {
         }
 
         match self {
-            IpcCommand::List => Ok(Request::List { from_pane: None }),
+            IpcCommand::List => Ok(Request::List {
+                from_pane: None,
+                tab: None,
+            }),
             IpcCommand::NewTab {
                 command,
                 id,

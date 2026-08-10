@@ -8,10 +8,12 @@ use super::*;
 pub enum AppCommand {
     /// Snapshot the pane list of the caller's workspace — the active
     /// workspace when `from_pane` is `None` (legacy CLI semantics), the
-    /// workspace owning `from_pane` otherwise. See
-    /// [`ipc::Request`]'s caller-tab scoping notes.
+    /// workspace owning `from_pane` otherwise — or of the tab(s) named
+    /// by `tab` (Issue #329). See [`ipc::Request`]'s caller-tab scoping
+    /// notes.
     List {
         from_pane: Option<usize>,
+        tab: Option<ipc::ListTabSelector>,
         reply: oneshot::Sender<std::result::Result<Vec<PaneInfo>, ipc::CodedError>>,
     },
     /// Write `data` to the target pane's PTY. `from_pane` scopes target

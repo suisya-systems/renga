@@ -9,6 +9,49 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- **`list_panes` can enumerate other tabs, and its records name the tab
+  they live in.** (#329)
+  `list_panes(tab: {name|index|pane_id})` reads one selected tab and
+  `list_panes(tab: {all: true})` reads every tab, the caller's first.
+  The selector shapes are the ones `spawn_pane` already accepts, minus
+  `{new: …}` — there is nothing to list in a tab that does not exist
+  yet. Every `PaneInfo` now also carries `tab` and `tab_name`, and
+  `same_tab` on the responses that can span tabs, alongside the numeric
+  `id` and `cwd` it already had.
+
+  This closes the other half of the gap #288 opened work on. Numeric
+  pane ids have always crossed tabs, so a pane parked in a background
+  tab stayed reachable by `inspect_pane` / `send_keys` / `close_pane` —
+  but it was absent from the only enumeration that carries geometry, so
+  a coordinator derived its worker population, and its free-slot count,
+  from a set that silently excluded it. Reading absence as exit retires
+  live workers; under-counting capacity errs toward spawning more. A
+  pane whose id was never recorded was discoverable by no route at all.
+  `list_peers` spans tabs but is the messaging surface: it omits
+  geometry, excludes the asking pane, and reports only peer-enabled
+  panes.
+
+  `id` remains the only tab-stable address; `tab` / `tab_name` are
+  display metadata that shift when tabs close. Where two independent
+  orchestrations run in different tabs, both containing a `dispatcher`
+  and a `worker-<task_id>`, `cwd` — not `name` — is what tells their
+  panes apart.
+
+  Additive in both directions. A `list_panes` with no `tab` is
+  unchanged: same panes, same output prefix, and the request is
+  byte-identical on the wire, so nothing existing sends anything new.
+  The new `PaneInfo` fields are omitted when unknown, so a pre-#329
+  client sees the reply it always saw. The selector is gated on a new
+  `cross_tab_list` capability token, because a pre-#329 server drops
+  the unknown `tab` and answers with the caller's tab alone — a
+  well-formed `Ok` indistinguishable from a correct answer, which is
+  the one failure an orchestrator cannot detect. Clients asking for a
+  cross-tab list against such a server fail closed with
+  `[server_too_old]` instead. `renga list` gains the new record fields
+  but no flags; a CLI selector is deferred.
+
 ## [2.1.0] — 2026-08-09
 
 ### Added

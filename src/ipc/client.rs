@@ -714,7 +714,10 @@ mod tests {
     #[test]
     fn write_request_line_is_newline_terminated() {
         let mut out: Vec<u8> = Vec::new();
-        let req = Request::List { from_pane: None };
+        let req = Request::List {
+            from_pane: None,
+            tab: None,
+        };
         write_request_line(&mut out, &req).unwrap();
         assert!(out.ends_with(b"\n"));
         // The line without the trailing newline must parse back to the
@@ -722,7 +725,13 @@ mod tests {
         // multi-line JSON.
         let line = std::str::from_utf8(&out).unwrap().trim_end();
         let parsed: Request = serde_json::from_str(line).unwrap();
-        assert_eq!(parsed, Request::List { from_pane: None });
+        assert_eq!(
+            parsed,
+            Request::List {
+                from_pane: None,
+                tab: None,
+            }
+        );
     }
 
     #[test]
@@ -756,6 +765,12 @@ mod tests {
     /// correct once the subscriber applies its own `target_pane` check.
     /// It is on the list purely so `server_info` can report whether a
     /// `from_pane` on subscribe will actually be honored.
+    ///
+    /// `cross_tab_list` is #329's, and belongs to the first kind — it
+    /// changes what a request does. An older server drops the unknown
+    /// `tab` on a `List` and answers with the caller's tab alone, and
+    /// does so with an `Ok` a client cannot distinguish from a correct
+    /// one, which is why it is gated rather than advertise-only.
     #[test]
     fn capability_exposure_mints_no_new_token() {
         assert_eq!(
@@ -767,6 +782,7 @@ mod tests {
                 super::super::CAP_CALLER_SCOPE_CLOSE_IDENTITY,
                 super::super::CAP_PEER_USER_TURN,
                 super::super::CAP_SUBSCRIBE_PANE_SCOPE,
+                super::super::CAP_CROSS_TAB_LIST,
             ],
             "#304 is introspection only and adds no capability token"
         );
@@ -871,6 +887,40 @@ mod tests {
         assert!(
             require_capability(super::super::CAP_CALLER_SCOPE_CLOSE_IDENTITY, &advertised).is_ok()
         );
+    }
+
+    /// A #328-era server advertises every earlier token, yet answers a
+    /// `List` carrying an unknown `tab` with the caller's tab alone —
+    /// an `Ok` whose shape is indistinguishable from a correct answer.
+    /// An orchestrator that trusts it reads a truncated population and
+    /// retires live panes. Cross-tab lists therefore gate on the
+    /// distinct `cross_tab_list` token, and that server must be refused
+    /// (Issue #329).
+    #[test]
+    fn require_cross_tab_list_fails_closed_against_a_328_server() {
+        // Spelled out rather than derived from SERVER_CAPABILITIES:
+        // the point is to simulate the token set of an older build.
+        let advertised = vec![
+            super::super::CAP_CALLER_SCOPE.to_string(),
+            super::super::CAP_CROSS_TAB_PEERS.to_string(),
+            super::super::CAP_SPAWN_TAB.to_string(),
+            super::super::CAP_CALLER_SCOPE_CLOSE_IDENTITY.to_string(),
+            super::super::CAP_PEER_USER_TURN.to_string(),
+            super::super::CAP_SUBSCRIBE_PANE_SCOPE.to_string(),
+        ];
+        let err = require_capability(super::super::CAP_CROSS_TAB_LIST, &advertised).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server_too_old"), "got: {msg}");
+        assert!(msg.contains("cross_tab_list"), "got: {msg}");
+    }
+
+    #[test]
+    fn require_cross_tab_list_accepts_a_329_server() {
+        let advertised: Vec<String> = super::super::SERVER_CAPABILITIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(require_capability(super::super::CAP_CROSS_TAB_LIST, &advertised).is_ok());
     }
 
     #[test]

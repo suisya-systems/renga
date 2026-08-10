@@ -418,11 +418,12 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
         Request::Hello { .. } => {
             Response::err_coded(err_code::PROTOCOL, "unexpected duplicate hello")
         }
-        Request::List { from_pane } => {
+        Request::List { from_pane, tab } => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if command_tx
                 .send(AppCommand::List {
                     from_pane,
+                    tab,
                     reply: reply_tx,
                 })
                 .is_err()
@@ -790,7 +791,13 @@ mod tests {
             }
         });
 
-        let resp = dispatch_request(Request::List { from_pane: None }, &tx);
+        let resp = dispatch_request(
+            Request::List {
+                from_pane: None,
+                tab: None,
+            },
+            &tx,
+        );
         handle.join().unwrap();
 
         match resp {
@@ -801,6 +808,32 @@ mod tests {
             }
             other => panic!("expected Ok, got {other:?}"),
         }
+    }
+
+    /// The `tab` selector has to survive the wire→`AppCommand` hop —
+    /// dropping it here would reproduce, inside a #329 server, exactly
+    /// the silent single-tab answer the capability gate exists to
+    /// prevent from an older one.
+    #[test]
+    fn dispatch_list_forwards_the_tab_selector() {
+        let (tx, rx) = mpsc::channel::<AppCommand>();
+        let handle = thread::spawn(move || match rx.recv() {
+            Ok(AppCommand::List { tab, reply, .. }) => {
+                reply.send(Ok(Vec::new())).unwrap();
+                tab
+            }
+            other => panic!("expected List, got {other:?}"),
+        });
+
+        let _ = dispatch_request(
+            Request::List {
+                from_pane: Some(3),
+                tab: Some(crate::ipc::ListTabSelector::All),
+            },
+            &tx,
+        );
+        let forwarded = handle.join().unwrap();
+        assert_eq!(forwarded, Some(crate::ipc::ListTabSelector::All));
     }
 
     #[test]

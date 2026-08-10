@@ -1,6 +1,7 @@
 mod caller_scope;
 mod close_confirm;
 mod codex_peer;
+mod cross_tab_list;
 mod ipc_state;
 mod layout_tree;
 mod org_sidebar;

@@ -210,6 +210,28 @@ pub const CAP_PEER_USER_TURN: &str = "peer_user_turn";
 /// observed traffic.
 pub const CAP_SUBSCRIBE_PANE_SCOPE: &str = "subscribe_pane_scope";
 
+/// Capability token advertised by servers that understand the `tab`
+/// selector on [`Request::List`] — the cross-tab pane enumeration
+/// added by Issue #329.
+///
+/// Deliberately distinct from [`CAP_CALLER_SCOPE`] and from
+/// [`CAP_CROSS_TAB_PEERS`]: a #288-era server advertises
+/// `caller_scope`, and a #289-era one advertises `cross_tab_peers`,
+/// yet both answer a `List` that carries an unknown `tab` field with
+/// the caller's tab alone — and answer it `Ok`. `Request` does not use
+/// `deny_unknown_fields`, so the field is silently dropped and the
+/// reply is *indistinguishable from a correct one*: a short, plausible,
+/// well-formed pane list. That is worse than the wrong-tab accidents
+/// #288/#290 exist to prevent, because an orchestrator reading a
+/// truncated population does not error — it retires live panes it can
+/// no longer see and mis-counts its own capacity. Clients sending a
+/// `tab` selector must therefore gate on *this* token via
+/// [`client::send_request_requiring`] and fail closed when it is
+/// absent. A `List` that omits `tab` keeps gating on
+/// [`CAP_CALLER_SCOPE`]: its behavior is unchanged on every server
+/// back to #288.
+pub const CAP_CROSS_TAB_LIST: &str = "cross_tab_list";
+
 /// Every capability token this build's server advertises. Additive by
 /// construction — clients match on tokens they know and ignore the
 /// rest.
@@ -220,6 +242,7 @@ pub const SERVER_CAPABILITIES: &[&str] = &[
     CAP_CALLER_SCOPE_CLOSE_IDENTITY,
     CAP_PEER_USER_TURN,
     CAP_SUBSCRIBE_PANE_SCOPE,
+    CAP_CROSS_TAB_LIST,
 ];
 
 /// One IPC call from a client to the running renga instance.
@@ -256,16 +279,32 @@ pub enum Request {
     /// silently mistaken for a live instance.
     Hello { client_pid: u32 },
     /// List all panes in the caller's workspace (the active workspace
-    /// when `from_pane` is omitted).
+    /// when `from_pane` is omitted), or — since #329 — in the tab(s)
+    /// named by `tab`.
     ///
     /// Wire note: this was a unit variant before #288. With
-    /// `skip_serializing_if` on the added field, `List { from_pane:
-    /// None }` still serializes to exactly `{"cmd":"list"}` and the
-    /// bare `{"cmd":"list"}` still deserializes — see
+    /// `skip_serializing_if` on the added fields, `List { from_pane:
+    /// None, tab: None }` still serializes to exactly
+    /// `{"cmd":"list"}` and the bare `{"cmd":"list"}` still
+    /// deserializes — see
     /// `list_request_raw_json_shape_is_unchanged_without_from_pane`.
     List {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_pane: Option<usize>,
+        /// Which tab(s) to enumerate (Issue #329). `None` keeps the
+        /// prior behavior exactly: the caller's own tab, resolved from
+        /// `from_pane`. It is a **new optional input with a
+        /// prior-behavior-preserving default**, not a required field —
+        /// see `docs/semver-policy.md` §3.
+        ///
+        /// Only send this through
+        /// [`client::send_request_requiring`] with
+        /// [`CAP_CROSS_TAB_LIST`]: a server that predates #329 drops
+        /// the unknown field and answers with the caller's tab alone —
+        /// a well-formed `Ok` a client cannot tell apart from a
+        /// correct answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<ListTabSelector>,
     },
     /// Write `data` to the target pane's PTY. If `append_enter` is true,
     /// a newline is appended so the shell executes the command.
@@ -729,6 +768,70 @@ pub enum TabSelector {
     },
 }
 
+/// Which tab(s) a [`Request::List`] enumerates (Issue #329).
+///
+/// Externally tagged like [`TabSelector`], and byte-identical to it for
+/// the three shapes they share: `{"name":"workers"}` / `{"index":2}` /
+/// `{"pane_id":17}`. `All` is a unit variant, so it is the bare string
+/// `"all"` on the wire — the same shape [`PaneRef::Focused`] uses.
+///
+/// A separate enum rather than a reuse of [`TabSelector`] for two
+/// reasons, both about making illegal states unrepresentable rather
+/// than merely refused:
+/// - `New` has no meaning for a read: there is nothing to enumerate in
+///   a tab that does not exist yet. [`Request::Split`] has to *refuse*
+///   it at runtime with a `protocol` error whose message talks about
+///   splits; `List` simply cannot express it.
+/// - `All` has no meaning for a spawn: a pane lands in exactly one tab.
+///
+/// The overlap is deliberate and the vocabulary is not really new — an
+/// orchestrator that already knows how to name a tab for `spawn_pane`
+/// passes the identical JSON here. Resolution of the three shared
+/// shapes is delegated to the same server-side resolver the spawn path
+/// uses, so `tab_not_found` / `tab_ambiguous` / `pane_not_found` mean
+/// exactly what they mean there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListTabSelector {
+    /// Exact match against a tab's display name. Zero matches fail
+    /// with `tab_not_found`, several with `tab_ambiguous` — labels are
+    /// not unique.
+    Name(String),
+    /// 0-based tab index, the same index [`PeerInfo::tab`] and
+    /// [`PaneInfo::tab`] report. Out of range fails with
+    /// `tab_not_found`.
+    Index(usize),
+    /// The tab owning the given pane. The stable anchor: pane ids
+    /// never shift when tabs close. Unknown pane fails with
+    /// `pane_not_found`.
+    PaneId(usize),
+    /// Every tab. The caller's tab is emitted first, then the
+    /// remaining tabs in index order — the same ordering
+    /// [`Request::PeerList`] uses, so the two enumeration surfaces
+    /// stay diffable.
+    All,
+}
+
+impl ListTabSelector {
+    /// The equivalent spawn-side selector, for the three shapes the two
+    /// enums share. `None` for [`ListTabSelector::All`], which resolves
+    /// to no single workspace and is handled before any resolver is
+    /// consulted.
+    ///
+    /// Exists so cross-tab `list_panes` and tab-directed `spawn_pane`
+    /// cannot drift apart on what `{"name": …}` means or on which error
+    /// code an unknown tab produces — there is one resolver, the app's
+    /// `resolve_tab_selector`, and this is the adapter into it.
+    pub fn as_tab_selector(&self) -> Option<TabSelector> {
+        match self {
+            ListTabSelector::Name(n) => Some(TabSelector::Name(n.clone())),
+            ListTabSelector::Index(i) => Some(TabSelector::Index(*i)),
+            ListTabSelector::PaneId(p) => Some(TabSelector::PaneId(*p)),
+            ListTabSelector::All => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
@@ -848,7 +951,41 @@ pub struct PaneInfo {
     /// unique.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// True when this pane holds focus **within its own tab**. Focus is
+    /// per-workspace, so a response that spans tabs (Issue #329) carries
+    /// one `focused` pane per tab, not one overall — a consumer looking
+    /// for "the pane the keyboard reaches" must pair this with
+    /// [`PaneInfo::same_tab`] or with the tab it asked about. On the
+    /// default single-tab list, exactly one record has it, as always.
     pub focused: bool,
+    /// Index of the tab (workspace) the pane lives in. **Display
+    /// metadata only** — tab indexes shift when tabs close, so the
+    /// stable address for a pane is its `id`, never this. Mirrors
+    /// [`PeerInfo::tab`] so `list_panes` / `list_peers` agree on which
+    /// tab a pane is in. Optional for wire compat both ways: a pre-#329
+    /// server omits it (new client decodes `None`) and a pre-#329
+    /// client ignores it as an unknown field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<usize>,
+    /// Display label of that tab (custom rename or cwd-derived).
+    /// Display metadata only, same caveat as [`PaneInfo::tab`]; labels
+    /// are not unique. When two independent orchestrations run in
+    /// different tabs, the pane's [`PaneInfo::cwd`] — not its `name`
+    /// and not this — is what tells their identically-named panes
+    /// apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_name: Option<String>,
+    /// True when the pane shares the caller's tab. Present **only on a
+    /// response that could contain panes from more than one tab** —
+    /// i.e. one whose request carried both a `tab` selector and a
+    /// `from_pane`. On the default single-tab list it would be `true`
+    /// on every record, and on a `from_pane`-less CLI call there is no
+    /// caller pane for it to be true of; in both cases it is omitted
+    /// rather than emitted as a constant. What it answers is "can I
+    /// address this pane by bare name" — names are unique per tab only
+    /// — and that question only arises when the set spans tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_tab: Option<bool>,
     /// Terminal column of the pane's top-left corner (origin = 0).
     /// Reflects the current layout including file-tree / preview
     /// sidebar offsets. `0` before the first layout pass.
@@ -1266,13 +1403,21 @@ mod tests {
     /// the same object an internally-tagged unit variant does.
     #[test]
     fn list_request_raw_json_shape_is_unchanged_without_from_pane() {
-        let s = serde_json::to_string(&Request::List { from_pane: None }).unwrap();
+        let s = serde_json::to_string(&Request::List {
+            from_pane: None,
+            tab: None,
+        })
+        .unwrap();
         assert_eq!(s, r#"{"cmd":"list"}"#);
     }
 
     #[test]
     fn scoped_list_request_carries_from_pane() {
-        let s = serde_json::to_string(&Request::List { from_pane: Some(7) }).unwrap();
+        let s = serde_json::to_string(&Request::List {
+            from_pane: Some(7),
+            tab: None,
+        })
+        .unwrap();
         assert_eq!(s, r#"{"cmd":"list","from_pane":7}"#);
     }
 
@@ -1282,7 +1427,13 @@ mod tests {
     #[test]
     fn pre_288_raw_requests_decode_as_legacy_active_tab_scope() {
         let cases: &[(&str, Request)] = &[
-            (r#"{"cmd":"list"}"#, Request::List { from_pane: None }),
+            (
+                r#"{"cmd":"list"}"#,
+                Request::List {
+                    from_pane: None,
+                    tab: None,
+                },
+            ),
             (
                 r#"{"cmd":"send","target":"focused","data":"hi","append_enter":true}"#,
                 Request::Send {
@@ -1342,7 +1493,14 @@ mod tests {
         ] {
             let parsed: Request =
                 serde_json::from_str(raw).unwrap_or_else(|e| panic!("decode {raw}: {e}"));
-            assert_eq!(parsed, Request::List { from_pane: None }, "decoding {raw}");
+            assert_eq!(
+                parsed,
+                Request::List {
+                    from_pane: None,
+                    tab: None,
+                },
+                "decoding {raw}"
+            );
         }
     }
 
@@ -1543,6 +1701,185 @@ mod tests {
         }
     }
 
+    // ─── Issue #329 cross-tab list ────────────────────────
+
+    /// `ListTabSelector` is byte-identical to [`TabSelector`] for the
+    /// three shapes they share — the point of the overlap is that an
+    /// orchestrator passes the same JSON it already passes to
+    /// `spawn_pane`. `All` is a unit variant, hence a bare string.
+    #[test]
+    fn list_tab_selector_wire_shapes() {
+        let cases: &[(ListTabSelector, &str)] = &[
+            (
+                ListTabSelector::Name("workers".into()),
+                r#"{"name":"workers"}"#,
+            ),
+            (ListTabSelector::Index(2), r#"{"index":2}"#),
+            (ListTabSelector::PaneId(17), r#"{"pane_id":17}"#),
+            (ListTabSelector::All, r#""all""#),
+        ];
+        for (selector, wire) in cases {
+            let ser = serde_json::to_string(selector).unwrap();
+            assert_eq!(&ser, wire);
+            let de: ListTabSelector = serde_json::from_str(wire).unwrap();
+            assert_eq!(&de, selector);
+        }
+    }
+
+    /// If this ever breaks, the `list_panes` tool description — which
+    /// tells agents the selector is "the same shapes as spawn_pane's
+    /// `tab`" — has become a lie.
+    #[test]
+    fn list_tab_selector_shapes_match_the_spawn_selector() {
+        let pairs: &[(ListTabSelector, TabSelector)] = &[
+            (
+                ListTabSelector::Name("workers".into()),
+                TabSelector::Name("workers".into()),
+            ),
+            (ListTabSelector::Index(2), TabSelector::Index(2)),
+            (ListTabSelector::PaneId(17), TabSelector::PaneId(17)),
+        ];
+        for (list, spawn) in pairs {
+            assert_eq!(
+                serde_json::to_string(list).unwrap(),
+                serde_json::to_string(spawn).unwrap(),
+            );
+        }
+    }
+
+    /// The adapter into the one shared server-side resolver.
+    #[test]
+    fn list_tab_selector_maps_onto_the_spawn_selector_except_all() {
+        assert_eq!(
+            ListTabSelector::Index(3).as_tab_selector(),
+            Some(TabSelector::Index(3))
+        );
+        assert_eq!(
+            ListTabSelector::PaneId(9).as_tab_selector(),
+            Some(TabSelector::PaneId(9))
+        );
+        assert_eq!(
+            ListTabSelector::Name("x".into()).as_tab_selector(),
+            Some(TabSelector::Name("x".into()))
+        );
+        assert_eq!(
+            ListTabSelector::All.as_tab_selector(),
+            None,
+            "All resolves to no single workspace"
+        );
+    }
+
+    /// A `List` that names no tab must stay byte-identical on the wire,
+    /// or #329 would silently change what every existing client sends.
+    #[test]
+    fn list_request_raw_json_shape_is_unchanged_without_tab() {
+        let s = serde_json::to_string(&Request::List {
+            from_pane: None,
+            tab: None,
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"cmd":"list"}"#);
+    }
+
+    #[test]
+    fn list_request_carries_the_tab_selector() {
+        let s = serde_json::to_string(&Request::List {
+            from_pane: Some(7),
+            tab: Some(ListTabSelector::All),
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"cmd":"list","from_pane":7,"tab":"all"}"#);
+    }
+
+    #[test]
+    fn list_request_with_tab_roundtrips() {
+        for tab in [
+            ListTabSelector::Name("workers".into()),
+            ListTabSelector::Index(0),
+            ListTabSelector::PaneId(4),
+            ListTabSelector::All,
+        ] {
+            let req = Request::List {
+                from_pane: Some(2),
+                tab: Some(tab.clone()),
+            };
+            let s = serde_json::to_string(&req).unwrap();
+            let parsed: Request = serde_json::from_str(&s).unwrap();
+            assert_eq!(parsed, req, "roundtrip {s}");
+        }
+    }
+
+    #[test]
+    fn cross_tab_list_capability_is_advertised() {
+        assert!(SERVER_CAPABILITIES.contains(&CAP_CROSS_TAB_LIST));
+    }
+
+    /// Additive serde in the reply direction: a pre-#329 client must
+    /// not start seeing `tab: null` keys it has no field for.
+    #[test]
+    fn pane_info_omits_tab_fields_when_none() {
+        let info = PaneInfo {
+            id: 1,
+            name: None,
+            role: None,
+            focused: false,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            cwd: None,
+            kind: None,
+            receive_mode: None,
+            summary: None,
+        };
+        let s = serde_json::to_string(&info).unwrap();
+        // Match on the quoted key forms: `"tab"` is a substring of
+        // `"tab_name"`, so a naive `contains("tab")` would pass
+        // vacuously.
+        assert!(!s.contains(r#""tab":"#), "{s}");
+        assert!(!s.contains(r#""tab_name""#), "{s}");
+        assert!(!s.contains(r#""same_tab""#), "{s}");
+    }
+
+    #[test]
+    fn pane_info_tab_fields_roundtrip_when_set() {
+        let info = PaneInfo {
+            id: 1,
+            name: Some("worker-329".into()),
+            role: None,
+            focused: false,
+            tab: Some(2),
+            tab_name: Some("workers".into()),
+            same_tab: Some(false),
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            cwd: Some("/repo/a".into()),
+            kind: None,
+            receive_mode: None,
+            summary: None,
+        };
+        let parsed: PaneInfo =
+            serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
+        assert_eq!(parsed, info);
+    }
+
+    /// The other direction of the same promise: a #329 client decoding
+    /// a pre-#329 server's reply gets `None`, never a panic — which is
+    /// what `format_pane_list`'s missing-metadata branch relies on.
+    #[test]
+    fn pre_329_list_reply_decodes_without_tab_fields() {
+        let raw = r#"{"id":1,"focused":false,"x":0,"y":0,"width":0,"height":0}"#;
+        let info: PaneInfo = serde_json::from_str(raw).unwrap();
+        assert!(info.tab.is_none());
+        assert!(info.tab_name.is_none());
+        assert!(info.same_tab.is_none());
+    }
+
     #[test]
     fn split_request_with_tab_roundtrips() {
         for tab in [
@@ -1616,8 +1953,14 @@ mod tests {
     #[test]
     fn list_request_roundtrips() {
         assert_eq!(
-            roundtrip(&Request::List { from_pane: None }),
-            Request::List { from_pane: None }
+            roundtrip(&Request::List {
+                from_pane: None,
+                tab: None,
+            }),
+            Request::List {
+                from_pane: None,
+                tab: None,
+            }
         );
     }
 
@@ -1939,6 +2282,9 @@ mod tests {
             name: None,
             role: None,
             focused: false,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
             x: 0,
             y: 0,
             width: 0,
@@ -1959,6 +2305,9 @@ mod tests {
             name: Some("president".into()),
             role: Some("leader".into()),
             focused: true,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
             x: 0,
             y: 0,
             width: 80,
@@ -1980,6 +2329,9 @@ mod tests {
             name: Some("editor".into()),
             role: None,
             focused: false,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
             x: 3,
             y: 1,
             width: 120,
@@ -2460,6 +2812,9 @@ mod tests {
             name: None,
             role: None,
             focused: false,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
             x: 0,
             y: 0,
             width: 0,
@@ -2480,6 +2835,9 @@ mod tests {
             name: None,
             role: None,
             focused: false,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
             x: 0,
             y: 0,
             width: 0,

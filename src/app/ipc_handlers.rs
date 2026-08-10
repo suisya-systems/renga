@@ -3,9 +3,13 @@ use super::*;
 impl App {
     pub(crate) fn handle_app_command(&mut self, cmd: AppCommand) {
         match cmd {
-            AppCommand::List { from_pane, reply } => {
+            AppCommand::List {
+                from_pane,
+                tab,
+                reply,
+            } => {
                 self.recompute_hidden_rects_for_ipc();
-                let result = self.handle_list(from_pane);
+                let result = self.handle_list(from_pane, tab.as_ref());
                 let _ = reply.send(result);
             }
             AppCommand::Send {
@@ -178,29 +182,80 @@ impl App {
         }
     }
 
-    /// `list_panes` / `renga list`: the panes of the caller's tab.
+    /// `list_panes` / `renga list`: the panes of the caller's tab, or
+    /// of the tab(s) a `tab` selector names (Issue #329).
     ///
     /// Before #288 this always read the active workspace, which made
     /// the tool's own description ("panes in the current tab") false for
     /// any agent whose tab was not the one on screen — and, worse, made
     /// the ids it returned unsafe to feed straight back into
-    /// `send_keys`.
+    /// `send_keys`. #329 closes the other half of the same gap: a pane
+    /// parked in a background tab was reachable by numeric id but
+    /// invisible to every enumeration surface that carries geometry, so
+    /// an orchestrator could neither monitor it nor count it.
+    ///
+    /// The caller is resolved **first and unconditionally**, even when
+    /// an explicit selector — not the caller's tab — decides the scope,
+    /// the same ordering `handle_split` enforces. A stale `from_pane`
+    /// is an error on every path, never a silent fallback to the
+    /// visible tab, and `same_tab` needs the caller's workspace anyway.
+    ///
+    /// Geometry caveat, inherited unchanged by the multi-tab paths: the
+    /// rects come from each workspace's cached `last_pane_rects`, which
+    /// [`Self::recompute_hidden_rects_for_ipc`] refreshes for every
+    /// hidden tab before this runs. They are still all-zero before the
+    /// first layout pass, and still stale while the terminal is too
+    /// small to lay out — both are pre-existing and documented on
+    /// [`PaneInfo`]'s geometry fields, now merely reachable for a tab
+    /// other than the caller's.
     pub(crate) fn handle_list(
         &self,
         from_pane: Option<usize>,
+        tab: Option<&ipc::ListTabSelector>,
     ) -> std::result::Result<Vec<PaneInfo>, ipc::CodedError> {
-        let ws_idx = self.resolve_caller_workspace(from_pane)?;
-        Ok(self.pane_infos_for_workspace(ws_idx))
+        let caller_ws = self.resolve_caller_workspace(from_pane)?;
+        // `same_tab` is only meaningful when the answer may leave the
+        // caller's tab *and* there is a caller pane to compare against.
+        let caller_for_same_tab = match (tab, from_pane) {
+            (Some(_), Some(_)) => Some(caller_ws),
+            _ => None,
+        };
+        match tab {
+            None => Ok(self.pane_infos_for_workspace(caller_ws, caller_for_same_tab)),
+            Some(ipc::ListTabSelector::All) => {
+                let ordered = std::iter::once(caller_ws)
+                    .chain((0..self.workspaces.len()).filter(|i| *i != caller_ws));
+                Ok(ordered
+                    .flat_map(|ws_idx| self.pane_infos_for_workspace(ws_idx, caller_for_same_tab))
+                    .collect())
+            }
+            Some(sel) => {
+                let selector = sel
+                    .as_tab_selector()
+                    .expect("only All maps to None, handled above");
+                let ws_idx = self.resolve_tab_selector(&selector)?;
+                Ok(self.pane_infos_for_workspace(ws_idx, caller_for_same_tab))
+            }
+        }
     }
 
-    /// Build the wire [`PaneInfo`] list for one workspace. Shared by
-    /// `List` and the single-pane replies of `SetPaneIdentity` /
-    /// `SetSummary` so the three can't disagree about what a pane
-    /// record contains.
-    pub(crate) fn pane_infos_for_workspace(&self, ws_idx: usize) -> Vec<PaneInfo> {
+    /// Build the wire [`PaneInfo`] list for one workspace, in layout
+    /// order. `caller_ws` is `Some` only when the enclosing response may
+    /// span tabs; see [`PaneInfo::same_tab`].
+    ///
+    /// The single-pane replies of `SetPaneIdentity` / `SetSummary` build
+    /// their own `PaneInfo` literal (they answer about one pane, not a
+    /// workspace) — keep the three in step when the struct grows a
+    /// field.
+    pub(crate) fn pane_infos_for_workspace(
+        &self,
+        ws_idx: usize,
+        caller_ws: Option<usize>,
+    ) -> Vec<PaneInfo> {
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return Vec::new();
         };
+        let tab_name = ws.display_name().to_string();
         let focused = ws.focused_pane_id;
         let mut name_by_id: HashMap<usize, String> = HashMap::new();
         for (name, id) in &ws.pane_names {
@@ -220,6 +275,9 @@ impl App {
                 name: name_by_id.get(&id).cloned(),
                 role,
                 focused: id == focused,
+                tab: Some(ws_idx),
+                tab_name: Some(tab_name.clone()),
+                same_tab: caller_ws.map(|c| c == ws_idx),
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,
@@ -366,6 +424,11 @@ impl App {
             name: name_for_pane,
             role: pane.role.clone(),
             focused: ws.focused_pane_id == pane_id,
+            tab: Some(ws_idx),
+            tab_name: Some(ws.display_name().to_string()),
+            // One-pane reply: there is no cross-tab set for
+            // `same_tab` to discriminate within. See `PaneInfo`.
+            same_tab: None,
             x: rect.x,
             y: rect.y,
             width: rect.width,
@@ -443,6 +506,11 @@ impl App {
             name: name_for_pane,
             role: pane.role.clone(),
             focused: ws.focused_pane_id == pane_id,
+            tab: Some(ws_idx),
+            tab_name: Some(ws.display_name().to_string()),
+            // One-pane reply: there is no cross-tab set for
+            // `same_tab` to discriminate within. See `PaneInfo`.
+            same_tab: None,
             x: rect.x,
             y: rect.y,
             width: rect.width,

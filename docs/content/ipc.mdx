@@ -18,8 +18,10 @@ import { Callout } from 'nextra/components'
 $ renga list
 [
   { "id": 1, "name": "secretary", "role": "leader", "focused": true,
+    "tab": 0, "tab_name": "renga",
     "x": 0, "y": 0, "width": 80, "height": 24 },
   { "id": 2, "name": "worker-foo", "role": "worker", "focused": false,
+    "tab": 0, "tab_name": "renga",
     "x": 80, "y": 0, "width": 80, "height": 24 }
 ]
 ```
@@ -29,6 +31,35 @@ $ renga list
 更新され、file-tree / preview サイドバーのオフセットも反映する。
 renga 起動直後など一度もレイアウト計算が走っていない状態では 4 値とも
 `0` になる。既存 consumer は新フィールドを無視しても動作する。
+
+`tab` (その pane が属するタブの 0 始まり index) と `tab_name` (そのタブの
+表示名) は **表示用のメタデータでしかない** — index はタブを閉じるとずれ、
+表示名も一意ではないので、タブを跨いで安定した宛先は依然として `id` だけ。
+別タブで動く独立した 2 つのオーケストレーションの pane を見分けるのは
+`name` ではなく `cwd` である (どちらにも `dispatcher` と
+`worker-<task_id>` が実在するため)。
+
+このコマンドの実体である IPC リクエスト `list` は、列挙対象のタブを選ぶ
+オプション項目 `tab` を取る (Issue #329): `{"name": "workers"}` /
+`{"index": 2}` / `{"pane_id": 17}` — spawn 側のタブセレクタと同じ 3 形で、
+解決できなかったときのコードも同じ (`tab_not_found` / `tab_ambiguous` /
+`pane_not_found`) — か、全タブを対象にする裸の文字列 `"all"` (呼び出し元の
+タブが先頭、以降は index 順)。省略時の挙動は従来とまったく同じで、
+`{"cmd":"list"}` は #329 以前のクライアントが送っていたものと wire 上
+byte 単位で一致する。`renga list` はこれを送らない — CLI にタブ指定の
+フラグは無く、従来どおりアクティブタブを列挙する — が、MCP の
+`list_panes` ツールでは利用できる (そちらでの綴りは `{"all": true}`)。
+[ピアメッセージング](/ja/peer-messaging) を参照。リクエストが `tab` と
+`from_pane` の両方を持つ場合、各レコードには `same_tab` も付く。
+
+`tab` を含む `list` は、サーバが `cross_tab_list` capability を広告して
+いることを要求し、そうでなければ `[server_too_old]` で拒否される。後述の
+`subscribe_pane_scope` と違ってこちらは gate が必須である: #329 以前の
+サーバはこの未知フィールドを捨てて呼び出し元のタブだけを返すが、それは
+正しい応答とクライアントからは区別が付かない整形式の応答であり、
+オーケストレータが生きている pane を退役させ、自分の容量を過小に数える
+ことになるため。`tab` を含まない `list` はどのサーバでも挙動が変わらず、
+gate も従来どおり `caller_scope` のまま。
 
 ### `renga send`
 

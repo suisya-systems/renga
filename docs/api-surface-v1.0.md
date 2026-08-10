@@ -144,12 +144,24 @@ the recipient to treat each body as an *instruction*, not transcript text.
 
 ### 1.5 `list_panes` — stable
 
-Input: `{}`.
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `tab` | object | no | Tab scope selector (#329). Omitted → unchanged pre-#329 behavior: the **caller's tab** (Q4). Exactly one key: `{"name": "<label>"}` — exact display-name match, 0 matches → `tab_not_found`, several → `tab_ambiguous` (labels are not unique; never first-match); `{"index": N}` — 0-based tab index, the same index `list_peers` reports, out of range → `tab_not_found`; `{"pane_id": N}` — the tab owning that pane (stable anchor), unknown pane → `pane_not_found`; `{"all": true}` — every tab, the caller's first, then the rest in index order. The same selector shapes as `spawn_pane`'s `tab` (§1.6) minus `{"new": …}` (there is nothing to list in a tab that does not exist yet), plus `{"all": true}`. Sending any `tab` requires the server to advertise `cross_tab_list` (§3.4) — the MCP layer fails closed with `server_too_old` otherwise. Malformed selectors (no key, several keys, unknown key, `{"all": false}`) are rejected with JSON-RPC `-32602` rather than interpreted. |
 
-Result: text describing every pane in the **caller's tab** (Q4) — the tab the
-calling pane lives in, which is not necessarily the tab on screen: `id`, `name`,
-`role`, `focused`, geometry (`x`, `y`, `width`, `height`), `cwd`, `kind`,
-`receive_mode`. Geometry fields are `0` before the first layout pass.
+Result: text describing every pane in scope — the caller's tab by default, which
+is not necessarily the tab on screen: `id`, `name`, `role`, `focused`, geometry
+(`x`, `y`, `width`, `height`), `cwd`, `kind`, `receive_mode`, plus the
+display-only `tab` / `tab_name` and, on a response that can span tabs, `same_tab`
+(§3.4). Geometry fields are `0` before the first layout pass.
+
+`tab` / `tab_name` are **display metadata only**: tab indexes shift when tabs
+close, and labels are not unique. A pane's `id` is its only tab-stable address —
+and when two independent orchestrations run in different tabs, both hold a
+`dispatcher` and a `worker-<task_id>`, so `name` cannot tell their panes apart.
+`cwd` is what does.
+
+This is an enumeration surface only: pane placement and addressing semantics are
+unchanged by #329, since numeric ids already crossed tabs.
 
 ### 1.6 `spawn_pane` — stable
 
@@ -456,6 +468,13 @@ command (clap `conflicts_with_all`). When no selector is given, the default is
 | `renga mcp uninstall` | `--client <claude\|codex>` | (config write) |
 | `renga mcp status` | `--client <claude\|codex>` | (config read) |
 
+**`renga list` and cross-tab enumeration (#329)**: the CLI sends `Request::List`
+with neither `from_pane` nor `tab`, so its scope is unchanged — the active tab,
+exactly as before. Its records do pick up the new display-only `tab` / `tab_name`
+fields (§3.4); `same_tab` stays omitted, because a call with no caller pane has no
+tab for a record to share. No new flags: a CLI selector for the `tab` scope is
+deferred (§6.2), and the cross-tab surface is the `list_panes` MCP tool (§1.5).
+
 **`renga rename` (Q6)**: same semantics as `set_pane_identity` (§1.14) —
 three-state via `--to-X` / `--clear-X` flags. Frozen in v1.0.
 
@@ -533,7 +552,7 @@ Server budgets: 5 s `APP_REPLY_TIMEOUT` (server → app event loop) +
 | Variant | Fields | Notes |
 |---|---|---|
 | `hello` | `client_pid: u32` | Required first message. |
-| `list` | `from_pane?: usize` | `from_pane` added in #288; optional, omitted on the wire when absent, so `{"cmd":"list"}` is unchanged. |
+| `list` | `from_pane?: usize`, `tab?: ListTabSelector` | `from_pane` added in #288; optional, omitted on the wire when absent, so `{"cmd":"list"}` is unchanged. `tab` (#329) is likewise omitted on the wire when absent — with both fields absent the request is byte-identical to `{"cmd":"list"}` — and senders must gate it on `cross_tab_list` (§3.4). `{new: …}` is not valid here; `"all"` is. |
 | `send` | `target: PaneRef`, `data: string`, `append_enter: bool` (default false), `from_pane?: usize` | |
 | `split` | `target: PaneRef`, `direction: vertical\|horizontal`, `command?`, `id?`, `role?`, `cwd?`, `from_pane?: usize`, `tab?: TabSelector` | Relative `cwd` resolves against the **target** pane, not `from_pane`. `tab` (#290) is omitted on the wire when absent; senders must gate it on `spawn_tab` (§3.4). `{new: …}` is not valid here — that is `spawn_tab`'s job. |
 | `focus` | `target: PaneRef`, `from_pane?: usize` | Resolving outside the visible tab switches the visible tab. |
@@ -558,6 +577,17 @@ selects the owning tab (the stable anchor), `new` creates a background tab. A
 tagged object rather than an overloaded string so a tab literally named "new"
 stays addressable.
 
+`ListTabSelector` (#329) = `{ name: string } | { index: usize } | { pane_id:
+usize } | "all"`. The three shared shapes are byte-identical to `TabSelector`'s
+and resolve through the same server-side resolver, so `{name: …}` means the same
+thing and produces the same `tab_not_found` / `tab_ambiguous` / `pane_not_found`
+codes on both surfaces — the vocabulary is reused, not extended. The two enums
+differ at exactly the two points where they must: `ListTabSelector` has `All` and
+no `New` (there is nothing to enumerate in a tab that does not exist yet), and
+`TabSelector` has `New` and no `All` (a pane lands in exactly one tab). `All` is a
+unit variant, so on the wire it is the bare string `"all"`, the shape
+`PaneRef::Focused` also uses.
+
 ### 3.4 Response envelope — stable
 
 `#[serde(tag = "status", rename_all = "snake_case")]`.
@@ -571,7 +601,21 @@ stays addressable.
 
 `PaneInfo` payload (used by `list` data, `set_pane_identity` ok data, embedded
 in `peer_list` data):
-`{ id, name?, role?, focused, x, y, width, height, cwd?, kind?, receive_mode?, summary? }`.
+`{ id, name?, role?, focused, x, y, width, height, cwd?, kind?, receive_mode?,
+summary?, tab?, tab_name?, same_tab? }`.
+
+The last three are additive serde (`default` + `skip_serializing_if`), added in
+#329, and carry the same meaning as their `PeerInfo` namesakes below: `tab?`
+(0-based workspace index; display metadata that shifts when tabs close, never an
+address), `tab_name?` (display label, not unique), `same_tab?` (whether the pane
+shares the caller's tab, i.e. is addressable by bare name). `same_tab` is emitted
+**only on a response whose set can span tabs** — one whose request carried both a
+`tab` selector and a `from_pane`; on the default single-tab list it would be
+`true` on every record, and without `from_pane` there is no caller pane for it to
+be true of, so it is omitted rather than emitted as a constant. Since `id` is the
+only tab-stable address, and two independent orchestrations in different tabs both
+hold a `dispatcher` and a `worker-<task_id>`, `cwd` — not `name`, not `tab_name` —
+is what discriminates identically-named panes.
 
 `PeerInfo` = `PaneInfo` minus the focused flag and geometry (purposefully
 hidden from cross-pane callers), plus — since #289 — optional display-only
@@ -617,6 +661,19 @@ that omit `from_pane` — those behave identically on either server. It exists
 so a caller, an operator, or a test can read off `hello` / `server_info`
 (§1.16) whether a `from_pane` it sends will actually narrow the stream,
 rather than inferring it from observed traffic.
+
+Servers that understand the `tab` selector on `list` advertise `cross_tab_list`
+(#329), appended last to the capability list. Any `list_panes` carrying a `tab`
+selector — including one that resolves to the caller's own tab — is sent with
+`cross_tab_list` required and fails closed (`server_too_old`) when it is absent:
+`Request` tolerates unknown fields, so a pre-#329 server drops the selector and
+answers with the caller's tab alone — a well-formed `Ok` a client cannot tell
+apart from a correct answer. That is a worse failure than the wrong-tab accidents
+`cross_tab_peers` / `spawn_tab` fence, because an orchestrator reading a silently
+truncated population does not error: it retires live panes it can no longer see
+and under-counts its own capacity. Gating on the request *shape* rather than on
+the resolved tab is what keeps that failure uniform. Calls without `tab` keep
+requiring only `caller_scope`, so pre-#329 behavior is untouched.
 
 ### 3.5 Event envelope — stable
 
@@ -725,8 +782,8 @@ these as `[<code>] <human message>` in JSON-RPC error message strings.
 | `name_in_use` | `split`, `new_tab`, `set_pane_identity` | Another pane in the same tab holds the requested name. |
 | `name_invalid` | `split`, `new_tab`, `set_pane_identity`, `spawn_tab` | Name empty / all-digits / non-`[A-Za-z0-9_-]`. `spawn_tab` rejects **before** creating the tab (#290). |
 | `summary_too_long` | `set_summary` | Summary input exceeds 256 Unicode scalar values. Pre-mutation rejection. |
-| `tab_not_found` | `split` with `tab` | Selector's display name matched no tab, or the 0-based index is out of range. Pre-mutation rejection. |
-| `tab_ambiguous` | `split` with `tab` | `{name}` matched several tabs. Labels are not unique; the server never first-matches — re-address via `{index}` or `{pane_id}`. |
+| `tab_not_found` | `split` with `tab`; `list` with `tab` (#329) | Selector's display name matched no tab, or the 0-based index is out of range. Pre-mutation rejection. |
+| `tab_ambiguous` | `split` with `tab`; `list` with `tab` (#329) | `{name}` matched several tabs. Labels are not unique; the server never first-matches — re-address via `{index}` or `{pane_id}`. |
 | `target_tab_mismatch` | `split` with `tab` | Numeric `target` lives in a different tab than the selector picked. The request contradicts itself; refused instead of following either half. |
 | `tab_limit_reached` | `new_tab`, `spawn_tab` | MAX_TABS = 16 tabs already open. Deliberately not `split_refused`, which is about pane capacity inside one tab. |
 | `codex_not_installed` | `spawn_codex_pane` | Codex's `~/.codex/config.toml` is missing the renga-peers entry, the file is unreadable, or the `RENGA_PEER_CLIENT_KIND=codex` env-var passthrough is absent. Surfaced from the MCP layer (not `renga::ipc::err_code`); branch on the `[code]` token same as the others. Run `renga mcp install --client codex` to remediate. |
@@ -783,6 +840,11 @@ major version.
   rule is unchanged. `focus_pane` additionally switches the visible tab
   whenever the resolved pane is not in it — focus the keyboard cannot reach
   would not be focus.
+  Since #329 `list_panes` additionally accepts an explicit `tab` selector
+  (§1.5) that reads another tab, or every tab at once. That is an
+  **enumeration** opt-out only, and only for the tool that reads: the default
+  with no `tab` argument is unchanged, and no pane's placement or addressing
+  changes — numeric ids already crossed tabs.
 
   Wire-level: the five stable IPC requests (`list`, `send`, `split`, `focus`,
   `inspect`) carry an **optional** `from_pane`; `close` and `set_pane_identity`
@@ -811,10 +873,13 @@ The following are **not** part of the v1.0 frozen surface. They may exist in
 the codebase but downstream must not depend on them; they may change in any
 minor release.
 
-- **Cross-tab selectors** for `list_panes` / `focus_pane` etc. (Q4 → v1.1+).
-  `send_message` gained cross-tab delivery by numeric id in #289; for the
-  remaining tab-scoped tools, workers needing cross-tab coordination continue
-  to use numeric-id escape hatches or the "all workers in one tab" pattern.
+- **Cross-tab selectors** for `focus_pane` etc. (Q4 → v1.1+).
+  `send_message` gained cross-tab delivery by numeric id in #289, and
+  `list_panes` gained a `tab` selector — including `{"all": true}` — in #329
+  (§1.5), so both are now delivered rather than deferred; a `renga list`
+  equivalent on the CLI is still deferred (§2.2). For the remaining tab-scoped
+  tools, workers needing cross-tab coordination continue to use numeric-id
+  escape hatches or the "all workers in one tab" pattern.
 - **`spawn_pane.command` opt-out flag** for the `claude → claude
   --dangerously-load-...` rewrite (Q3). Callers who need verbatim execution
   must use a non-`claude` leading token (e.g. `bash -c '…'`).

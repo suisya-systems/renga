@@ -135,7 +135,7 @@ user-turn 配送を `send_keys` で自作しないでください。
 
 | ツール | 役割 |
 |---|---|
-| `list_panes` | **呼び出し元ペインが属するタブ** (ユーザーが表示中のタブではありません) の全ペインを、id / 任意の name・role / フォーカス状態 / cwd / 端末ジオメトリ込みで一覧します。 |
+| `list_panes(tab?)` | ペインを id / 任意の name・role / フォーカス状態 / cwd / 端末ジオメトリ、および表示用のタブ情報 (`tab` index / `tab_name`) 込みで一覧します。引数なしのときのスコープは従来どおり **呼び出し元ペインが属するタブ** (ユーザーが表示中のタブではありません) の全ペインです。#329 以降はオプションの `tab` セレクタで別タブを、`{"all": true}` で全タブを一度に読めます — id を持っていないペイン (バックグラウンドタブに置いたペインを含む) を発見する唯一の手段です (後述)。 |
 | `spawn_pane(direction?, …)` | 指定ペインを分割して新ペインを生やします。`command`・`name`・`role`・`cwd`、そして #290 以降は配置先タブを選ぶ `tab` セレクタ (後述) もオプション。`command="claude"` (または `claude <args>`) を渡したときは `Alt+P` と同じ peer 対応コマンドに自動書き換えするので、毎回 `--dangerously-load-development-channels` を覚えていなくてもメッセージング付きの Claude が立ち上がります。 |
 | `spawn_claude_pane(direction?, …)` | Claude 起動専用の高レベル API。`spawn_pane` と同じ `tab` セレクタを受け付けます。`permission_mode` / `model` / `args[]` を構造化フィールドで受け取り、peer チャネルを必ず有効にした状態で Claude Code を立ち上げます。`args[]` に予約済みフラグ（`--dangerously-load-development-channels` / `--permission-mode` / `--model`）が入っていると `invalid-params` で拒否します。 |
 | `spawn_codex_pane(direction?, …)` | Codex 起動専用の高レベル API。`spawn_pane` と同じ `tab` セレクタを受け付けます。`args[]` から最終的な `codex ...` コマンドを renga 側で shell-quote して組み立てます。MCP サブプロセス側の `RENGA_PEER_CLIENT_KIND=codex` 登録は `renga mcp install --client codex` に委ねます。 |
@@ -150,7 +150,7 @@ user-turn 配送を `send_keys` で自作しないでください。
 
 | ツール | 役割 |
 |---|---|
-| `server_info` | **実際に動いているサーバ**の capability トークン集合を、gate されたリクエストを一切試さずに返します (#304)。事前確認用です — `tab` セレクタを送る前に `spawn_tab` を確認できるので、送ってから `[server_too_old]` エラー文字列を読んで判断する必要がなくなります。まず `status` を見てください: `connected` なら `server.capabilities` が実サーバの申告そのもので、**そこが空配列なら本当に古いサーバ**という意味です。`detached` (renga から起動されていない) と `unreachable` (ソケットが無い) では `null` になり、これは「不明」であって「無い」ではありません — この 2 つから「トークンが無い」と結論しないでください。判定には `effective_capabilities` (サーバが申告し、かつこの mcp-peer ビルドが扱えるトークンの積集合) を使います。JSON-RPC エラーは決して返しません。ツール一覧にこのツール自体が無い場合、その renga は capability 公開より前のバージョンで、その不在自体が答えになります。<br /><br />あわせて `server.session_id` (#326) も返します。これは動作中の renga **プロセスインスタンス**の識別子で、再起動のたびに必ず変わります。pane id も再起動ごとに counter が初期化されるため、保存した pane id が再起動後に*別の生きている* pane へ黙って解決してしまいます — `(session_id, pane_id)` の組で保存し、読み直した session_id が違っていたら pane id を捨ててください。`server.pid` や `server.endpoint` で代用しないこと: endpoint は pid を埋め込んだ派生値なので実質 1 つの事実しかなく、pid は OS に再利用されます。`null` (report できない古い `connected` サーバを含む) は「不明」であって「変わっていない」ではありません — その場合は id の再利用をやめて名前で pane を解決し直してください。 |
+| `server_info` | **実際に動いているサーバ**の capability トークン集合を、gate されたリクエストを一切試さずに返します (#304)。事前確認用です — `spawn_*` の `tab` セレクタを送る前に `spawn_tab` を (`list_panes` の `tab` セレクタなら `cross_tab_list` を) 確認できるので、送ってから `[server_too_old]` エラー文字列を読んで判断する必要がなくなります。まず `status` を見てください: `connected` なら `server.capabilities` が実サーバの申告そのもので、**そこが空配列なら本当に古いサーバ**という意味です。`detached` (renga から起動されていない) と `unreachable` (ソケットが無い) では `null` になり、これは「不明」であって「無い」ではありません — この 2 つから「トークンが無い」と結論しないでください。判定には `effective_capabilities` (サーバが申告し、かつこの mcp-peer ビルドが扱えるトークンの積集合) を使います。JSON-RPC エラーは決して返しません。ツール一覧にこのツール自体が無い場合、その renga は capability 公開より前のバージョンで、その不在自体が答えになります。<br /><br />あわせて `server.session_id` (#326) も返します。これは動作中の renga **プロセスインスタンス**の識別子で、再起動のたびに必ず変わります。pane id も再起動ごとに counter が初期化されるため、保存した pane id が再起動後に*別の生きている* pane へ黙って解決してしまいます — `(session_id, pane_id)` の組で保存し、読み直した session_id が違っていたら pane id を捨ててください。`server.pid` や `server.endpoint` で代用しないこと: endpoint は pid を埋め込んだ派生値なので実質 1 つの事実しかなく、pid は OS に再利用されます。`null` (report できない古い `connected` サーバを含む) は「不明」であって「変わっていない」ではありません — その場合は id の再利用をやめて名前で pane を解決し直してください。 |
 
 ### イベント監視
 
@@ -161,6 +161,8 @@ user-turn 配送を `send_keys` で自作しないでください。
 `spawn_pane` / `new_tab` の作業ディレクトリ指定は `cwd` フィールドを使ってください。パス解決が構造化されたまま保て、`claude` 自動アップグレードも維持されます。自動アップグレードは `command` の先頭トークンがちょうど `claude` のときだけ発火するので、`cd <dir> && ...` を埋め込むと一切効かなくなります。
 
 **タブ配置 (#290)。** 3 つの `spawn_*` ツールはオプションの `tab` セレクタで新ペインの配置先タブを選べます: `{"name": "workers"}` (表示名の完全一致 — 0 件は `tab_not_found`、複数件は `tab_ambiguous`)、`{"index": 2}` (0 始まり。`list_peers` の報告と同じ index)、`{"pane_id": 17}` (そのペインが属するタブ — 安定アンカー)、`{"new": {}}` / `{"new": {"name": "workers"}}` (単一ペインの**バックグラウンド**新規タブ。表示中のタブは切り替わらず、`direction` / `target` は省略必須、`cwd` 省略時は呼び出し元ペインの cwd を継承)。既存タブのセレクタでは `target` は選択タブの内側で解決され、別タブの数値 target は `target_tab_mismatch` で失敗します。サーバが `spawn_tab` capability を広告している必要があり、古いサーバへは誤ったタブに spawn する代わりに `[server_too_old]` で拒否されます。
+
+**タブ横断の列挙 (#329)。** `list_panes` は同じ 3 つのタブ指定 — `{"name": "workers"}` / `{"index": 2}` / `{"pane_id": 17}` — に加えて、全タブを対象にする `{"all": true}` (自分のタブが先頭、以降は index 順) を受け付けます。`{"new": …}` は受け付けません: まだ存在しないタブには列挙するものが無いためです。`tab` を省略したときの挙動は #329 以前とまったく同じで、これは置き換えではなく追加です。あくまで**列挙**の話であって、ペインの配置や宛先解決のセマンティクスは変わりません — 数値 id は #289 の時点で既にタブを跨いでいました。欠けていたのは「id を持っていないペインを*見つける*」手段のほうで、例えばバックグラウンドタブに置いたワーカーは、オーケストレータの監視母集団からも容量計算からも落ちてしまいます。タブを跨いで安定した宛先は依然として `id` だけで (`tab` / `tab_name` は表示用で、タブを閉じるとずれます)、識別に効くのは `name` ではなく `cwd` です — 独立した 2 つのオーケストレーションが別タブで動けば、どちらにも `dispatcher` と `worker-<task_id>` が実在します。リクエストが `tab` セレクタと呼び出し元ペインの両方を持つ場合、各レコードには「そのペインを名前だけで指定できるか」を表す `same_tab` も付きます。解決できないセレクタは spawn 側と同じコード (`tab_not_found` / `tab_ambiguous` / `pane_not_found`) で失敗します。サーバが `cross_tab_list` capability を広告している必要があります — 古いサーバは未知の `tab` フィールドを捨てて呼び出し元のタブだけを返し、それは正しい応答と区別が付かない整形式の応答になるため、生きているペインを見失って退役させてしまう前に `[server_too_old]` で拒否します。
 
 ## 2 ペインでのやり取りの例
 
@@ -268,7 +270,7 @@ Codex の MCP 承認は pane ごとです。Claude Code のような「一度許
 
 多くの場合は `types=[...]` フィルタの仕様どおりです。条件に合わないイベントでも long-poll 自体は解除され、そのイベントを飛び越えた `next_since` が返ります。つまり空配列でも cursor は進み、そのイベントは再送されません。
 
-返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときは `list_peers` で再同期してから続行します。`poll_events` はプロセス全体が対象なので、対応する全タブのビューは `list_peers` です — `list_panes` が返すのは呼び出し元自身のタブだけで、他タブのペインで落ちたイベントは埋め合わせられません。`list_peers` は自分自身のペインを含まないため、自分のタブを詳細に取り直すときは `list_panes` と併用してください。
+返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときは `list_peers` で再同期してから続行します。`poll_events` はプロセス全体が対象なので、対応する全タブのビューは `list_peers` です — `list_panes` は既定では呼び出し元自身のタブしか返さず、他タブのペインで落ちたイベントは埋め合わせられません。ジオメトリ込みのペイン単位のビューをタブ横断で取りたいときは `tab={"all": true}` (#329) を渡してください。`list_peers` は自分自身のペインを含まないため、自分のタブを詳細に取り直すときは `list_panes` と併用してください。
 
 ### `renga mcp install` が失敗する
 

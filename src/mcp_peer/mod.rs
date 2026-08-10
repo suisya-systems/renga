@@ -425,7 +425,10 @@ stay correct while the user switches tabs. For all nine, relative targets (`focu
 stable name) never leave your tab; a numeric pane id from another tab does reach across, \
 which is the deliberate escape hatch for orchestrating sibling tabs. new_tab creates a whole \
 new tab:\n\
-- list_panes: Inspect all panes in the current tab, including geometry and the focus flag.\n\
+- list_panes: Inspect panes with geometry and the focus flag — your own tab by default, or \
+another tab / every tab at once via its optional `tab` argument (same selector shapes as the \
+spawn tools, plus `{{\"all\": true}}`). The all-tabs form is how you enumerate panes you hold \
+no id for, including ones parked in background tabs.\n\
 - spawn_pane: Split an existing pane to create a new one. Optionally runs a startup command, \
 assigns a stable name, attaches a role label, or sets an explicit working directory via \
 `cwd` (absolute, or relative to the caller pane's cwd). Use `cwd` instead of `cd <dir> && ...` \
@@ -536,8 +539,22 @@ fn tools_spec() -> Value {
         },
         {
             "name": "list_panes",
-            "description": "List every pane in the renga tab THIS pane lives in — not whichever tab the user is currently looking at — with stable id, optional name / role, focused flag, terminal geometry, cwd, and when known the peer client kind / receive mode. Complements list_peers (which only returns other panes and hides geometry).",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "List panes with stable id, optional name / role, focused flag, terminal geometry, cwd, tab index + tab label, and when known the peer client kind / receive mode. With no argument: every pane in the renga tab THIS pane lives in — not whichever tab the user is currently looking at. Pass `tab` to read another tab, or {\"all\": true} to enumerate every tab at once, which is the only way to find panes you do not already hold an id for. Records carry `cwd` as well as `name`: two independent orchestrations running in different tabs reuse the same role names, so `cwd` — not `name` — is what tells their panes apart. Complements list_peers (which spans tabs but omits geometry and hides you from yourself).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tab": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "index": { "type": "integer", "minimum": 0 },
+                            "pane_id": { "type": "integer", "minimum": 0 },
+                            "all": { "type": "boolean" }
+                        },
+                        "description": "Optional tab scope (Issue #329); default is this pane's own tab. Pass exactly one key: {\"name\": \"<label>\"} = the tab whose display name matches exactly (0 matches → tab_not_found, several → tab_ambiguous — labels are not unique, use index/pane_id then); {\"index\": N} = 0-based tab index as reported by list_peers; {\"pane_id\": N} = the tab owning that pane (the stable anchor: ids never shift when tabs close); {\"all\": true} = every tab, your own first. Same selector shapes as spawn_pane's `tab`, minus {\"new\": …} (there is nothing to list in a tab that does not exist). Needs a renga server advertising the cross_tab_list capability; older servers are refused (server_too_old) instead of quietly answering with your tab alone."
+                    }
+                }
+            }
         },
         {
             "name": "spawn_pane",
@@ -1421,7 +1438,7 @@ fn handle_tools_call(id: &Value, params: &Value, ctx: &PeerCtx) -> Result<Value>
         "set_summary" => handle_set_summary(id, &args, ctx),
         "check_messages" => handle_check_messages(id, ctx),
         "server_info" => handle_server_info(id, ctx),
-        "list_panes" => handle_list_panes(id, ctx),
+        "list_panes" => handle_list_panes(id, &args, ctx),
         "spawn_pane" => handle_spawn_pane(id, &args, ctx),
         "spawn_claude_pane" => handle_spawn_claude_pane(id, &args, ctx),
         "spawn_codex_pane" => handle_spawn_codex_pane(id, &args, ctx),
@@ -1605,6 +1622,116 @@ fn parse_spawn_placement(args: &Value) -> std::result::Result<SpawnPlacement, St
     }
 }
 
+/// What a `list_panes` call enumerates, decided by its `tab` argument
+/// (Issue #329). Distinct from [`SpawnPlacement`] because the two
+/// vocabularies differ at exactly the two points where they must: a
+/// list can say `all`, a spawn cannot; a spawn can say `new`, a list
+/// has nothing to read in a tab that does not exist yet.
+#[derive(Debug, Clone, PartialEq)]
+enum ListScope {
+    /// No `tab` argument — the caller's own tab, the pre-#329
+    /// behavior, byte for byte.
+    CallerTab,
+    /// `tab: {name|index|pane_id}` — one selected tab.
+    SelectedTab(crate::ipc::ListTabSelector),
+    /// `tab: {all: true}` — every tab, caller's first.
+    AllTabs,
+}
+
+impl ListScope {
+    /// The wire selector, or `None` for the unchanged default path.
+    fn selector(&self) -> Option<crate::ipc::ListTabSelector> {
+        match self {
+            ListScope::CallerTab => None,
+            ListScope::SelectedTab(sel) => Some(sel.clone()),
+            ListScope::AllTabs => Some(crate::ipc::ListTabSelector::All),
+        }
+    }
+
+    /// The capability the outgoing request must be gated on. Any
+    /// explicit selector — **including `{pane_id: <the caller's own
+    /// pane>}`, which resolves to the caller's own tab** — requires
+    /// [`crate::ipc::CAP_CROSS_TAB_LIST`]: a pre-#329 server drops the
+    /// unknown field and answers with the caller's tab, which for that
+    /// one selector is even the *right* answer — and for every other
+    /// selector is a wrong answer wearing the same clothes. Gating on
+    /// the shape rather than on the resolved tab is what makes the
+    /// failure mode uniform. Mirrors [`SpawnPlacement::required_cap`];
+    /// `SERVER_CAPABILITIES` is additive, so a `cross_tab_list` server
+    /// always understands `caller_scope` too.
+    fn required_cap(&self) -> &'static str {
+        match self {
+            ListScope::CallerTab => crate::ipc::CAP_CALLER_SCOPE,
+            _ => crate::ipc::CAP_CROSS_TAB_LIST,
+        }
+    }
+}
+
+/// Parse the `tab` argument of `list_panes`.
+///
+/// Strict for the same reason [`parse_spawn_placement`] is, with one
+/// difference in what a mistake costs: a mis-parsed spawn puts a pane
+/// in the wrong tab, where it is at least visible, whereas a mis-parsed
+/// list quietly returns the wrong *population* and reads as a correct
+/// answer. So every malformed shape is rejected rather than
+/// interpreted, and `{"all": false}` in particular is an error instead
+/// of a synonym for "my tab" — a caller who wrote it meant something,
+/// and it was not that.
+fn parse_list_scope(args: &Value) -> std::result::Result<ListScope, String> {
+    const FORM: &str = "expected one of {\"name\": \"<tab label>\"}, {\"index\": <0-based>}, \
+                        {\"pane_id\": <pane id>} or {\"all\": true}";
+    let raw = match args.get("tab") {
+        None | Some(Value::Null) => return Ok(ListScope::CallerTab),
+        Some(v) => v,
+    };
+    let obj = raw
+        .as_object()
+        .ok_or_else(|| format!("invalid tab selector {raw}: {FORM}"))?;
+    if obj.len() != 1 {
+        return Err(format!(
+            "invalid tab selector: exactly one selector key is required; {FORM}"
+        ));
+    }
+    let (key, val) = obj.iter().next().expect("len checked above");
+    match key.as_str() {
+        // Deliberately NOT trimmed, for the same reason
+        // `parse_spawn_placement` does not trim: labels are stored
+        // verbatim, so a trimmed selector either misses with
+        // `tab_not_found` or matches a *different* tab.
+        "name" => match val.as_str() {
+            Some(s) if !s.trim().is_empty() => Ok(ListScope::SelectedTab(
+                crate::ipc::ListTabSelector::Name(s.to_string()),
+            )),
+            _ => Err(format!("tab.name must be a non-empty string; {FORM}")),
+        },
+        // Checked conversions, not `as`: a 32-bit truncation would
+        // enumerate the wrong tab and answer `Ok` about it.
+        "index" => match val.as_u64().and_then(|n| usize::try_from(n).ok()) {
+            Some(n) => Ok(ListScope::SelectedTab(crate::ipc::ListTabSelector::Index(
+                n,
+            ))),
+            None => Err(format!(
+                "tab.index must be a non-negative integer (0-based, as reported by list_peers); {FORM}"
+            )),
+        },
+        "pane_id" => match val.as_u64().and_then(|n| usize::try_from(n).ok()) {
+            Some(n) => Ok(ListScope::SelectedTab(crate::ipc::ListTabSelector::PaneId(
+                n,
+            ))),
+            None => Err(format!(
+                "tab.pane_id must be a non-negative integer pane id; {FORM}"
+            )),
+        },
+        "all" => match val.as_bool() {
+            Some(true) => Ok(ListScope::AllTabs),
+            _ => Err(format!(
+                "tab.all must be the boolean true (omit `tab` entirely for just your own tab); {FORM}"
+            )),
+        },
+        other => Err(format!("unknown tab selector key {other:?}; {FORM}")),
+    }
+}
+
 /// Send a [`Request::SpawnTab`] (the `tab: {new: …}` path of the
 /// `spawn_*` tools) and format the tool response. Shared by the three
 /// spawn handlers — only the command construction and the success
@@ -1712,20 +1839,29 @@ fn require_connected<'a>(
     }
 }
 
-fn handle_list_panes(id: &Value, ctx: &PeerCtx) -> Value {
+fn handle_list_panes(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
+    // `require_connected` first, before the `tab` argument is even
+    // looked at: a detached pane gets the same friendly "renga not
+    // reachable" text whatever it asked for, rather than an argument
+    // complaint about a call that could never have been served.
     let (caller_pane, endpoint) = match require_connected(ctx, id, "list panes") {
         Ok(t) => t,
         Err(resp) => return resp,
+    };
+    let scope = match parse_list_scope(args) {
+        Ok(s) => s,
+        Err(msg) => return err_response(id, -32602, &msg),
     };
     match client::send_request_requiring(
         endpoint,
         &Request::List {
             from_pane: Some(caller_pane),
+            tab: scope.selector(),
         },
-        crate::ipc::CAP_CALLER_SCOPE,
+        scope.required_cap(),
     ) {
         Ok(Response::Ok { data }) => match serde_json::from_value::<Vec<PaneInfo>>(data) {
-            Ok(panes) => ok_response(id, tool_text_result(&format_pane_list(&panes))),
+            Ok(panes) => ok_response(id, tool_text_result(&format_pane_list(&panes, &scope))),
             Err(e) => err_response(id, -32603, &format!("decode pane list: {e}")),
         },
         Ok(Response::Err { message, code }) => err_response(
@@ -1738,11 +1874,29 @@ fn handle_list_panes(id: &Value, ctx: &PeerCtx) -> Value {
     }
 }
 
-fn format_pane_list(panes: &[PaneInfo]) -> String {
+/// Render a pane list for the agent. `scope` selects the wording and
+/// decides whether each record is annotated with the tab it lives in.
+///
+/// The `CallerTab` strings are frozen: they are documented output
+/// prefixes, and `docs/semver-policy-2.0.md` §3 classifies a changed
+/// output prefix as breaking. The cross-tab wordings are *additional*
+/// strings chosen by request shape, so the default path stays byte
+/// identical end to end — which is also what the per-record tab
+/// annotation is gated on.
+fn format_pane_list(panes: &[PaneInfo], scope: &ListScope) -> String {
+    let cross_tab = !matches!(scope, ListScope::CallerTab);
     if panes.is_empty() {
-        return "No panes in this tab.".to_string();
+        return match scope {
+            ListScope::CallerTab => "No panes in this tab.".to_string(),
+            ListScope::SelectedTab(_) => "No panes in the selected tab.".to_string(),
+            ListScope::AllTabs => "No panes in any tab.".to_string(),
+        };
     }
-    let mut out = String::from("Panes in this tab:\n\n");
+    let mut out = String::from(match scope {
+        ListScope::CallerTab => "Panes in this tab:\n\n",
+        ListScope::SelectedTab(_) => "Panes in the selected tab:\n\n",
+        ListScope::AllTabs => "Panes in every tab (yours first):\n\n",
+    });
     for p in panes {
         // Same reasoning as `format_peer_list`.
         out.push_str(&format!("- id={}", p.id));
@@ -1754,6 +1908,26 @@ fn format_pane_list(panes: &[PaneInfo]) -> String {
         }
         if p.focused {
             out.push_str(" (focused)");
+        }
+        // Only when the set can span tabs — on the default path every
+        // record would carry the same marker, and a pre-#329 server's
+        // reply carries no tab metadata to render at all.
+        if cross_tab {
+            match (p.same_tab, p.tab) {
+                (Some(true), _) => out.push_str(" [your tab]"),
+                (_, Some(tab)) => match &p.tab_name {
+                    // `sanitized_label`, never the raw label: a tab
+                    // name is free-form text landing in another
+                    // agent's context, and the control-char strip is
+                    // what stops a forged list entry.
+                    Some(tab_name) => out.push_str(&format!(
+                        " [tab {tab} \"{}\"]",
+                        ipc::sanitized_label(tab_name)
+                    )),
+                    None => out.push_str(&format!(" [tab {tab}]")),
+                },
+                _ => {}
+            }
         }
         out.push_str(&format!(
             "\n  geometry: x={} y={} width={} height={}",
@@ -1801,8 +1975,14 @@ fn resolve_mcp_cwd(
     // of trusting "current" cwd.
     let panes: Vec<PaneInfo> = match client::send_request_requiring(
         endpoint,
+        // Deliberately `tab: None` on `CAP_CALLER_SCOPE`: this is an
+        // internal caller-cwd lookup behind every spawn tool, and it
+        // only ever wants the caller's own tab. Escalating it to
+        // `cross_tab_list` would break relative-`cwd` spawns against
+        // every #290..#328 server for no gain.
         &Request::List {
             from_pane: Some(caller_pane),
+            tab: None,
         },
         crate::ipc::CAP_CALLER_SCOPE,
     ) {
@@ -3604,6 +3784,222 @@ mod tests {
         );
     }
 
+    // ─── #329: list scope (tab selector) parsing ──────────────
+
+    #[test]
+    fn parse_list_scope_defaults_to_the_callers_tab() {
+        assert_eq!(parse_list_scope(&json!({})), Ok(ListScope::CallerTab));
+        assert_eq!(
+            parse_list_scope(&json!({ "tab": null })),
+            Ok(ListScope::CallerTab)
+        );
+    }
+
+    #[test]
+    fn parse_list_scope_maps_each_selector() {
+        assert_eq!(
+            parse_list_scope(&json!({ "tab": { "name": "workers" } })),
+            Ok(ListScope::SelectedTab(crate::ipc::ListTabSelector::Name(
+                "workers".into()
+            )))
+        );
+        // Not trimmed, for the same reason the spawn selector is not:
+        // labels are stored verbatim.
+        assert_eq!(
+            parse_list_scope(&json!({ "tab": { "name": " workers " } })),
+            Ok(ListScope::SelectedTab(crate::ipc::ListTabSelector::Name(
+                " workers ".into()
+            )))
+        );
+        assert_eq!(
+            parse_list_scope(&json!({ "tab": { "index": 0 } })),
+            Ok(ListScope::SelectedTab(crate::ipc::ListTabSelector::Index(
+                0
+            )))
+        );
+        assert_eq!(
+            parse_list_scope(&json!({ "tab": { "pane_id": 17 } })),
+            Ok(ListScope::SelectedTab(crate::ipc::ListTabSelector::PaneId(
+                17
+            )))
+        );
+        assert_eq!(
+            parse_list_scope(&json!({ "tab": { "all": true } })),
+            Ok(ListScope::AllTabs)
+        );
+    }
+
+    /// A mis-parsed list is worse than a mis-parsed spawn: it returns
+    /// the wrong *population* and reads as a correct answer. So every
+    /// malformed shape is refused rather than interpreted — including
+    /// `{"all": false}`, which is a caller meaning something the tool
+    /// cannot do, not a synonym for "my tab".
+    #[test]
+    fn parse_list_scope_rejects_malformed_selectors() {
+        for args in [
+            // string forms are not accepted: a tab may literally be
+            // named "all" or "new", the same reasoning the spawn
+            // parser applies.
+            json!({ "tab": "all" }),
+            json!({ "tab": "new" }),
+            json!({ "tab": 42 }),
+            json!({ "tab": [] }),
+            // `new` is a spawn-only shape — there is nothing to list
+            // in a tab that does not exist yet.
+            json!({ "tab": { "new": {} } }),
+            // zero or several selector keys
+            json!({ "tab": {} }),
+            json!({ "tab": { "index": 1, "all": true } }),
+            // unknown key, wrong types
+            json!({ "tab": { "tabs": 1 } }),
+            json!({ "tab": { "name": "" } }),
+            json!({ "tab": { "name": "   " } }),
+            json!({ "tab": { "name": 5 } }),
+            json!({ "tab": { "index": -1 } }),
+            json!({ "tab": { "index": "0" } }),
+            json!({ "tab": { "pane_id": "x" } }),
+            json!({ "tab": { "all": false } }),
+            json!({ "tab": { "all": "true" } }),
+            json!({ "tab": { "all": 1 } }),
+        ] {
+            assert!(parse_list_scope(&args).is_err(), "must reject {args}");
+        }
+    }
+
+    /// Any explicit selector escalates the gate — **including
+    /// `{pane_id: <my own pane>}`, which resolves to the caller's own
+    /// tab.** Gating on the request shape rather than the resolved tab
+    /// is what makes the version-skew failure uniform.
+    #[test]
+    fn list_scope_capability_escalates_with_any_selector() {
+        assert_eq!(
+            ListScope::CallerTab.required_cap(),
+            crate::ipc::CAP_CALLER_SCOPE
+        );
+        for scope in [
+            ListScope::SelectedTab(crate::ipc::ListTabSelector::Name("workers".into())),
+            ListScope::SelectedTab(crate::ipc::ListTabSelector::Index(0)),
+            // The caller's own pane as the anchor — still gated.
+            ListScope::SelectedTab(crate::ipc::ListTabSelector::PaneId(1)),
+            ListScope::AllTabs,
+        ] {
+            assert_eq!(
+                scope.required_cap(),
+                crate::ipc::CAP_CROSS_TAB_LIST,
+                "{scope:?} must escalate"
+            );
+        }
+    }
+
+    /// The default path must be byte-identical end to end, so the
+    /// selector also decides what gets *rendered* — not just what gets
+    /// requested.
+    #[test]
+    fn format_pane_list_default_scope_is_unannotated() {
+        let panes = vec![PaneInfo {
+            name: Some("leader".into()),
+            focused: true,
+            tab: Some(0),
+            tab_name: Some("renga".into()),
+            same_tab: Some(true),
+            ..bare_pane_info(1)
+        }];
+        let text = format_pane_list(&panes, &ListScope::CallerTab);
+        assert!(text.starts_with("Panes in this tab:\n\n"), "{text}");
+        assert!(!text.contains("[tab "), "{text}");
+        assert!(!text.contains("[your tab]"), "{text}");
+    }
+
+    #[test]
+    fn format_pane_list_annotates_tab_membership_when_cross_tab() {
+        let panes = vec![
+            PaneInfo {
+                name: Some("dispatcher".into()),
+                tab: Some(0),
+                tab_name: Some("renga".into()),
+                same_tab: Some(true),
+                ..bare_pane_info(3)
+            },
+            PaneInfo {
+                name: Some("worker".into()),
+                tab: Some(1),
+                tab_name: Some("workers".into()),
+                same_tab: Some(false),
+                ..bare_pane_info(7)
+            },
+        ];
+        let text = format_pane_list(&panes, &ListScope::AllTabs);
+        assert!(
+            text.starts_with("Panes in every tab (yours first):"),
+            "{text}"
+        );
+        assert!(text.contains("id=3 name=dispatcher [your tab]"), "{text}");
+        assert!(
+            text.contains("id=7 name=worker [tab 1 \"workers\"]"),
+            "{text}"
+        );
+    }
+
+    /// Defensive: the capability gate should stop a pre-#329 server
+    /// from ever answering a cross-tab list, but a reply decoded
+    /// without tab metadata must not panic or invent a tab.
+    #[test]
+    fn format_pane_list_tolerates_missing_tab_metadata() {
+        let text = format_pane_list(&[bare_pane_info(5)], &ListScope::AllTabs);
+        assert!(text.contains("- id=5"), "{text}");
+        assert!(!text.contains("[tab"), "{text}");
+        assert!(!text.contains("[your tab]"), "{text}");
+    }
+
+    /// A tab label is free-form text landing in another agent's
+    /// context. Stripping control characters is what stops a label
+    /// from forging extra list entries.
+    #[test]
+    fn format_pane_list_sanitizes_the_tab_label() {
+        let panes = vec![PaneInfo {
+            tab: Some(1),
+            tab_name: Some("\u{1b}[31mred\n- id=99 name=fake".into()),
+            same_tab: Some(false),
+            ..bare_pane_info(4)
+        }];
+        let text = format_pane_list(&panes, &ListScope::AllTabs);
+        assert!(!text.contains('\u{1b}'), "{text}");
+        assert!(
+            !text.contains("\n- id=99"),
+            "a forged entry survived: {text}"
+        );
+    }
+
+    #[test]
+    fn format_pane_list_empty_wording_follows_the_scope() {
+        assert_eq!(
+            format_pane_list(&[], &ListScope::CallerTab),
+            "No panes in this tab."
+        );
+        assert_eq!(
+            format_pane_list(
+                &[],
+                &ListScope::SelectedTab(crate::ipc::ListTabSelector::Index(1))
+            ),
+            "No panes in the selected tab."
+        );
+        assert_eq!(
+            format_pane_list(&[], &ListScope::AllTabs),
+            "No panes in any tab."
+        );
+    }
+
+    /// Argument parsing must not jump ahead of the connectivity check:
+    /// a detached pane gets the friendly text whatever it asked for.
+    #[test]
+    fn detached_mode_lists_panes_with_a_tab_arg_without_erroring() {
+        let ctx = detached_ctx("RENGA_PANE_ID not set");
+        let resp = handle_list_panes(&json!(1), &json!({ "tab": { "all": true } }), &ctx);
+        assert!(resp.get("error").is_none(), "{resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("renga not reachable"), "{text}");
+    }
+
     /// The `tab.new` rejection must fire at the handler level for all
     /// three spawn tools, before any IPC traffic.
     #[test]
@@ -3698,9 +4094,35 @@ mod tests {
         assert_eq!(opt_string(&args, "missing"), None);
     }
 
+    /// The counterpart of [`bare_peer_info`] for pane records, so a
+    /// future field on `PaneInfo` lands in one place instead of in
+    /// every test body that happens to build one.
+    fn bare_pane_info(id: usize) -> PaneInfo {
+        PaneInfo {
+            id,
+            name: None,
+            role: None,
+            focused: false,
+            tab: None,
+            tab_name: None,
+            same_tab: None,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            cwd: None,
+            kind: None,
+            receive_mode: None,
+            summary: None,
+        }
+    }
+
     #[test]
     fn format_pane_list_empty() {
-        assert_eq!(format_pane_list(&[]), "No panes in this tab.");
+        assert_eq!(
+            format_pane_list(&[], &ListScope::CallerTab),
+            "No panes in this tab."
+        );
     }
 
     fn bare_peer_info(id: usize) -> PeerInfo {
@@ -3769,35 +4191,25 @@ mod tests {
     fn format_pane_list_includes_focus_and_geometry() {
         let panes = vec![
             PaneInfo {
-                id: 1,
                 name: Some("leader".into()),
                 role: Some("foreman".into()),
                 focused: true,
-                x: 0,
-                y: 0,
                 width: 80,
                 height: 24,
-                cwd: None,
                 kind: Some(PeerClientKind::Claude),
                 receive_mode: Some(ipc::PeerReceiveMode::Push),
-                summary: None,
+                ..bare_pane_info(1)
             },
             PaneInfo {
-                id: 2,
-                name: None,
-                role: None,
-                focused: false,
                 x: 80,
-                y: 0,
                 width: 40,
                 height: 24,
-                cwd: None,
                 kind: Some(PeerClientKind::Codex),
                 receive_mode: Some(ipc::PeerReceiveMode::Pull),
-                summary: None,
+                ..bare_pane_info(2)
             },
         ];
-        let text = format_pane_list(&panes);
+        let text = format_pane_list(&panes, &ListScope::CallerTab);
         assert!(text.contains("id=1"));
         assert!(text.contains("name=leader"));
         assert!(text.contains("role=foreman"));
@@ -4611,6 +5023,46 @@ Commands:
         );
     }
 
+    /// #329: `list_panes` advertises the same three tab shapes the
+    /// spawn tools do, plus `all` and minus `new`. It must stay
+    /// optional — every existing no-argument caller keeps working.
+    #[test]
+    fn list_panes_schema_advertises_the_tab_scope() {
+        let spec = tools_spec();
+        let entry = spec
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("list_panes"))
+            .expect("list_panes entry");
+        let schema = entry.get("inputSchema").expect("inputSchema");
+        let tab_props = schema
+            .get("properties")
+            .and_then(|p| p.get("tab"))
+            .and_then(|t| t.get("properties"))
+            .and_then(|p| p.as_object())
+            .expect("list_panes must advertise a structured tab object");
+        for key in ["name", "index", "pane_id", "all"] {
+            assert!(
+                tab_props.contains_key(key),
+                "list_panes tab is missing {key}"
+            );
+        }
+        assert!(
+            !tab_props.contains_key("new"),
+            "there is nothing to list in a tab that does not exist yet"
+        );
+        let required = schema
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            !required.contains(&"tab"),
+            "the tab scope is an addition, not a replacement: {required:?}"
+        );
+    }
+
     #[test]
     fn close_pane_schema_requires_target() {
         let spec = tools_spec();
@@ -4639,7 +5091,7 @@ Commands:
         // to the user instead of treating the tool as broken.
         let ctx = detached_ctx("RENGA_PANE_ID not set");
         let id = json!(1);
-        let resp = handle_list_panes(&id, &ctx);
+        let resp = handle_list_panes(&id, &json!({}), &ctx);
         assert_eq!(
             resp.get("result")
                 .and_then(|r| r.get("isError"))
@@ -5734,6 +6186,7 @@ Commands:
         let id = json!(1);
         for (name, args) in [
             ("list_panes", json!({})),
+            ("list_panes", json!({ "tab": { "all": true } })),
             ("spawn_pane", json!({ "direction": "vertical" })),
             ("spawn_codex_pane", json!({ "direction": "vertical" })),
             ("close_pane", json!({ "target": "1" })),

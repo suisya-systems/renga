@@ -27,12 +27,12 @@ fn two_tabs() -> (App, usize, usize) {
 fn list_with_from_pane_returns_the_callers_tab_not_the_active_one() {
     let (mut app, caller, active) = two_tabs();
 
-    let scoped = app.handle_list(Some(caller)).expect("scoped list");
+    let scoped = app.handle_list(Some(caller), None).expect("scoped list");
     let ids: Vec<usize> = scoped.iter().map(|p| p.id).collect();
     assert_eq!(ids, vec![caller], "caller's tab holds exactly its own pane");
 
     // And the legacy (CLI) call still describes the visible tab.
-    let legacy = app.handle_list(None).expect("legacy list");
+    let legacy = app.handle_list(None, None).expect("legacy list");
     assert_eq!(
         legacy.iter().map(|p| p.id).collect::<Vec<_>>(),
         vec![active]
@@ -45,7 +45,7 @@ fn list_with_from_pane_returns_the_callers_tab_not_the_active_one() {
 fn list_rejects_an_unknown_from_pane_instead_of_falling_back() {
     let (mut app, _caller, _active) = two_tabs();
     let err = app
-        .handle_list(Some(9999))
+        .handle_list(Some(9999), None)
         .expect_err("unknown caller pane");
     assert_eq!(err.code, Some(ipc::err_code::PANE_NOT_FOUND));
     app.shutdown();
@@ -60,7 +60,7 @@ fn list_reports_geometry_for_the_current_terminal_not_the_one_at_last_render() {
     app.relayout_workspace(0);
 
     app.on_terminal_resize(60, 20);
-    let infos = app.handle_list(Some(caller)).expect("scoped list");
+    let infos = app.handle_list(Some(caller), None).expect("scoped list");
     let rect = infos
         .iter()
         .find(|p| p.id == caller)
@@ -215,6 +215,7 @@ fn a_resize_and_an_unrelated_list_never_resize_a_hidden_pane() {
     let (tx, rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: Some(active),
+        tab: None,
         reply: tx,
     });
     let _ = rx.recv().expect("list reply").expect("list ok");
@@ -450,7 +451,9 @@ fn split_in_a_hidden_tab_reports_real_geometry_not_zeros() {
         )
         .expect("split hidden tab");
 
-    let infos = app.handle_list(Some(caller)).expect("list caller tab");
+    let infos = app
+        .handle_list(Some(caller), None)
+        .expect("list caller tab");
     let new_info = infos
         .iter()
         .find(|p| p.id == new_id)
@@ -625,6 +628,7 @@ fn a_global_layout_change_does_not_leak_stale_geometry_to_a_background_caller() 
     let (reply_tx, reply_rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: Some(caller),
+        tab: None,
         reply: reply_tx,
     });
     let infos = reply_rx.recv().expect("list reply").expect("list ok");

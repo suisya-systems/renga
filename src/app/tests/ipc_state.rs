@@ -466,6 +466,7 @@ fn list_includes_pane_cwd() {
     let (reply_tx, reply_rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: None,
+        tab: None,
         reply: reply_tx,
     });
     let infos = reply_rx.recv().expect("list reply").expect("list ok");
@@ -493,6 +494,7 @@ fn list_command_includes_rect_from_last_pane_rects() {
     let (reply_tx, reply_rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: None,
+        tab: None,
         reply: reply_tx,
     });
     let infos = reply_rx.recv().expect("list reply").expect("list ok");
@@ -614,6 +616,7 @@ fn list_command_ignores_stale_rect_entries_for_removed_panes() {
     let (reply_tx, reply_rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: None,
+        tab: None,
         reply: reply_tx,
     });
     let infos = reply_rx.recv().expect("list reply").expect("list ok");
@@ -635,6 +638,7 @@ fn list_command_zero_rect_when_pane_not_in_last_pane_rects() {
     let (reply_tx, reply_rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: None,
+        tab: None,
         reply: reply_tx,
     });
     let infos = reply_rx.recv().expect("list reply").expect("list ok");
@@ -656,6 +660,7 @@ fn app_command_channel_sends_and_receives() {
     let (reply_tx, reply_rx) = oneshot::channel();
     tx.send(AppCommand::List {
         from_pane: None,
+        tab: None,
         reply: reply_tx,
     })
     .unwrap();
@@ -693,6 +698,7 @@ fn handle_set_summary_sets_and_reads_back_via_list() {
     let (reply_tx, reply_rx) = oneshot::channel();
     app.handle_app_command(AppCommand::List {
         from_pane: None,
+        tab: None,
         reply: reply_tx,
     });
     let infos = reply_rx.recv().expect("list reply").expect("list ok");

@@ -25,8 +25,10 @@ List every pane in the active tab:
 $ renga list
 [
   { "id": 1, "name": "secretary", "role": "leader", "focused": true,
+    "tab": 0, "tab_name": "renga",
     "x": 0, "y": 0, "width": 80, "height": 24 },
   { "id": 2, "name": "worker-foo", "role": "worker", "focused": false,
+    "tab": 0, "tab_name": "renga",
     "x": 80, "y": 0, "width": 80, "height": 24 }
 ]
 ```
@@ -38,6 +40,36 @@ the file-tree / preview sidebars. Before the first layout pass (e.g.
 right after startup) all four fields are `0`, so treat zeros as
 "not yet placed" rather than "zero-sized pane". Clients that don't
 know about these fields can safely ignore them.
+
+`tab` (0-based index of the tab the pane lives in) and `tab_name` (that
+tab's display label) are **display metadata only** — indexes shift when
+tabs close and labels are not unique, so a pane's `id` stays the only
+tab-stable address. `cwd`, not `name`, is what tells apart panes
+belonging to two independent orchestrations running in different tabs:
+each of them has a `dispatcher` and a `worker-<task_id>`.
+
+The IPC request behind this command, `list`, takes an optional `tab`
+selector choosing which tab(s) to enumerate (Issue #329):
+`{"name": "workers"}` / `{"index": 2}` / `{"pane_id": 17}` — the same
+three shapes the spawn-side tab selector uses, so the codes for an
+unresolvable one are the same too (`tab_not_found` / `tab_ambiguous` /
+`pane_not_found`) — or the bare string `"all"` for every tab, the
+caller's own first and the rest in index order. Omitting it preserves
+the prior behavior exactly, and `{"cmd":"list"}` is byte-identical on
+the wire to what pre-#329 clients sent. `renga list` never sends it —
+the CLI has no tab flag and still lists the active tab — but the MCP
+`list_panes` tool exposes it (spelled `{"all": true}` there); see
+[Peer messaging](/peer-messaging). When a request carries both `tab`
+and a `from_pane`, each record also carries `same_tab`.
+
+A `list` that carries `tab` requires a server advertising the
+`cross_tab_list` capability and is refused with `[server_too_old]`
+otherwise. Unlike `subscribe_pane_scope` below, this one has to be
+gated: a server predating #329 drops the unknown field and answers with
+the caller's tab alone — a well-formed reply a client cannot tell apart
+from a correct one, which would make an orchestrator retire live panes
+and under-count its capacity. A `list` without `tab` is unchanged on
+every server and gates on `caller_scope` as before.
 
 ### `renga send`
 
