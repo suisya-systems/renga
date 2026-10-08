@@ -1390,7 +1390,13 @@ fn detect_prompt_in_lines(
     Some((
         "choice",
         question.unwrap_or(strip(&lines[i])).to_string(),
-        block.join("\n"),
+        // `strip` drops the selection marker, so moving the cursor
+        // within one menu doesn't change the key.
+        block
+            .iter()
+            .map(|l| strip(l))
+            .collect::<Vec<_>>()
+            .join("\n"),
     ))
 }
 
@@ -1533,6 +1539,16 @@ mod tests {
             detect_interactive_prompt(p.screen()).unwrap().2
         };
         assert_ne!(key("rm -rf build"), key("cargo test"));
+    }
+
+    #[test]
+    fn detect_prompt_choice_key_ignores_the_selection_marker() {
+        let key = |menu: &str| {
+            let mut p = vt100::Parser::new(24, 80, 0);
+            p.process(format!("cargo test\r\nDo you want to proceed?\r\n{menu}").as_bytes());
+            detect_interactive_prompt(p.screen()).unwrap().2
+        };
+        assert_eq!(key("❯ 1. Yes\r\n  2. No"), key("  1. Yes\r\n❯ 2. No"));
     }
 
     /// `file:///path` — empty hostname, the path is taken verbatim.
