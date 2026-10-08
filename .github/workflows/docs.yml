@@ -8,6 +8,11 @@ on:
       - 'docs/**'
       - 'lp/**'
       - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'lp/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +21,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  # PR builds get their own group so they never cancel a main deploy.
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.event.number) || 'pages' }}
   cancel-in-progress: true
 
 jobs:
@@ -53,6 +59,7 @@ jobs:
           path: _site
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
