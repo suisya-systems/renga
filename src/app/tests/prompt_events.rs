@@ -2,22 +2,17 @@
 
 use super::super::*;
 
-/// One-pane app whose shell is dead and fully drained, so the test owns
-/// the vt100 screen without a reader thread racing it. The pane keeps
-/// `exited = false` so the sweep treats it as live.
+/// One-pane app whose pane reads a private vt100 screen: the reader
+/// thread keeps writing the live shell's output into its own clone of
+/// the old parser, so nothing races the test. (Killing the shell and
+/// waiting for EOF doesn't work on Windows: conpty never reports it.)
+/// `event_rx` is never drained, so the shell's own `PtyOutput` can't
+/// touch the pane's idle state either.
 fn quiet_app() -> (App, usize) {
     let mut app = App::new(24, 80).expect("App::new");
     let id = app.ws().focused_pane_id;
-    app.workspaces[0].panes.get_mut(&id).unwrap().kill();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match app.event_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(AppEvent::PtyEof(p)) if p == id => break,
-            _ => assert!(Instant::now() < deadline, "pane never hit EOF"),
-        }
-    }
-    // `kill` flags the pane exited; the sweep would then skip it.
-    app.workspaces[0].panes.get_mut(&id).unwrap().exited = false;
+    app.workspaces[0].panes.get_mut(&id).unwrap().parser =
+        std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(24, 80, 0)));
     (app, id)
 }
 
