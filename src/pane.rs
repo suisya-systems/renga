@@ -1369,11 +1369,13 @@ fn detect_prompt_in_lines(
     if let Some(line) = lines.get(cursor_row) {
         let t = strip(line);
         let lower = t.to_lowercase();
-        if ["(y/n)", "[y/n]", "(yes/no)", "[yes/no]"]
+        if let Some(end) = ["(y/n)", "[y/n]", "(yes/no)", "[yes/no]"]
             .iter()
-            .any(|m| lower.contains(m))
+            .find_map(|m| lower.find(m).map(|i| i + m.len()))
         {
-            return Some(("yes_no", t.to_string(), t.to_string()));
+            // Key ends at the marker: a typed-but-unsubmitted answer
+            // echoed after it is the same prompt.
+            return Some(("yes_no", t.to_string(), lower[..end].to_string()));
         }
         if lower.ends_with(':') && (lower.contains("password") || lower.contains("passphrase")) {
             return Some(("password", t.to_string(), t.to_string()));
@@ -1539,6 +1541,19 @@ mod tests {
             detect_interactive_prompt(p.screen()).unwrap().2
         };
         assert_ne!(key("rm -rf build"), key("cargo test"));
+    }
+
+    #[test]
+    fn detect_prompt_yes_no_key_ignores_the_echoed_answer() {
+        let key = |b: &[u8]| {
+            let mut p = vt100::Parser::new(24, 80, 0);
+            p.process(b);
+            detect_interactive_prompt(p.screen()).unwrap().2
+        };
+        assert_eq!(
+            key(b"Overwrite file? [y/N] "),
+            key(b"Overwrite file? [y/N] y")
+        );
     }
 
     #[test]
