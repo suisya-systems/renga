@@ -644,10 +644,10 @@ impl App {
                         .map(|(n, _)| n.clone())
                 };
                 match found {
-                    Some(Some((kind, prompt))) => {
+                    Some(Some((kind, prompt, key))) => {
                         pane.output_seen = false;
-                        if pane.reported_prompt.as_deref() != Some(prompt.as_str()) {
-                            pane.reported_prompt = Some(prompt.clone());
+                        if pane.reported_prompt.as_deref() != Some(key.as_str()) {
+                            pane.reported_prompt = Some(key);
                             events.push(crate::ipc::Event::PanePromptDetected {
                                 id,
                                 name: name(),

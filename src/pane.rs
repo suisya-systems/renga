@@ -101,8 +101,9 @@ pub struct Pane {
     /// the screen may have changed since its last scan.
     pub last_output_at: Instant,
     pub output_seen: bool,
-    /// Prompt line last reported via `pane_prompt_detected`, so one
-    /// prompt sitting on screen is reported once.
+    /// Dedupe key of the prompt last reported via
+    /// `pane_prompt_detected`, so one prompt sitting on screen is
+    /// reported once.
     pub reported_prompt: Option<String>,
     /// Set once `pane_waiting_input` fired for the current quiet spell.
     pub waiting_input_reported: bool,
@@ -1341,18 +1342,25 @@ pub fn is_prompt_ready(buf: &[u8]) -> bool {
 }
 
 /// Interactive-prompt scan behind `pane_prompt_detected` (Issue #72).
-/// Returns `(kind, matched line)`. `yes_no` / `password` only count on
+/// Returns `(kind, matched line, dedupe key)`. The key is the matched
+/// line for `yes_no` / `password` and the whole menu block for
+/// `choice`, so two approvals sharing a generic question ("Do you want
+/// to proceed?") but naming different commands stay distinct.
+/// `yes_no` / `password` only count on
 /// the cursor row, so an answered prompt left in the scroll doesn't
 /// keep matching; the `choice` menu (Claude / Codex `1. Yes`) is
 /// searched bottom-up over the whole screen because those TUIs park
 /// the cursor elsewhere.
-pub fn detect_interactive_prompt(screen: &vt100::Screen) -> Option<(&'static str, String)> {
+pub fn detect_interactive_prompt(screen: &vt100::Screen) -> Option<(&'static str, String, String)> {
     let (_, cols) = screen.size();
     let lines: Vec<String> = screen.rows(0, cols).collect();
     detect_prompt_in_lines(&lines, screen.cursor_position().0 as usize)
 }
 
-fn detect_prompt_in_lines(lines: &[String], cursor_row: usize) -> Option<(&'static str, String)> {
+fn detect_prompt_in_lines(
+    lines: &[String],
+    cursor_row: usize,
+) -> Option<(&'static str, String, String)> {
     // Box borders and the selection marker Claude / Codex draw around
     // their menus.
     fn strip(line: &str) -> &str {
@@ -1365,20 +1373,25 @@ fn detect_prompt_in_lines(lines: &[String], cursor_row: usize) -> Option<(&'stat
             .iter()
             .any(|m| lower.contains(m))
         {
-            return Some(("yes_no", t.to_string()));
+            return Some(("yes_no", t.to_string(), t.to_string()));
         }
         if lower.ends_with(':') && (lower.contains("password") || lower.contains("passphrase")) {
-            return Some(("password", t.to_string()));
+            return Some(("password", t.to_string(), t.to_string()));
         }
     }
     let i = lines.iter().rposition(|l| strip(l).starts_with("1. Yes"))?;
     // Report the question above the menu when there is one.
-    let question = lines[i.saturating_sub(8)..i]
+    let block = &lines[i.saturating_sub(8)..=i];
+    let question = block[..block.len() - 1]
         .iter()
         .rev()
         .map(|l| strip(l))
         .find(|l| l.ends_with('?'));
-    Some(("choice", question.unwrap_or(strip(&lines[i])).to_string()))
+    Some((
+        "choice",
+        question.unwrap_or(strip(&lines[i])).to_string(),
+        block.join("\n"),
+    ))
 }
 
 fn strip_csi_escapes(buf: &[u8]) -> Vec<u8> {
@@ -1476,7 +1489,7 @@ mod tests {
     fn prompt_after(bytes: &[u8]) -> Option<(&'static str, String)> {
         let mut p = vt100::Parser::new(24, 80, 0);
         p.process(bytes);
-        detect_interactive_prompt(p.screen())
+        detect_interactive_prompt(p.screen()).map(|(k, p, _)| (k, p))
     }
 
     #[test]
@@ -1510,6 +1523,16 @@ mod tests {
         // Answered: the cursor moved on, the old line no longer counts.
         assert_eq!(prompt_after(b"Overwrite file? [y/N] y\r\n$ "), None);
         assert_eq!(prompt_after(b"plain output\r\n$ "), None);
+    }
+
+    #[test]
+    fn detect_prompt_choice_key_tells_apart_same_question_different_command() {
+        let key = |cmd: &str| {
+            let mut p = vt100::Parser::new(24, 80, 0);
+            p.process(format!("{cmd}\r\nDo you want to proceed?\r\n❯ 1. Yes").as_bytes());
+            detect_interactive_prompt(p.screen()).unwrap().2
+        };
+        assert_ne!(key("rm -rf build"), key("cargo test"));
     }
 
     /// `file:///path` — empty hostname, the path is taken verbatim.
