@@ -7,6 +7,11 @@ use super::*;
 /// second instead of once per event-loop turn (~30 Hz by default).
 const SNAPSHOT_SWEEP_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Output silence after which a pane counts as waiting for input
+/// (`pane_waiting_input`, Issue #72). Agents animate a spinner while
+/// they work, so a few seconds of silence means they stopped.
+const WAITING_INPUT_IDLE: Duration = Duration::from_secs(5);
+
 impl App {
     #[allow(dead_code)] // retained as a test-ergonomic alias for new_with_cwd(None)
     pub fn new(rows: u16, cols: u16) -> Result<Self> {
@@ -111,6 +116,7 @@ impl App {
             org_sidebar_follow_selection: true,
             claude_snapshots: HashMap::new(),
             last_claude_sweep: None,
+            last_prompt_sweep: None,
         })
     }
 
@@ -598,6 +604,81 @@ impl App {
         // overlay catch-up tick already schedules.
         if changed && !(self.overlay.is_some() && self.ime_freeze_panes_on_overlay) {
             self.dirty = true;
+        }
+    }
+
+    /// Emit `pane_prompt_detected` / `pane_waiting_input` (Issue #72)
+    /// for every live pane in every tab. Throttled like the snapshot
+    /// sweep; only panes that produced output since the last pass get
+    /// their screen rescanned.
+    pub(crate) fn tick_prompt_events(&mut self) {
+        let now = Instant::now();
+        if self
+            .last_prompt_sweep
+            .is_some_and(|t| now.duration_since(t) < SNAPSHOT_SWEEP_INTERVAL)
+        {
+            return;
+        }
+        self.last_prompt_sweep = Some(now);
+
+        let mut events = Vec::new();
+        for ws in &mut self.workspaces {
+            for (&id, pane) in ws.panes.iter_mut() {
+                if pane.exited {
+                    continue;
+                }
+                let mut found = None;
+                if pane.output_seen {
+                    let parser = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
+                    // A scrolled-back view shows history, not the live
+                    // screen; leave `output_seen` set and rescan once
+                    // the user is back at the bottom.
+                    if parser.screen().scrollback() == 0 {
+                        found = Some(crate::pane::detect_interactive_prompt(parser.screen()));
+                    }
+                }
+                let name = || {
+                    ws.pane_names
+                        .iter()
+                        .find(|(_, pid)| **pid == id)
+                        .map(|(n, _)| n.clone())
+                };
+                match found {
+                    Some(Some((kind, prompt))) => {
+                        pane.output_seen = false;
+                        if pane.reported_prompt.as_deref() != Some(prompt.as_str()) {
+                            pane.reported_prompt = Some(prompt.clone());
+                            events.push(crate::ipc::Event::PanePromptDetected {
+                                id,
+                                name: name(),
+                                role: pane.role.clone(),
+                                kind: kind.to_string(),
+                                prompt,
+                                ts_ms: crate::ipc::events::now_ms(),
+                            });
+                        }
+                    }
+                    Some(None) => {
+                        pane.output_seen = false;
+                        pane.reported_prompt = None;
+                    }
+                    None => {}
+                }
+                let idle = now.duration_since(pane.last_output_at);
+                if !pane.waiting_input_reported && idle >= WAITING_INPUT_IDLE {
+                    pane.waiting_input_reported = true;
+                    events.push(crate::ipc::Event::PaneWaitingInput {
+                        id,
+                        name: name(),
+                        role: pane.role.clone(),
+                        idle_ms: idle.as_millis() as u64,
+                        ts_ms: crate::ipc::events::now_ms(),
+                    });
+                }
+            }
+        }
+        for ev in events {
+            self.event_bus.emit(ev);
         }
     }
 

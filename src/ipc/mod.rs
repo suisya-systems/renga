@@ -1374,6 +1374,36 @@ pub enum Event {
         role: Option<String>,
         ts_ms: u64,
     },
+    /// Emitted when an interactive prompt appears on a pane's visible
+    /// screen (Issue #72). Heuristic screen scan, not a TTY probe:
+    /// `kind` is `"choice"` (a Claude / Codex `1. Yes` approval menu),
+    /// `"yes_no"` (`(y/n)`-style on the cursor row) or `"password"`
+    /// (a `password:` / `passphrase:` prompt on the cursor row).
+    /// `prompt` is the matched line. Fires once per distinct prompt;
+    /// it re-arms when the prompt leaves the screen or changes.
+    PanePromptDetected {
+        id: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        kind: String,
+        prompt: String,
+        ts_ms: u64,
+    },
+    /// Emitted once a pane has produced no PTY output for `idle_ms`
+    /// (Issue #72). A quiescence heuristic: an idle shell or agent is
+    /// waiting on input, but so is a silent long-running command. Fires
+    /// once per quiet spell; the next output re-arms it.
+    PaneWaitingInput {
+        id: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        idle_ms: u64,
+        ts_ms: u64,
+    },
     /// Meta-event synthesized by the server when a slow subscriber
     /// has caused real events to be dropped. `count` is the number of
     /// events discarded since the last delivered event.

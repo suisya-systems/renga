@@ -71,7 +71,17 @@ impl App {
                         }
                     }
                 }
-                AppEvent::PtyOutput(_) => {}
+                AppEvent::PtyOutput(pane_id) => {
+                    if let Some(pane) = self
+                        .workspaces
+                        .iter_mut()
+                        .find_map(|ws| ws.panes.get_mut(&pane_id))
+                    {
+                        pane.last_output_at = Instant::now();
+                        pane.output_seen = true;
+                        pane.waiting_input_reported = false;
+                    }
+                }
                 AppEvent::ClipboardCopy(text) => {
                     self.copy_to_clipboard(&text);
                 }

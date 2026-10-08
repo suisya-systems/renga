@@ -430,6 +430,10 @@ fn run_event_loop(
         // throttled, and a no-op while the sidebar is hidden.
         app.tick_claude_snapshots();
 
+        // Issue #72: prompt / idle events for event-driven monitors.
+        // Self-throttled; never marks the UI dirty.
+        app.tick_prompt_events();
+
         // Only render when something changed (and no cooldown is active)
         if app.dirty && app.paste_cooldown == 0 && app.resize_cooldown == 0 {
             app.dirty = false;

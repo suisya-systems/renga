@@ -168,7 +168,7 @@ pub enum AppCommand {
 /// Events dispatched within the app.
 pub enum AppEvent {
     /// PTY output received for a pane.
-    PtyOutput(#[allow(dead_code)] usize),
+    PtyOutput(usize),
     /// A pane emitted OSC 52 with clipboard text.
     ClipboardCopy(String),
     /// PTY process exited for a pane.
@@ -467,4 +467,6 @@ pub struct App {
     /// Throttle for the snapshot sweep itself, so the cross-tab walk
     /// runs a few times a second rather than once per event-loop turn.
     pub(crate) last_claude_sweep: Option<Instant>,
+    /// Throttle for [`App::tick_prompt_events`].
+    pub(crate) last_prompt_sweep: Option<Instant>,
 }
