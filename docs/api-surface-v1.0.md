@@ -333,7 +333,7 @@ round-trip.
 |---|---|---|---|
 | `since` | string | no | Opaque cursor returned by a prior `next_since`. Omit → "start at now"; no historical replay. |
 | `timeout_ms` | int ≥ 0 | no | Default 2000, hard cap 30000. `0` = non-blocking drain. |
-| `types` | string[] | no | Filter list. Cursor advances past filtered-out events; non-matching arrival can early-return with `events: []` and an advanced cursor. |
+| `types` | string[] | no | Filter list. Cursor advances past filtered-out events. Since #72 a filtered poll keeps waiting past non-matching arrivals instead of early-returning; on timeout it returns `events: []` with the cursor advanced past them. |
 
 Returns: `{ next_since: <cursor>, events: [<event obj>] }`.
 

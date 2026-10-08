@@ -23,6 +23,16 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   prompt / quiet spell. New `Event` variants are minor under the
   forward-compat rule.
 
+### Changed
+
+- **A `poll_events` call with a `types` filter no longer wakes on
+  non-matching events.** (#72) It keeps waiting until a matching event
+  or the timeout, and still advances `next_since` past what it skipped.
+  Without this, the new per-pane `pane_waiting_input` traffic would
+  wake every `types=["pane_exited"]` long-poll with `events: []`. The
+  frozen contract only said a non-matching arrival *can* early-return,
+  so this is within it.
+
 ## [3.0.0] — 2026-08-29
 
 > **Major release.** Governed by

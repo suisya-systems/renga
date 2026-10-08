@@ -3284,7 +3284,7 @@ fn handle_poll_events(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
     // caller already knows about", so the next delivery window is
     // `since + 1`. `since = None` means "no history — give me events
     // that arrive after this call".
-    let start_cursor = match since {
+    let mut start_cursor = match since {
         Some(s) => s.saturating_add(1),
         None => buf.last_seq.saturating_add(1),
     };
@@ -3293,7 +3293,14 @@ fn handle_poll_events(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
     loop {
         let scan = scan_buffer(&buf, start_cursor, types_filter.as_deref());
         if let Some(max_seq) = scan.window_max_seq {
-            return ok_response(id, poll_events_payload(scan.matched, max_seq));
+            // A filtered poll keeps waiting past events it filtered
+            // out: since #72 `pane_waiting_input` arrives every few
+            // seconds per pane and would otherwise wake every
+            // `types=["pane_exited"]` long-poll with `events: []`.
+            if !scan.matched.is_empty() || types_filter.is_none() {
+                return ok_response(id, poll_events_payload(scan.matched, max_seq));
+            }
+            start_cursor = max_seq.saturating_add(1);
         }
 
         let now = Instant::now();
@@ -6140,6 +6147,49 @@ Commands:
             Some("pane_exited")
         );
         assert_eq!(body.get("next_since").and_then(|v| v.as_str()), Some("3"));
+    }
+
+    #[test]
+    fn handle_poll_events_filtered_poll_is_not_woken_by_non_matching_events() {
+        let events = new_event_sink();
+        let ctx = connected_ctx_with(events.clone());
+        let pusher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let (lock, cvar) = &*events;
+            lock.lock().unwrap().push(pane_started_value(1, 10));
+            cvar.notify_all();
+            std::thread::sleep(Duration::from_millis(50));
+            lock.lock().unwrap().push(pane_exited_value(1, 20));
+            cvar.notify_all();
+        });
+        let resp = handle_poll_events(
+            &json!(1),
+            &json!({ "since": "0", "timeout_ms": 5000, "types": ["pane_exited"] }),
+            &ctx,
+        );
+        pusher.join().unwrap();
+        let body = structured(&resp);
+        let arr = body.get("events").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(arr.len(), 1, "{body}");
+        assert_eq!(body.get("next_since").and_then(|v| v.as_str()), Some("2"));
+    }
+
+    #[test]
+    fn handle_poll_events_filtered_timeout_still_advances_past_skipped_events() {
+        let events = new_event_sink();
+        events.0.lock().unwrap().push(pane_started_value(1, 10));
+        let ctx = connected_ctx_with(events);
+        let resp = handle_poll_events(
+            &json!(1),
+            &json!({ "since": "0", "timeout_ms": 0, "types": ["pane_exited"] }),
+            &ctx,
+        );
+        let body = structured(&resp);
+        assert_eq!(
+            body.get("events").and_then(|v| v.as_array()).unwrap().len(),
+            0
+        );
+        assert_eq!(body.get("next_since").and_then(|v| v.as_str()), Some("1"));
     }
 
     #[test]

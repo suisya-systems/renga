@@ -156,7 +156,7 @@ user-turn 配送を `send_keys` で自作しないでください。
 
 | ツール | 役割 |
 |---|---|
-| `poll_events(timeout_ms?, since?, types?)` | `pane_started` / `pane_exited` / `events_dropped` を cursor 付き long-poll で受け取ります。オーケストレータが毎ターン pane 一覧を総当たりせずに、ワーカーの起動・終了だけを追いたいとき向けです。イベントは renga プロセス全体が対象で、呼び出し元のタブに限らず全タブのペインのライフサイクルが届きます。 |
+| `poll_events(timeout_ms?, since?, types?)` | `pane_started` / `pane_exited` / `pane_prompt_detected` / `pane_waiting_input` / `events_dropped` を cursor 付き long-poll で受け取ります。オーケストレータが毎ターン pane 一覧を総当たりせずに、ワーカーの起動・終了だけを追いたいとき向けです。イベントは renga プロセス全体が対象で、呼び出し元のタブに限らず全タブのペインのライフサイクルが届きます。 |
 
 `spawn_pane` / `new_tab` の作業ディレクトリ指定は `cwd` フィールドを使ってください。パス解決が構造化されたまま保て、`claude` 自動アップグレードも維持されます。自動アップグレードは `command` の先頭トークンがちょうど `claude` のときだけ発火するので、`cd <dir> && ...` を埋め込むと一切効かなくなります。
 
@@ -268,7 +268,7 @@ Codex の MCP 承認は pane ごとです。Claude Code のような「一度許
 
 ### `poll_events` が想定より早く `events: []` を返す
 
-多くの場合は `types=[...]` フィルタの仕様どおりです。条件に合わないイベントでも long-poll 自体は解除され、そのイベントを飛び越えた `next_since` が返ります。つまり空配列でも cursor は進み、そのイベントは再送されません。
+`types` フィルタなしなら、どのイベントでも long-poll は解除されます。`types=[...]` を付けた場合、renga 3.1 以降 (#72) は条件に合わないイベントでは解除されずに待ち続け、タイムアウト時にだけ `events: []` を返します。そのとき `next_since` は飛ばしたイベントの先まで進んでいるので再送はされません。それより古い server では、条件に合わないイベントで早めに解除されることがあります。
 
 返ってきた `next_since` をそのまま次回の poll に使ってください。`events_dropped` が来たときは `list_peers` で再同期してから続行します。`poll_events` はプロセス全体が対象なので、対応する全タブのビューは `list_peers` です — `list_panes` は既定では呼び出し元自身のタブしか返さず、他タブのペインで落ちたイベントは埋め合わせられません。ジオメトリ込みのペイン単位のビューをタブ横断で取りたいときは `tab={"all": true}` (#329) を渡してください。`list_peers` は自分自身のペインを含まないため、自分のタブを詳細に取り直すときは `list_panes` と併用してください。
 
