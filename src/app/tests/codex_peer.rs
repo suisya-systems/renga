@@ -588,7 +588,7 @@ fn handle_peer_send_queues_codex_nudge_and_emits_peer_inbox() {
         .expect("queued codex peer message");
     assert_eq!(queued.len(), 1);
     match &queued[0] {
-        PendingCodexPeerDelivery::Draft(msg) => {
+        PendingCodexPeerDelivery::Draft(msg, 1) => {
             assert_eq!(msg.from_pane, sender_id);
             assert_eq!(msg.from_name.as_deref(), None);
             assert_eq!(msg.from_kind, None);
@@ -979,6 +979,134 @@ fn focused_codex_notification_typing_snoozes_until_focus_leaves() {
         Some(1),
         "a snoozed notification must still nudge once focus leaves"
     );
+    app.shutdown();
+}
+
+/// Split off a Codex-registered sibling, focus it, and send it one
+/// peer message so the focused-pane notification is up.
+fn focused_codex_sibling_with_notification(app: &mut App) -> (usize, usize) {
+    let sender_id = app.ws().focused_pane_id;
+    let sibling_id = app
+        .handle_split(
+            &ipc::PaneRef::Focused,
+            ipc::Direction::Vertical,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("split succeeds");
+    app.peer_client_kinds
+        .insert(sibling_id, PeerClientKind::Codex);
+    app.handle_focus(&ipc::PaneRef::Id(sibling_id), None)
+        .expect("focus sibling");
+    app.handle_peer_send(
+        sender_id,
+        &ipc::PaneRef::Id(sibling_id),
+        "hello focused codex".to_string(),
+    )
+    .expect("peer send");
+    (sender_id, sibling_id)
+}
+
+#[test]
+fn focused_codex_notification_nudges_when_focus_moves_to_file_tree() {
+    // Focus on the same tab's file tree / preview leaves
+    // `focused_pane_id` on the Codex pane, but the human cannot type
+    // into it, so the nudge must go out instead of waiting (#355 a).
+    let mut app = App::new(40, 80).expect("App::new");
+    let (_, sibling_id) = focused_codex_sibling_with_notification(&mut app);
+    {
+        let pane = app.ws_mut().panes.get_mut(&sibling_id).expect("sibling");
+        let mut parser = pane.parser.lock().unwrap();
+        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
+    }
+    app.ws_mut().focus_target = FocusTarget::FileTree;
+
+    app.flush_pending_codex_peer_messages();
+    assert!(app.codex_peer_notification.is_none());
+    assert!(
+        matches!(
+            app.pending_codex_peer_messages
+                .get(&sibling_id)
+                .and_then(|q| q.front()),
+            Some(PendingCodexPeerDelivery::SubmitAt(_))
+        ),
+        "the nudge must be typed while focus is on the file tree"
+    );
+    app.shutdown();
+}
+
+#[test]
+fn focused_codex_notification_keeps_pending_count_through_the_queue() {
+    // Leaving the pane parks the notification in the queue; coming
+    // back must restore the full count, not 1 (#355 b).
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, sibling_id) = focused_codex_sibling_with_notification(&mut app);
+    app.handle_peer_send(
+        sender_id,
+        &ipc::PaneRef::Id(sibling_id),
+        "second message".to_string(),
+    )
+    .expect("second peer send");
+
+    app.handle_focus(&ipc::PaneRef::Id(sender_id), None)
+        .expect("refocus sender");
+    app.flush_pending_codex_peer_messages();
+    assert!(matches!(
+        app.pending_codex_peer_messages
+            .get(&sibling_id)
+            .and_then(|q| q.front()),
+        Some(PendingCodexPeerDelivery::Draft(_, 2))
+    ));
+    app.handle_peer_send(
+        sender_id,
+        &ipc::PaneRef::Id(sibling_id),
+        "third message".to_string(),
+    )
+    .expect("third peer send");
+
+    app.handle_focus(&ipc::PaneRef::Id(sibling_id), None)
+        .expect("focus sibling again");
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(
+        app.visible_codex_peer_notification()
+            .map(|n| n.pending_count),
+        Some(3)
+    );
+    app.shutdown();
+}
+
+#[test]
+fn focused_codex_notification_is_not_visible_when_too_small_to_draw() {
+    // Below the box's minimum size nothing is drawn, so Esc and
+    // Alt+Enter must reach the pane and the status bar carries the
+    // hint instead (#355 c).
+    let mut app = App::new(40, 80).expect("App::new");
+    app.last_term_size = (40, 40);
+    let (_, sibling_id) = focused_codex_sibling_with_notification(&mut app);
+    assert!(app.visible_codex_peer_notification().is_none());
+    assert_eq!(app.codex_peer_notification_needs_hint(), Some(1));
+
+    app.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("esc reaches the pane");
+    // Still parked while the pane is watched, not dismissed or queued.
+    app.flush_pending_codex_peer_messages();
+    assert!(app.codex_peer_notification.is_some());
+    assert!(!app.pending_codex_peer_messages.contains_key(&sibling_id));
+
+    // Too short for the UI at all: still not visible.
+    app.last_term_size = (80, 8);
+    assert!(app.visible_codex_peer_notification().is_none());
+    app.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("esc reaches the pane");
+    assert!(app.codex_peer_notification.is_some());
+
+    app.last_term_size = (80, 40);
+    assert!(app.visible_codex_peer_notification().is_some());
+    assert_eq!(app.codex_peer_notification_needs_hint(), None);
     app.shutdown();
 }
 

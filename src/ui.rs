@@ -26,8 +26,8 @@ const ACTIVE_BG: Color = Color::Rgb(0x1c, 0x23, 0x33);
 const LINE_NUM_COLOR: Color = Color::Rgb(0x3d, 0x44, 0x4d);
 const SCROLL_BG: Color = Color::Rgb(0x2a, 0x1f, 0x14);
 
-const MIN_TERMINAL_WIDTH: u16 = 40;
-const MIN_TERMINAL_HEIGHT: u16 = 10;
+pub(crate) const MIN_TERMINAL_WIDTH: u16 = 40;
+pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 10;
 // `MIN_PANE_AREA_WIDTH` now lives in `app::layout_geometry` — it was
 // duplicated here and in `App::relayout_panes`, which is exactly the
 // drift the shared helper exists to prevent.
@@ -272,7 +272,8 @@ fn render_codex_peer_notification(app: &mut App, frame: &mut Frame, area: Rect) 
 
     let box_w = area.width.min(68);
     let box_h = area.height.min(7);
-    if box_w < 44 || box_h < 5 {
+    let (min_w, min_h) = crate::app::CODEX_PEER_NOTIFICATION_MIN_SIZE;
+    if box_w < min_w || box_h < min_h {
         return;
     }
     let box_x = area.x + (area.width.saturating_sub(box_w)) / 2;
@@ -1882,6 +1883,17 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(m.rename_cancel, Style::default().fg(TEXT_DIM)),
             Span::styled(m.rename_empty_enter_label, Style::default().fg(ACCENT_BLUE)),
             Span::styled(m.rename_reset, Style::default().fg(TEXT_DIM)),
+        ])
+    } else if let Some(count) = app.codex_peer_notification_needs_hint() {
+        // The notification box does not fit; Esc / Alt+Enter are not
+        // captured, so just say there is something to check (#355).
+        let noun = if count == 1 { "message" } else { "messages" };
+        Line::from(vec![
+            Span::styled(" PEER ▷ ", Style::default().fg(ACCENT_CODEX)),
+            Span::styled(
+                format!("{count} pending {noun} - widen window"),
+                Style::default().fg(TEXT_DIM),
+            ),
         ])
     } else {
         match focus {

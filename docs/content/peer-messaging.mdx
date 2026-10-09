@@ -248,7 +248,7 @@ client が renga の外で起動されたか、renga ペインの環境変数を
 
 ### Codex に送ったのに反応がない
 
-Codex への配送は pane-driven です。renga が `check_messages` を促す nudge を queue し、Codex ペインが PTY 入力を安全に受けられる状態で、かつ非フォーカスになった時点で流し込みます。busy な間は queue に残ります。フォーカス中に届いた場合は通知 overlay を出し、`Alt+Enter` / `Ctrl+Enter` で `check_messages` 用の文面だけを composer に挿入します。`Esc` なら無視、Enter を押して実行するかどうかは人間が決めます。それ以外のキーは overlay を隠してペインへ届きますが、通知は保留されるだけで、新しいメッセージが届けば再表示します。後でフォーカスが外れれば、worker と同じ queued nudge 経路に戻ります。
+Codex への配送は pane-driven です。renga が `check_messages` を促す nudge を queue し、Codex ペインが PTY 入力を安全に受けられる状態で、かつ非フォーカスになった時点で流し込みます。busy な間は queue に残ります。フォーカス中に届いた場合は通知 overlay を出し、`Alt+Enter` / `Ctrl+Enter` で `check_messages` 用の文面だけを composer に挿入します。`Esc` なら無視、Enter を押して実行するかどうかは人間が決めます。それ以外のキーは overlay を隠してペインへ届きますが、通知は保留されるだけで、新しいメッセージが届けば再表示します。後でフォーカスが外れれば、worker と同じ queued nudge 経路に戻ります。ファイルツリーやプレビューへのフォーカス移動も「外れた」扱いです。端末が小さく overlay を描けないときは、代わりにステータスバーへ件数を出し、`Esc` / `Alt+Enter` はペインへそのまま届きます。
 
 `check_messages` で受け取った本文が実際の peer 依頼です。単に返事を返すためのチャットではなく、人間からの依頼に近い peer 指示として扱うのが前提です。調査、pane 操作、tool 実行、コード編集などを頼まれたなら、その作業自体を進めてください。
 

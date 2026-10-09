@@ -174,6 +174,9 @@ struct PaneMonitor {
     jsonl_path: Option<PathBuf>,
     file_position: u64,
     last_mtime: Option<SystemTime>,
+    /// Paired with `last_mtime`: coarse file-time ticks can leave mtime
+    /// unchanged across two writes, but an append still changes the size.
+    last_len: u64,
     /// Last time we did a metadata check (for throttling).
     last_check: Instant,
     /// Last time we ran a full directory scan for new JSONL files.
@@ -191,6 +194,7 @@ impl PaneMonitor {
             jsonl_path: None,
             file_position: 0,
             last_mtime: None,
+            last_len: 0,
             last_check: Instant::now() - Duration::from_secs(10),
             last_rescan: Instant::now() - Duration::from_secs(60),
             state: ClaudeState::default(),
@@ -311,10 +315,11 @@ impl ClaudeMonitor {
                 Err(_) => return changed,
             };
             let mtime = meta.modified().ok();
-            if mtime == monitor.last_mtime {
+            if mtime == monitor.last_mtime && meta.len() == monitor.last_len {
                 return changed;
             }
             monitor.last_mtime = mtime;
+            monitor.last_len = meta.len();
 
             // File truncation/rotation detection: if file shrank, reset state
             if meta.len() < monitor.file_position {
@@ -856,14 +861,9 @@ mod tests {
         // Baseline call against the empty file establishes last_mtime.
         assert!(!monitor.update_throttled(2, cwd, min_interval));
 
-        // Sleep BEFORE the second write, not after: what the final
-        // assertion depends on is the mtime delta between the two
-        // writes, and the file-time clock advances in coarse ticks
-        // (~15.6ms on Windows). Sleeping after the write only defeats
-        // the `Instant`-based throttle while leaving the writes
-        // microseconds apart — same tick, same mtime, early return,
-        // flaky failure. Placing the wait here separates the writes
-        // *and* satisfies the throttle window with one sleep.
+        // Sleep so the second call clears the `Instant`-based throttle.
+        // Change detection compares mtime *and* size, so a same-tick
+        // mtime (coarse file-time clock, ~15.6ms on Windows) is harmless.
         std::thread::sleep(Duration::from_millis(60));
 
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","id":"t1","input":{}}],"stop_reason":"tool_use"}}
