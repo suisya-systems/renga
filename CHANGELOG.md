@@ -74,6 +74,12 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
 
 ### Fixed
 
+- **Two inbox subscribers on one Codex pane no longer under-count
+  unread.** (#369) Each `peer_inbox` now carries a server-assigned
+  `msg_id`, and `renga mcp-peer` reports drains by those ids, so the
+  same message drained from two inboxes is cleared once and the nudge
+  for a later, still-unread message is kept. A drain report without
+  ids (an older client) still clears `count` messages, oldest first.
 - **Typing into a focused Codex pane no longer drops its peer
   notification.** (#197) Any key other than `Esc` / `Ctrl+C` /
   `Alt+Enter` used to discard the "pending Codex messages" overlay, and

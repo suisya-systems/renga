@@ -199,6 +199,8 @@ struct QueuedPeerMessage {
     from_kind: Option<PeerClientKind>,
     body: String,
     sent_at: String,
+    /// `PeerInbox::msg_id`, echoed back when the message is drained.
+    msg_id: Option<u64>,
 }
 
 type InboxSink = Arc<Mutex<VecDeque<QueuedPeerMessage>>>;
@@ -1182,15 +1184,19 @@ fn report_inbox_drained(ctx: &PeerCtx, messages: &[QueuedPeerMessage]) {
     if count == 0 {
         return;
     }
+    let ids = messages.iter().filter_map(|m| m.msg_id).collect();
     // Off the stdio thread: a busy renga must not stall the tool call
     // whose messages are already drained.
     let (pane_id, endpoint) = (*pane_id, endpoint.clone());
-    thread::spawn(move || {
-        match client::send_request(&endpoint, &Request::PeerInboxDrained { pane_id, count }) {
-            Ok(Response::Ok { .. }) => {}
-            Ok(other) => log_stderr(&format!("inbox drain report returned: {other:?}")),
-            Err(e) => log_stderr(&format!("inbox drain report failed: {e}")),
-        }
+    let request = Request::PeerInboxDrained {
+        pane_id,
+        count,
+        ids,
+    };
+    thread::spawn(move || match client::send_request(&endpoint, &request) {
+        Ok(Response::Ok { .. }) => {}
+        Ok(other) => log_stderr(&format!("inbox drain report returned: {other:?}")),
+        Err(e) => log_stderr(&format!("inbox drain report failed: {e}")),
     });
 }
 
@@ -3528,6 +3534,7 @@ fn spawn_inbox_subscriber(ctx: PeerCtx) {
                     from_name,
                     from_kind,
                     body,
+                    msg_id,
                 } = classify_inbox_event(&event, pane_id)
                 {
                     if client_kind.receive_mode() == ipc::PeerReceiveMode::Pull {
@@ -3539,6 +3546,7 @@ fn spawn_inbox_subscriber(ctx: PeerCtx) {
                                 from_kind,
                                 body,
                                 sent_at: now_ts_string(),
+                                msg_id,
                             },
                         );
                     } else {
@@ -3589,6 +3597,7 @@ enum InboxDelivery {
         from_name: Option<String>,
         from_kind: Option<PeerClientKind>,
         body: String,
+        msg_id: Option<u64>,
     },
 }
 
@@ -3625,12 +3634,14 @@ fn classify_inbox_event(event: &ipc::Event, pane_id: usize) -> InboxDelivery {
             from_name,
             from_kind,
             body,
+            msg_id,
             ..
         } if *target_pane == pane_id => InboxDelivery::Deliver {
             from_id: from_pane.to_string(),
             from_name: from_name.clone(),
             from_kind: *from_kind,
             body: body.clone(),
+            msg_id: *msg_id,
         },
         ipc::Event::EventsDropped { count, .. } => InboxDelivery::Deliver {
             from_id: "renga".to_string(),
@@ -3639,6 +3650,7 @@ fn classify_inbox_event(event: &ipc::Event, pane_id: usize) -> InboxDelivery {
             body: format!(
                 "renga event bus dropped {count} event(s) before they reached this peer client. A peer message may have been lost — consider asking the sender to retry."
             ),
+            msg_id: None,
         },
         _ => InboxDelivery::Ignore,
     }
@@ -5680,6 +5692,7 @@ Commands:
             from_kind: None,
             body: String::new(),
             sent_at: String::new(),
+            msg_id: None,
         };
         assert_eq!(drained_peer_count(&[msg("2"), msg("renga"), msg("7")]), 2);
     }
@@ -5695,6 +5708,7 @@ Commands:
                 from_kind: Some(PeerClientKind::Claude),
                 body: "please inspect pane 4".to_string(),
                 sent_at: "2026-04-28T10:00:00Z".to_string(),
+                msg_id: None,
             });
         }
 
@@ -5980,6 +5994,7 @@ Commands:
             from_kind: None,
             body: "x".into(),
             ts_ms: 1,
+            msg_id: None,
         }));
         assert!(should_buffer_for_poll(&ipc::Event::PaneStarted {
             id: 1,
@@ -6009,6 +6024,7 @@ Commands:
             from_kind: Some(PeerClientKind::Codex),
             body: "ship it".into(),
             ts_ms: 7,
+            msg_id: Some(5),
         }
     }
 
@@ -6049,6 +6065,7 @@ Commands:
                 from_name: Some("dispatcher".to_string()),
                 from_kind: Some(PeerClientKind::Codex),
                 body: "ship it".to_string(),
+                msg_id: Some(5),
             }
         );
     }
@@ -6065,8 +6082,10 @@ Commands:
                 from_name,
                 from_kind,
                 body,
+                msg_id,
             } => {
                 assert_eq!(from_id, "renga");
+                assert_eq!(msg_id, None, "a runtime notice is never acked");
                 assert_eq!(from_name.as_deref(), Some("renga runtime"));
                 assert_eq!(from_kind, None);
                 assert!(body.contains("dropped 3 event(s)"), "body was {body:?}");

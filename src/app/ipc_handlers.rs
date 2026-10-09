@@ -134,9 +134,10 @@ impl App {
             AppCommand::PeerInboxDrained {
                 pane_id,
                 count,
+                ids,
                 reply,
             } => {
-                let result = self.handle_peer_inbox_drained(pane_id, count);
+                let result = self.handle_peer_inbox_drained(pane_id, count, &ids);
                 let _ = reply.send(result);
             }
             AppCommand::SetPaneIdentity {
@@ -351,7 +352,7 @@ impl App {
                             summary: pane.and_then(|p| p.summary.clone()),
                             unread: self
                                 .pane_expects_codex_peer_delivery(ws_idx, id)
-                                .then(|| self.peer_unread.get(&id).copied().unwrap_or(0)),
+                                .then(|| self.peer_unread_count(id)),
                         }
                     }),
             );

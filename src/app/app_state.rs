@@ -141,10 +141,11 @@ pub enum AppCommand {
         reply: oneshot::Sender<std::result::Result<(), ipc::CodedError>>,
     },
     /// A pane's MCP peer subprocess drained `count` messages via
-    /// `check_messages` (Issue #353).
+    /// `check_messages` (Issue #353), identified by `ids` (Issue #369).
     PeerInboxDrained {
         pane_id: usize,
         count: usize,
+        ids: Vec<u64>,
         reply: oneshot::Sender<std::result::Result<(), ipc::CodedError>>,
     },
     /// Rename or clear the `name` / `role` of an existing pane. See
@@ -332,9 +333,14 @@ pub struct App {
     /// whether a pane is using Claude-style push or Codex-style poll.
     pub(crate) peer_client_kinds: HashMap<usize, PeerClientKind>,
     /// Peer messages emitted to a pull-mode (Codex) pane that its
-    /// `check_messages` has not reported draining yet (Issue #353).
-    /// Absent key = nothing unread / not a pull-mode pane.
-    pub(crate) peer_unread: HashMap<usize, usize>,
+    /// `check_messages` has not reported draining yet (Issue #353),
+    /// keyed by `PeerInbox::msg_id` so a drain reported twice (two
+    /// subscribers on one pane) cannot clear a message only one of
+    /// them read (Issue #369). Absent key = nothing unread / not a
+    /// pull-mode pane.
+    pub(crate) peer_unread: HashMap<usize, BTreeSet<u64>>,
+    /// Source of `PeerInbox::msg_id`.
+    pub(crate) next_peer_msg_id: u64,
     /// One-shot nudges waiting to be injected into Codex panes so the
     /// pane runs `check_messages` once it looks ready for PTY input.
     pub(crate) pending_codex_peer_messages: HashMap<usize, VecDeque<PendingCodexPeerDelivery>>,

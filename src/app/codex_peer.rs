@@ -350,6 +350,8 @@ impl App {
                 self.push_pending_codex_peer_nudge(target_id, message, 1, Instant::now());
             }
         }
+        let msg_id = self.next_peer_msg_id;
+        self.next_peer_msg_id += 1;
         let reached_inbox = self.event_bus.emit(ipc::Event::PeerInbox {
             target_pane: target_id,
             from_pane,
@@ -357,12 +359,16 @@ impl App {
             from_kind,
             body,
             ts_ms: ipc::events::now_ms(),
+            msg_id: Some(msg_id),
         });
         // Count only what actually entered the pane's MCP inbox: a
         // message sent before its subprocess subscribed, or dropped on
         // a full queue, can never be drained (Issue #353).
         if pull_mode && reached_inbox {
-            *self.peer_unread.entry(target_id).or_default() += 1;
+            self.peer_unread
+                .entry(target_id)
+                .or_default()
+                .insert(msg_id);
         }
         self.sync_peer_delivery();
         Ok(())
@@ -414,18 +420,25 @@ impl App {
         Ok(())
     }
 
-    /// The pane's agent drained `count` peer messages (Issue #353).
-    /// Pending nudge state is dropped only once the unread count hits
-    /// zero: a message sent between the drain and this report is
-    /// still in the inbox and still needs its nudge.
+    pub(crate) fn peer_unread_count(&self, pane_id: usize) -> usize {
+        self.peer_unread.get(&pane_id).map_or(0, BTreeSet::len)
+    }
+
+    /// The pane's agent drained `count` peer messages (Issue #353),
+    /// named by `ids` (Issue #369). Pending nudge state is dropped only
+    /// once nothing is left unread: a message sent between the drain
+    /// and this report is still in the inbox and still needs its nudge.
+    /// Acking by id makes a second report of the same messages (two
+    /// subscribers bound to one pane) a no-op. Without ids (a pre-#369
+    /// client) the oldest `count` messages are cleared, as before.
     ///
-    /// ponytail: counts, not message ids. Messages still queued when
-    /// the MCP subprocess dies keep `unread` above zero until its
-    /// successor registers; per-message ids if that residue matters.
+    /// Messages still queued when the MCP subprocess dies stay unread
+    /// until its successor registers.
     pub(crate) fn handle_peer_inbox_drained(
         &mut self,
         pane_id: usize,
         count: usize,
+        ids: &[u64],
     ) -> std::result::Result<(), ipc::CodedError> {
         self.resolve_pane_across_workspaces(&PaneRef::Id(pane_id))
             .ok_or_else(|| {
@@ -434,10 +447,19 @@ impl App {
                     format!("pane {pane_id} not found for inbox drain"),
                 )
             })?;
-        let unread = self.peer_unread.remove(&pane_id).unwrap_or(0);
-        let left = unread.saturating_sub(count);
+        let mut unread = self.peer_unread.remove(&pane_id).unwrap_or_default();
+        if ids.is_empty() {
+            for _ in 0..count {
+                unread.pop_first();
+            }
+        } else {
+            for id in ids {
+                unread.remove(id);
+            }
+        }
+        let left = unread.len();
         if left > 0 {
-            self.peer_unread.insert(pane_id, left);
+            self.peer_unread.insert(pane_id, unread);
             if let Some(n) = self
                 .codex_peer_notification
                 .as_mut()
@@ -653,7 +675,7 @@ impl App {
             id: pane_id,
             name,
             role,
-            pending: self.peer_unread.get(&pane_id).copied().unwrap_or(0),
+            pending: self.peer_unread_count(pane_id),
             ts_ms: ipc::events::now_ms(),
         });
     }
@@ -668,7 +690,7 @@ impl App {
         &self,
         pane_id: usize,
     ) -> Option<(ipc::PeerDeliveryState, usize)> {
-        let unread = self.peer_unread.get(&pane_id).copied().unwrap_or(0);
+        let unread = self.peer_unread_count(pane_id);
         if unread == 0 {
             return None;
         }

@@ -313,6 +313,7 @@ mod tests {
             from_kind: None,
             body: format!("hello pane {target_pane}"),
             ts_ms: 0,
+            msg_id: None,
         }
     }
 

@@ -724,13 +724,16 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
                 reply,
             })
         }
-        Request::PeerInboxDrained { pane_id, count } => {
-            forward_unit(command_tx, |reply| AppCommand::PeerInboxDrained {
-                pane_id,
-                count,
-                reply,
-            })
-        }
+        Request::PeerInboxDrained {
+            pane_id,
+            count,
+            ids,
+        } => forward_unit(command_tx, |reply| AppCommand::PeerInboxDrained {
+            pane_id,
+            count,
+            ids,
+            reply,
+        }),
         Request::SetSummary { from_pane, summary } => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if command_tx
@@ -1696,6 +1699,7 @@ mod tests {
             from_kind: None,
             body: body.to_string(),
             ts_ms: 0,
+            msg_id: None,
         }
     }
 

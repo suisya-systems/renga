@@ -1953,7 +1953,8 @@ fn check_messages_drain_clears_pending_nudge_and_emits_peer_inbox_drained() {
     // Push-mode (Claude / unregistered) peers have no inbox to count.
     assert_eq!(listed_unread(&app, codex_id, sender_id), None);
 
-    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
+        .expect("drain");
 
     assert!(
         !app.pending_codex_peer_messages.contains_key(&codex_id),
@@ -1982,7 +1983,43 @@ fn partial_drain_keeps_the_nudge_for_a_message_sent_after_it() {
     app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "two".into())
         .expect("send two");
 
-    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
+        .expect("drain");
+
+    assert!(app.pending_codex_peer_messages.contains_key(&codex_id));
+    assert_eq!(listed_unread(&app, sender_id, codex_id), Some(1));
+    app.shutdown();
+}
+
+#[test]
+fn a_drain_reported_by_two_subscribers_keeps_the_nudge_of_an_undrained_message() {
+    // Issue #369: two MCP subprocesses bound to one pane both receive
+    // "one" and both report draining it. That must clear it once, not
+    // also count away "two", which neither has drained.
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id, first) = codex_sibling_unfocused(&mut app);
+    let (_sub, second) = app
+        .event_bus
+        .subscribe_scoped(ipc::EventScope::PaneInbox(codex_id));
+    let msg_ids = |rx: &std::sync::mpsc::Receiver<ipc::Event>| -> Vec<u64> {
+        rx.try_iter()
+            .filter_map(|e| match e {
+                ipc::Event::PeerInbox { msg_id, .. } => msg_id,
+                _ => None,
+            })
+            .collect()
+    };
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "one".into())
+        .expect("send one");
+    let one = msg_ids(&first);
+    assert_eq!(msg_ids(&second), one, "both inboxes get the same message");
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "two".into())
+        .expect("send two");
+
+    app.handle_peer_inbox_drained(codex_id, 1, &one)
+        .expect("first drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &one)
+        .expect("second drain");
 
     assert!(app.pending_codex_peer_messages.contains_key(&codex_id));
     assert_eq!(listed_unread(&app, sender_id, codex_id), Some(1));
@@ -1999,7 +2036,8 @@ fn drain_clears_focused_codex_notification_and_reregister_resets_unread() {
         .expect("send");
     assert!(app.codex_peer_notification.is_some());
 
-    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
+        .expect("drain");
     assert!(app.codex_peer_notification.is_none());
 
     // A restarted MCP subprocess starts with an empty inbox.
@@ -2009,7 +2047,7 @@ fn drain_clears_focused_codex_notification_and_reregister_resets_unread() {
         .expect("re-register");
     assert_eq!(listed_unread(&app, sender_id, codex_id), Some(0));
 
-    assert!(app.handle_peer_inbox_drained(9999, 1).is_err());
+    assert!(app.handle_peer_inbox_drained(9999, 1, &[]).is_err());
     app.shutdown();
 }
 
@@ -2029,7 +2067,8 @@ fn drain_keeps_an_already_typed_nudge_and_dedupe_does_not_count() {
         [PendingCodexPeerDelivery::SubmitAt(Instant::now())].into(),
     );
 
-    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
+        .expect("drain");
 
     assert!(
         matches!(
@@ -2077,7 +2116,8 @@ fn drain_clears_a_stalled_nudge_badge() {
     app.flush_pending_codex_peer_messages();
     assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
 
-    app.handle_peer_inbox_drained(codex_pane, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_pane, 1, &[])
+        .expect("drain");
     app.flush_pending_codex_peer_messages();
 
     assert!(!app.pending_codex_peer_messages.contains_key(&codex_pane));
@@ -2157,14 +2197,15 @@ fn peer_delivery_tracks_queued_nudged_and_drained() {
     assert_eq!(nudge_events(&rx), ["submitted"]);
     assert_eq!(app.ws().panes[&codex_id].peer_delivery, Some(nudged));
 
-    app.handle_peer_inbox_drained(codex_id, 1)
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
         .expect("partial drain");
     app.flush_pending_codex_peer_messages();
     let left = listed_delivery(&app, codex_id).expect("one left");
     assert_eq!((left.state, left.pending), (Nudged, 1));
     assert_eq!(left.since_ms, nudged.since_ms, "same state keeps its clock");
 
-    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
+        .expect("drain");
     app.flush_pending_codex_peer_messages();
     assert_eq!(listed_delivery(&app, codex_id), None);
     app.shutdown();
@@ -2209,7 +2250,8 @@ fn peer_delivery_owes_nothing_for_an_enter_after_a_full_drain() {
         )]
         .into(),
     );
-    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.handle_peer_inbox_drained(codex_id, 1, &[])
+        .expect("drain");
     app.flush_pending_codex_peer_messages();
     assert_eq!(listed_delivery(&app, codex_id), None);
     let (_sub, rx) = app.event_bus.subscribe();

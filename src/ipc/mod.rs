@@ -624,7 +624,18 @@ pub enum Request {
     /// nudge once nothing is left unread. Fire-and-forget from the
     /// client's side: an older server rejects the unknown `cmd` and
     /// the drain itself has already happened.
-    PeerInboxDrained { pane_id: usize, count: usize },
+    ///
+    /// `ids` (Issue #369) names the drained messages by
+    /// [`Event::PeerInbox`]'s `msg_id`, so two subscribers on one pane
+    /// reporting the same message clear it once. Omitted when empty;
+    /// the server then falls back to clearing `count` messages, oldest
+    /// first (a pre-#369 client, or messages from a pre-#369 server).
+    PeerInboxDrained {
+        pane_id: usize,
+        count: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ids: Vec<u64>,
+    },
     /// Rename or (re)assign the stable `name` / `role` of an existing
     /// pane. Both fields use three-state semantics over the wire:
     ///
@@ -1559,6 +1570,11 @@ pub enum Event {
         from_kind: Option<PeerClientKind>,
         body: String,
         ts_ms: u64,
+        /// Server-assigned id the receiving MCP subprocess echoes back
+        /// in [`Request::PeerInboxDrained`] (Issue #369). Absent from a
+        /// pre-#369 server.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        msg_id: Option<u64>,
     },
     /// `pane`'s agent drained `count` peer messages with
     /// `check_messages` (Issue #353). Reported by the pane's MCP peer
@@ -2616,6 +2632,29 @@ mod tests {
         assert_eq!(roundtrip(&r), r);
     }
 
+    /// Issue #369: a pre-#369 drain report (no `ids`) still decodes,
+    /// and one without ids serializes to the same bytes it always did.
+    #[test]
+    fn peer_inbox_drained_ids_are_optional_on_the_wire() {
+        let old = r#"{"cmd":"peer_inbox_drained","pane_id":3,"count":2}"#;
+        let parsed: Request = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            parsed,
+            Request::PeerInboxDrained {
+                pane_id: 3,
+                count: 2,
+                ids: vec![],
+            }
+        );
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), old);
+        let r = Request::PeerInboxDrained {
+            pane_id: 3,
+            count: 2,
+            ids: vec![7, 9],
+        };
+        assert_eq!(roundtrip(&r), r);
+    }
+
     // ─── Issue #306 wire compatibility ────────────────────
     //
     // `Subscribe` gained an optional `from_pane` exactly the way the
@@ -2996,6 +3035,7 @@ mod tests {
             from_kind: Some(PeerClientKind::Claude),
             body: "ping".into(),
             ts_ms: 42,
+            msg_id: None,
         };
         let parsed: Event = serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
         assert_eq!(parsed, ev);
@@ -3090,6 +3130,7 @@ mod tests {
             from_kind: None,
             body: "no name".into(),
             ts_ms: 1,
+            msg_id: None,
         };
         let s = serde_json::to_string(&ev).unwrap();
         assert!(!s.contains("\"from_name\""), "should omit from_name: {s}");

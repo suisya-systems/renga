@@ -669,6 +669,7 @@ mod tests {
                 from_kind: None,
                 body: "hi".into(),
                 ts_ms: 1,
+                msg_id: None,
             },
             Event::PeerInboxDrained {
                 pane: 3,
