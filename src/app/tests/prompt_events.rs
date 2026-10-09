@@ -89,3 +89,49 @@ fn waiting_input_fires_once_per_quiet_spell() {
     assert!(sweep(&mut app, &rx).is_empty(), "once per quiet spell");
     app.shutdown();
 }
+
+#[test]
+fn mode_changed_fires_on_each_claude_mode_switch_only() {
+    let (mut app, id) = quiet_app();
+    let (_sub, rx) = app.event_bus.subscribe();
+    let footer = |f: &str| format!("────────\r\n> \r\n────────\r\n  {f}");
+    let modes = |evs: Vec<ipc::Event>| -> Vec<(String, Option<String>)> {
+        evs.into_iter()
+            .filter_map(|e| match e {
+                ipc::Event::PaneModeChanged {
+                    mode, prev_mode, ..
+                } => Some((mode, prev_mode)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Not a Claude pane: the same footer text is ignored.
+    show(&mut app, id, &footer("? for shortcuts"));
+    assert!(modes(sweep(&mut app, &rx)).is_empty());
+
+    app.workspaces[0].panes[&id]
+        .claude_seen
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    show(&mut app, id, &footer("? for shortcuts"));
+    assert_eq!(modes(sweep(&mut app, &rx)), [("default".into(), None)]);
+    show(&mut app, id, &footer("⏸ plan mode on (shift+tab to cycle)"));
+    assert_eq!(
+        modes(sweep(&mut app, &rx)),
+        [("plan".into(), Some("default".into()))]
+    );
+    // Redraw in the same mode, then a frame with no reading: silent.
+    show(&mut app, id, &footer("⏸ plan mode on (shift+tab to cycle)"));
+    show(&mut app, id, &footer(""));
+    assert!(modes(sweep(&mut app, &rx)).is_empty());
+    show(
+        &mut app,
+        id,
+        &footer("⏵⏵ accept edits on (shift+tab to cycle)"),
+    );
+    assert_eq!(
+        modes(sweep(&mut app, &rx)),
+        [("accept_edits".into(), Some("plan".into()))]
+    );
+    app.shutdown();
+}

@@ -608,7 +608,8 @@ impl App {
     }
 
     /// Emit `pane_prompt_detected` / `pane_waiting_input` (Issue #72)
-    /// for every live pane in every tab. Throttled like the snapshot
+    /// and `pane_mode_changed` (Issue #49) for every live pane in every
+    /// tab. Throttled like the snapshot
     /// sweep; only panes that produced output since the last pass get
     /// their screen rescanned.
     pub(crate) fn tick_prompt_events(&mut self) {
@@ -628,6 +629,7 @@ impl App {
                     continue;
                 }
                 let mut found = None;
+                let mut mode = None;
                 if pane.output_seen {
                     let parser = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
                     // A scrolled-back view shows history, not the live
@@ -635,6 +637,9 @@ impl App {
                     // the user is back at the bottom.
                     if parser.screen().scrollback() == 0 {
                         found = Some(crate::pane::detect_interactive_prompt(parser.screen()));
+                        if pane.claude_ever_seen() {
+                            mode = crate::pane::detect_claude_mode(parser.screen());
+                        }
                     }
                 }
                 let name = || {
@@ -663,6 +668,16 @@ impl App {
                         pane.reported_prompt = None;
                     }
                     None => {}
+                }
+                if let Some(mode) = mode.filter(|m| pane.reported_mode != Some(*m)) {
+                    events.push(crate::ipc::Event::PaneModeChanged {
+                        id,
+                        name: name(),
+                        role: pane.role.clone(),
+                        mode: mode.to_string(),
+                        prev_mode: pane.reported_mode.replace(mode).map(str::to_string),
+                        ts_ms: crate::ipc::events::now_ms(),
+                    });
                 }
                 let idle = now.duration_since(pane.last_output_at);
                 if !pane.waiting_input_reported && idle >= WAITING_INPUT_IDLE {

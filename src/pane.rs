@@ -107,6 +107,9 @@ pub struct Pane {
     pub reported_prompt: Option<String>,
     /// Set once `pane_waiting_input` fired for the current quiet spell.
     pub waiting_input_reported: bool,
+    /// Claude permission mode last reported via `pane_mode_changed`
+    /// (Issue #49).
+    pub reported_mode: Option<&'static str>,
     /// Kill-on-close Job Object holding the pane shell and every
     /// descendant the kernel added since spawn. `None` when job
     /// creation/assignment failed at spawn time — `kill()` then falls
@@ -140,8 +143,24 @@ impl Pane {
 
         let pair = pty_system.openpty(pty_size).context("Failed to open PTY")?;
 
-        let shell = detect_shell();
+        #[cfg(test)]
+        let inert = INERT_SPAWN.with(|c| c.get());
+        #[cfg(not(test))]
+        let inert = false;
+        let shell = if inert {
+            PathBuf::from(if cfg!(windows) { "cmd.exe" } else { "sleep" })
+        } else {
+            detect_shell()
+        };
         let mut cmd = CommandBuilder::new(&shell);
+        if inert {
+            // Silent and long-lived; killed by `App::shutdown`.
+            if cfg!(windows) {
+                cmd.args(["/c", "pause >nul"]);
+            } else {
+                cmd.arg("3600");
+            }
+        }
 
         let shell_name = shell
             .file_name()
@@ -252,6 +271,7 @@ impl Pane {
             output_seen: false,
             reported_prompt: None,
             waiting_input_reported: false,
+            reported_mode: None,
             #[cfg(windows)]
             job,
         };
@@ -1402,6 +1422,45 @@ fn detect_prompt_in_lines(
     ))
 }
 
+/// Claude Code permission mode behind `pane_mode_changed` (Issue #49),
+/// read from the rows below the input box's bottom border, where
+/// Claude draws its mode line (`⏸ plan mode on (shift+tab to cycle)`).
+/// Text above the border (conversation, the input itself) never counts. Default mode has no mode line, so it's only read off the
+/// `? for shortcuts` hint shown while the input is empty; anything else
+/// (typing, a slash-command menu, a dialog) is `None` = no reading.
+pub fn detect_claude_mode(screen: &vt100::Screen) -> Option<&'static str> {
+    let (_, cols) = screen.size();
+    let lines: Vec<String> = screen.rows(0, cols).collect();
+    detect_mode_in_lines(&lines)
+}
+
+fn detect_mode_in_lines(lines: &[String]) -> Option<&'static str> {
+    const MODES: &[(&str, &str)] = &[
+        ("plan mode on", "plan"),
+        ("accept edits on", "accept_edits"),
+        ("bypass permissions on", "bypass_permissions"),
+        ("auto mode on", "auto"),
+    ];
+    let is_border = |l: &String| {
+        let t = l.trim();
+        t.starts_with(['─', '╰']) && t.chars().all(|c| matches!(c, '─' | '╰' | '╯'))
+    };
+    let below = lines.iter().rposition(is_border)? + 1;
+    for line in &lines[below..] {
+        let lower = line.to_lowercase();
+        if let Some((_, mode)) = MODES.iter().find(|(m, _)| lower.contains(m)) {
+            return Some(mode);
+        }
+        if lower.contains("shift+tab to cycle") {
+            return Some("unknown");
+        }
+        if lower.contains("? for shortcuts") {
+            return Some("default");
+        }
+    }
+    None
+}
+
 fn strip_csi_escapes(buf: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(buf.len());
     let mut i = 0;
@@ -1433,6 +1492,14 @@ fn trim_ascii_whitespace_end(buf: &[u8]) -> &[u8] {
 
 fn title_mentions_client(title: &str, needle: &str) -> bool {
     title.to_ascii_lowercase().contains(needle)
+}
+
+// Test-only, per-thread: spawn a silent child instead of the user's
+// shell so its startup prompt cannot overwrite a screen a test seeded
+// into the parser (Issue #357).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INERT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Detect the appropriate shell to launch.
@@ -1493,6 +1560,49 @@ fn detect_shell_unix() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mode_after(bytes: &str) -> Option<&'static str> {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(bytes.as_bytes());
+        detect_claude_mode(p.screen())
+    }
+
+    #[test]
+    fn detect_mode_reads_claude_mode_line() {
+        let ui = |footer: &str| {
+            format!("● Done.\r\n\r\n────────\r\n> \r\n────────\r\n  {footer}\r\n\r\n")
+        };
+        assert_eq!(mode_after(&ui("? for shortcuts")), Some("default"));
+        assert_eq!(
+            mode_after(&ui("⏸ plan mode on (shift+tab to cycle)")),
+            Some("plan")
+        );
+        assert_eq!(
+            mode_after(&ui("⏵⏵ accept edits on (shift+tab to cycle)")),
+            Some("accept_edits")
+        );
+        assert_eq!(
+            mode_after(&ui("⏵⏵ bypass permissions on (shift+tab to cycle)")),
+            Some("bypass_permissions")
+        );
+        assert_eq!(
+            mode_after(&ui("⏵⏵ turbo mode on (shift+tab to cycle)")),
+            Some("unknown")
+        );
+        // Typing hides the default hint: no reading rather than a guess.
+        assert_eq!(mode_after(&ui("")), None);
+        // Mode text in the input or above the box doesn't count.
+        assert_eq!(
+            mode_after("plan mode on\r\n────────\r\n> plan mode on\r\n────────\r\n"),
+            None
+        );
+        assert_eq!(mode_after("plan mode on\r\nline\r\n"), None);
+        // Old-style rounded input box.
+        assert_eq!(
+            mode_after("╭──────╮\r\n│ >    │\r\n╰──────╯\r\n  ? for shortcuts\r\n"),
+            Some("default")
+        );
+    }
 
     fn prompt_after(bytes: &[u8]) -> Option<(&'static str, String)> {
         let mut p = vt100::Parser::new(24, 80, 0);
