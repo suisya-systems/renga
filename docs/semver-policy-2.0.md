@@ -303,8 +303,9 @@ The capability set is readable directly out of the `hello` handshake by any
 IPC client — that is how the bundled client gates its requests — and, since
 #304, it is exposed to MCP peers too by the `server_info` tool (surface doc
 §1.16), and since #313 to any other program by `renga capabilities`, which
-prints the same payload as JSON (surface doc §2.2). A peer no longer has to send a gated request and read the token out of
-a `[server_too_old]` failure to find out what the server supports.
+prints the same payload as JSON (surface doc §2.2). A peer no longer has to
+send a gated request and read the token out of a `[server_too_old]` failure
+to find out what the server supports.
 
 Two properties of that tool matter to this policy:
 

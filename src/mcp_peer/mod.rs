@@ -6409,7 +6409,8 @@ Commands:
                 reason: "connect to renga-4711.sock: No such file or directory".into(),
             },
             ServerProbe::Detached {
-                reason: "RENGA_PANE_ID not set — Claude Code was not launched by renga".into(),
+                reason: "RENGA_PANE_ID not set — this process was not launched inside a renga pane"
+                    .into(),
             },
         ]
     }

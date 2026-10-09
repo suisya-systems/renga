@@ -206,6 +206,20 @@ renga inspect --name worker-foo --lines 10 --cursor
 
 空行も `text: ""` で保持されるので、行インデックスに依存した検知ロジックが書きやすい。
 
+### `renga capabilities`
+
+起動中の renga サーバーが広告している capability トークンを、capability で保護されたリクエストを送らずに取得します。出力は MCP ツール `server_info` と同じ JSON なので、MCP クライアントでないプログラム（シェルスクリプトや Python）も `jq` や `json.loads` で事前確認できます。
+
+```bash
+renga capabilities | jq -e '.effective_capabilities | index("spawn_tab")'
+```
+
+| フラグ | 意味 |
+|---|---|
+| `--text` | JSON の代わりに人が読む要約を出力 |
+
+まず `status`（`connected` / `unreachable` / `detached`）で分岐してください。`connected` 以外では `server.capabilities` と `effective_capabilities` は `null`（不明）であり、`[]`（何も対応しない）ではありません。終了コードは常に 0 です。呼び出し先サーバーを持つペインの中で実行してください。renga ペインの外から実行すると `detached` になります。
+
 ## エラーコード
 
 IPC 応答のエラーは `[<code>] <message>` 形式で stderr に出る (renga 0.5.7+)。code は wire ABI として安定しており、substring match ではなく code で分岐するのが推奨。

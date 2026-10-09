@@ -216,6 +216,20 @@ Example response:
 
 Blank rows are preserved with `text: ""` so callers can index lines positionally.
 
+### `renga capabilities`
+
+Report which capability tokens the running renga server advertises, without sending any capability-gated request. Prints the same JSON as the `server_info` MCP tool, so non-MCP programs (shell scripts, Python) can pre-flight a feature with `jq` / `json.loads`.
+
+```bash
+renga capabilities | jq -e '.effective_capabilities | index("spawn_tab")'
+```
+
+| Flag | Meaning |
+|---|---|
+| `--text` | Print a human-readable summary instead of JSON |
+
+Branch on `status` first: `connected`, `unreachable`, or `detached`. Outside `connected`, `server.capabilities` and `effective_capabilities` are `null` (unknown), not `[]` (none). The command always exits 0. Run it inside the pane whose server you will call: from outside a renga pane it reports `detached`.
+
 ## Error codes
 
 IPC failures surface as `Error: [<code>] <message>` on stderr (renga 0.5.7+). The code is a stable wire ABI; prefer matching on the code over substring-matching the message.
