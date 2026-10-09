@@ -220,6 +220,23 @@ The same orchestrator can stay in-band when the sibling pane stops at an interac
 - **Fire-and-forget.** `send_message` has no correlation id, no delivery confirmation. If Claude wants to reply, it calls `send_message(to_id=from_id, ...)` itself.
 - **Cross-tab delivery (#289).** Sends addressed by numeric pane id reach panes in any tab; the old silent cross-tab drop (and the enumeration resistance it provided) is gone — isolation between agents is now the job of the security layer around renga, not the tab boundary. Unresolvable targets (unknown or closed panes, or a name that only exists in another tab) fail with `pane_not_found`. Requires a server advertising the `cross_tab_peers` capability; against an older renga process the tools refuse with `[server_too_old]` instead of silently degrading to same-tab behavior — restart renga.
 
+## Warming up a new Codex worker
+
+Codex approvals for `check_messages` / `send_message` can be pane-local, so a freshly spawned Codex pane may stop on an approval menu the first time it handles a peer request — and the nudge then looks like it did nothing. renga does not do this warm-up for you (`spawn_codex_pane` only launches the pane); the documented path is:
+
+1. **Once per machine:** `renga mcp install --client codex --codex-auto-approve-peer-tools` (re-run with `--force` after upgrading renga). This preconfigures the two peer tools to auto-approve where Codex supports it.
+2. **Take an event cursor first:** call `poll_events(types=["pane_prompt_detected"], timeout_ms=0)` and keep the returned `next_since`. Without `since`, a poll starts at "now", and a prompt is reported once, so an approval menu that appears before your first poll would be missed.
+3. **Per new pane:** `spawn_codex_pane(name="worker-x", …)` returns before the worker's MCP server has registered, and a message sent earlier is not replayed. Wait until `list_peers` shows `worker-x`, then send it a throwaway request such as `send_message(to_id="worker-x", message="warm-up: call check_messages, then reply \"ready\"")`. This makes the pane hit both approvals (`check_messages`, then `send_message` for the reply) before any real work depends on it. If a menu appears, choose `Always allow`.
+4. **Watch for a stuck pane:** poll with `poll_events(types=["pane_prompt_detected"], since=<cursor>)`, passing each returned `next_since` into the next call. A `kind: "choice"` event for the worker's pane means an approval menu is on screen. `inspect_pane(target="worker-x", lines=20)` to read what is being asked, then answer it with `send_keys` (or have the user do so). Do not approve blindly.
+5. If no `ready` reply and no prompt event arrive within a bounded time (say 30 s), send the warm-up once more, or `inspect_pane` the worker. Send the real request once it has replied `ready`.
+
+## Residual failure modes and non-goals
+
+- **A first approval can still appear** even with `--codex-auto-approve-peer-tools`, depending on the Codex version and runtime. The warm-up above moves it before the real request; it does not remove it.
+- **renga does not auto-detect a blocked delivery.** `pane_prompt_detected` is a heuristic screen scan (#72) that you must subscribe to; renga does not correlate it with a pending peer delivery, and it is not shown in the pending badge or reported back to the sender. A sender that sees no reply should check the target with `inspect_pane`.
+- **No automatic warm-up and no auto-approval.** `spawn_codex_pane` does not send a warm-up message, and renga never answers an approval menu on its own; that stays a decision for the orchestrator or the user.
+- **No delivery confirmation.** `send_message` is fire-and-forget; a request parked behind an approval looks the same as one that was never read.
+
 ## Troubleshooting
 
 ### `list_peers` reports "renga not reachable from this peer client"

@@ -217,6 +217,23 @@ src/app.rs の handle_split を読んで要約して
 - **投げっぱなし**: `send_message` には相関 id や到達確認がありません。返事が欲しければ Claude が自分で `send_message(to_id=from_id, ...)` を呼びます。
 - **タブ横断配送 (#289)**: 数値 pane id を宛先にした送信はどのタブにも届きます。旧仕様の「別タブ宛は黙って捨てる」(とその列挙耐性) は撤廃されました — エージェント間の隔離は renga のタブ境界ではなく外側のセキュリティ層の仕事です。解決できない宛先 (存在しない / 閉じたペイン、別タブにしか無い名前) は `pane_not_found` エラーになります。`cross_tab_peers` capability を広告する server が必要で、古い renga プロセス相手には same-tab 挙動へ黙って劣化せず `[server_too_old]` で拒否します — renga を再起動してください。
 
+## 新しい Codex worker のウォームアップ
+
+Codex の `check_messages` / `send_message` の承認は pane ごとに出ることがあり、spawn 直後の Codex pane は最初の peer 依頼で承認メニューに止まることがあります。その場合、nudge は何も起こさなかったように見えます。renga はウォームアップを自動では行いません (`spawn_codex_pane` はペインを起動するだけです)。手順は次のとおりです。
+
+1. **マシンごとに 1 回:** `renga mcp install --client codex --codex-auto-approve-peer-tools` を実行します (renga をアップグレードしたら `--force` 付きで再実行)。Codex が対応する範囲で、2 つの peer ツールの承認を事前設定します。
+2. **先にイベントの cursor を取る:** `poll_events(types=["pane_prompt_detected"], timeout_ms=0)` を呼び、返ってきた `next_since` を保持します。`since` を省くと「今」から読み始め、同じプロンプトの通知は 1 回だけなので、最初の poll より前に出た承認メニューは取りこぼします。
+3. **新しい pane ごと:** `spawn_codex_pane(name="worker-x", …)` は worker の MCP サーバが登録される前に返り、それ以前に送ったメッセージは再送されません。`list_peers` に `worker-x` が現れるのを待ってから、捨てても構わない依頼を送ります。例: `send_message(to_id="worker-x", message="warm-up: check_messages を呼んで、\"ready\" と返信して")`。本番の依頼が来る前に、pane が 2 つの承認 (`check_messages`、返信用の `send_message`) を通ります。メニューが出たら `Always allow` を選びます。
+4. **止まった pane の検知:** `poll_events(types=["pane_prompt_detected"], since=<cursor>)` で poll し、返ってきた `next_since` を次の呼び出しへ渡し続けます。worker の pane で `kind: "choice"` のイベントが来たら、承認メニューが画面に出ています。`inspect_pane(target="worker-x", lines=20)` で内容を読み、`send_keys` で答える (またはユーザーに頼む) ようにしてください。中身を見ずに承認しないでください。
+5. 一定時間 (目安 30 秒) 経っても `ready` の返信もプロンプトのイベントも来なければ、ウォームアップをもう一度送るか、worker を `inspect_pane` で確認します。`ready` の返信が来てから本番の依頼を送ります。
+
+## 残る失敗モードと非目標
+
+- **`--codex-auto-approve-peer-tools` を付けても、最初の承認が出ることがあります。** Codex のバージョンと実行形態しだいです。上のウォームアップは承認を本番の依頼より前に動かすだけで、なくすものではありません。
+- **renga は配送のブロックを自動検知しません。** `pane_prompt_detected` は画面テキストのヒューリスティック検査 (#72) で、購読が必要です。renga はこれを保留中の peer 配送と結びつけず、pending バッジにも送信側への報告にも出しません。返信が来ない送信側は `inspect_pane` で相手を確認してください。
+- **自動ウォームアップも自動承認もありません。** `spawn_codex_pane` はウォームアップのメッセージを送らず、renga が承認メニューに自分で答えることもありません。判断はオーケストレータかユーザーに残ります。
+- **配送確認はありません。** `send_message` は fire-and-forget のため、承認待ちで止まった依頼と、そもそも読まれていない依頼は見分けられません。
+
 ## うまく動かないとき
 
 ### `list_peers` が "renga not reachable from this peer client" を返す
