@@ -248,7 +248,7 @@ impl PeerCtx {
                 return PeerCtx {
                     mode: Mode::Detached {
                         reason: format!(
-                            "{ENV_PANE_ID} not set — Claude Code was not launched by renga"
+                            "{ENV_PANE_ID} not set — this process was not launched inside a renga pane"
                         ),
                     },
                     events,
@@ -1439,8 +1439,8 @@ fn format_server_info(probe: &ServerProbe) -> String {
     }
 }
 
-fn handle_server_info(id: &Value, ctx: &PeerCtx) -> Value {
-    let probe = match &ctx.mode {
+fn probe_server_state(mode: &Mode) -> ServerProbe {
+    match mode {
         Mode::Connected { pane_id, endpoint } => match client::probe_server(endpoint) {
             Ok(handshake) => ServerProbe::Connected {
                 pane_id: *pane_id,
@@ -1456,7 +1456,29 @@ fn handle_server_info(id: &Value, ctx: &PeerCtx) -> Value {
         Mode::Detached { reason } => ServerProbe::Detached {
             reason: reason.clone(),
         },
-    };
+    }
+}
+
+/// Entry point for `renga capabilities` (#313): the `server_info`
+/// payload for callers that are not MCP clients. Same probe, same
+/// JSON, so the two surfaces cannot drift. Exits 0 in every state —
+/// like `server_info`, "could not ask" is an answer carried in
+/// `status`, not a failure.
+pub fn run_capabilities(text: bool) -> Result<()> {
+    let probe = probe_server_state(&PeerCtx::load().mode);
+    if text {
+        print!("{}", format_server_info(&probe));
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&server_info_payload(&probe))?
+        );
+    }
+    Ok(())
+}
+
+fn handle_server_info(id: &Value, ctx: &PeerCtx) -> Value {
+    let probe = probe_server_state(&ctx.mode);
     // Never a JSON-RPC error, in any state. A caller pre-flighting
     // capabilities must be able to read the answer out of a normal
     // result; turning "renga is unreachable" into a protocol error

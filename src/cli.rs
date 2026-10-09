@@ -294,6 +294,17 @@ pub enum IpcCommand {
     /// Code spawns it, inherits `RENGA_PANE_ID` / `RENGA_SOCKET` from
     /// the pane PTY, and never blocks on its own subcommand dispatch.
     McpPeer,
+    // Issue #313: lets non-MCP consumers read the capability set
+    // without speaking JSON-RPC.
+    /// Report the running renga server's capability tokens without
+    /// sending any capability-gated request. Prints the same JSON as
+    /// the `server_info` MCP tool; branch on `status` first. Always
+    /// exits 0: "detached" and "unreachable" are answers, not errors.
+    Capabilities {
+        /// Print a human-readable summary instead of JSON.
+        #[arg(long)]
+        text: bool,
+    },
     /// Manage the `renga-peers` MCP server registration in Claude
     /// Code or Codex. Thin wrapper around their MCP management
     /// commands so users get a one-liner instead of having to know the
@@ -524,6 +535,10 @@ impl IpcCommand {
             }),
             IpcCommand::McpPeer => anyhow::bail!(
                 "mcp-peer is a standalone subprocess, not an IPC request; \
+                 this variant must be intercepted before to_request() in main.rs"
+            ),
+            IpcCommand::Capabilities { .. } => anyhow::bail!(
+                "capabilities runs only the hello handshake, not an IPC request; \
                  this variant must be intercepted before to_request() in main.rs"
             ),
             IpcCommand::Mcp { .. } => anyhow::bail!(
@@ -1166,6 +1181,20 @@ mod tests {
         let cli = Cli::try_parse_from(["renga", "--show-macos-tip"]).unwrap();
         assert!(cli.show_macos_tip);
         assert!(!cli.no_macos_tip);
+    }
+
+    #[test]
+    fn parses_capabilities_json_by_default() {
+        let cli = Cli::try_parse_from(["renga", "capabilities"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(IpcCommand::Capabilities { text: false })
+        ));
+        let cli = Cli::try_parse_from(["renga", "capabilities", "--text"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(IpcCommand::Capabilities { text: true })
+        ));
     }
 
     #[test]

@@ -49,6 +49,7 @@ fn main() -> Result<()> {
     if let Some(cmd) = cli.command.as_ref() {
         match cmd {
             cli::IpcCommand::McpPeer => return mcp_peer::run(),
+            cli::IpcCommand::Capabilities { text } => return mcp_peer::run_capabilities(*text),
             cli::IpcCommand::Mcp { action } => return mcp_peer::install::run(action),
             _ => return run_ipc_client(cmd),
         }

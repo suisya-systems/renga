@@ -484,6 +484,7 @@ command (clap `conflicts_with_all`). When no selector is given, the default is
 | `renga events` | `--timeout <humantime::Duration>`, `--count <usize>` | `Request::Subscribe { from_pane: None }` + stream |
 | `renga rename` | `--name\|--id\|--focused`, `--to-name`/`--clear-name` (mutex), `--to-role`/`--clear-role` (mutex) | `Request::SetPaneIdentity` |
 | `renga mcp-peer` | — | (not IPC) handed off to `mcp_peer::run` for the stdio MCP loop |
+| `renga capabilities` | `--text` | `hello` handshake only — prints the `server_info` payload (§1.16) |
 | `renga mcp install` | `--client <claude\|codex>` (default `claude`), `--force`, `--codex-auto-approve-peer-tools` | (writes Claude/Codex MCP config; not an IPC call) |
 | `renga mcp uninstall` | `--client <claude\|codex>` | (config write) |
 | `renga mcp status` | `--client <claude\|codex>` | (config read) |
@@ -494,6 +495,18 @@ exactly as before. Its records do pick up the new display-only `tab` / `tab_name
 fields (§3.4); `same_tab` stays omitted, because a call with no caller pane has no
 tab for a record to share. No new flags: a CLI selector for the `tab` scope is
 deferred (§6.2), and the cross-tab surface is the `list_panes` MCP tool (§1.5).
+
+**`renga capabilities` (#313)**: the `server_info` tool (§1.16) for callers that
+are not MCP clients. Stdout is the same JSON object as `server_info`'s
+`structuredContent` — same keys, same nullability rules, built by the same code —
+so a shell script or a Python program reads it with `jq` / `json.loads` instead of
+implementing the JSON-RPC stdio handshake. `--text` prints `server_info`'s text
+block instead. It exits 0 in every state: `detached` and `unreachable` are answers
+carried in `status`, not failures. It reads `RENGA_PANE_ID` / `RENGA_SOCKET` /
+`RENGA_TOKEN` exactly as `renga mcp-peer` does, so run from outside a renga pane it
+reports `detached`; the answer is only meaningful when invoked inside the pane
+whose server you will call. `client.*` describes this binary, which for the CLI is
+the on-disk `renga`, not the running server.
 
 **`renga rename` (Q6)**: same semantics as `set_pane_identity` (§1.14) —
 three-state via `--to-X` / `--clear-X` flags. Frozen in v1.0.
