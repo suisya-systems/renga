@@ -933,6 +933,28 @@ pub enum PeerReceiveMode {
     Pull,
 }
 
+/// Where a peer message to a pull-mode (Codex) pane stands (Issue
+/// #352). `Queued`: renga still holds the nudge — waiting for the pane
+/// to look ready, for the human to answer the focused-pane overlay, or
+/// for the Enter after a typed nudge. `Nudged`: the nudge is in the
+/// pane and the message waits for `check_messages`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerDeliveryState {
+    Queued,
+    Nudged,
+}
+
+/// Pending peer delivery to one pull-mode pane; see [`PaneInfo::peer_delivery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerDeliveryStatus {
+    pub state: PeerDeliveryState,
+    /// Undrained peer messages (at least 1).
+    pub pending: usize,
+    /// Unix ms when the pane entered `state`.
+    pub since_ms: u64,
+}
+
 /// One entry in the `PeerList` response payload. Describes a single
 /// Claude-or-shell pane as a peer of the requesting pane. Spans every
 /// workspace since Issue #289 (previously scoped to the caller's tab).
@@ -1057,6 +1079,11 @@ pub struct PaneInfo {
     /// Optional pane-authored summary; see [`PeerInfo::summary`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Undelivered peer messages to this pull-mode (Codex) pane (Issue
+    /// #352). Absent when nothing is pending, for push-mode panes, and
+    /// from servers that predate #352.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_delivery: Option<PeerDeliveryStatus>,
 }
 
 /// Server reply to one [`Request`].
@@ -1449,6 +1476,32 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
         queued_ms: u64,
+        ts_ms: u64,
+    },
+    /// A Codex pane started holding a peer-message nudge (Issue #352):
+    /// its `peer_delivery` went to `queued`. `pending` counts the
+    /// undrained messages. Once per queued spell; more messages joining
+    /// the same nudge do not repeat it.
+    PeerNudgeQueued {
+        id: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        pending: usize,
+        ts_ms: u64,
+    },
+    /// renga finished handing a queued nudge to a Codex pane (Issue
+    /// #352): it pressed Enter after typing it, or typed it because the
+    /// human accepted the focused-pane overlay. The messages then wait
+    /// for `check_messages` (`peer_inbox_drained`).
+    PeerNudgeSubmitted {
+        id: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        pending: usize,
         ts_ms: u64,
     },
     /// Meta-event synthesized by the server when a slow subscriber
@@ -1993,6 +2046,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            peer_delivery: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         // Match on the quoted key forms: `"tab"` is a substring of
@@ -2021,6 +2075,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            peer_delivery: None,
         };
         let parsed: PaneInfo =
             serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
@@ -2452,6 +2507,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            peer_delivery: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(!s.contains("role"), "unexpected role field: {s}");
@@ -2475,6 +2531,7 @@ mod tests {
             kind: Some(PeerClientKind::Claude),
             receive_mode: Some(PeerReceiveMode::Push),
             summary: None,
+            peer_delivery: None,
         };
         let parsed: PaneInfo =
             serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
@@ -2499,6 +2556,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            peer_delivery: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(s.contains("\"x\":3"), "missing x: {s}");
@@ -2983,6 +3041,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            peer_delivery: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(!s.contains("summary"), "must omit summary key: {s}");
@@ -3006,6 +3065,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: Some("hello".into()),
+            peer_delivery: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(s.contains("\"summary\":\"hello\""), "{s}");

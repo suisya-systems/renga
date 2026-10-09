@@ -1124,6 +1124,20 @@ fn render_single_pane(
             } else {
                 Span::raw("")
             },
+            // Undrained peer messages to a Codex pane (#352).
+            match pane.peer_delivery {
+                Some(d) => {
+                    let (label, color) = match d.state {
+                        crate::ipc::PeerDeliveryState::Queued => ("queued", ACCENT_WARN),
+                        crate::ipc::PeerDeliveryState::Nudged => ("nudged", ACCENT_BLUE),
+                    };
+                    Span::styled(
+                        format!(" \u{2709} {label} {} ", d.pending),
+                        Style::default().fg(color),
+                    )
+                }
+                None => Span::raw(""),
+            },
             Span::styled(pane_title, title_style),
         ]))
         .title_bottom(bottom_title)

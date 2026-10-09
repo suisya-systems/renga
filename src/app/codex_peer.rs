@@ -602,7 +602,110 @@ impl App {
             .remove(&notification.target_pane);
         self.codex_peer_notification = None;
         self.dirty = true;
+        self.emit_peer_nudge_submitted(notification.target_pane);
         Ok(true)
+    }
+
+    fn pane_name_and_role(&self, pane_id: usize) -> (Option<String>, Option<String>) {
+        let Some((ws_idx, _)) = self.resolve_pane_across_workspaces(&PaneRef::Id(pane_id)) else {
+            return (None, None);
+        };
+        let ws = &self.workspaces[ws_idx];
+        (
+            ws.pane_names
+                .iter()
+                .find(|(_, id)| **id == pane_id)
+                .map(|(n, _)| n.clone()),
+            ws.panes.get(&pane_id).and_then(|p| p.role.clone()),
+        )
+    }
+
+    fn emit_peer_nudge_submitted(&self, pane_id: usize) {
+        let (name, role) = self.pane_name_and_role(pane_id);
+        self.event_bus.emit(ipc::Event::PeerNudgeSubmitted {
+            id: pane_id,
+            name,
+            role,
+            pending: self.peer_unread.get(&pane_id).copied().unwrap_or(0),
+            ts_ms: ipc::events::now_ms(),
+        });
+    }
+
+    /// What is still owed to `pane_id` (Issue #352): `Queued` while
+    /// renga holds the nudge (draft, overlay, or typed and awaiting its
+    /// Enter), `Nudged` once it is in the pane but `check_messages` has
+    /// not drained the messages. `pending` is the unread count, or the
+    /// nudge's own count for messages that never reached an inbox.
+    pub(crate) fn derive_peer_delivery(
+        &self,
+        pane_id: usize,
+    ) -> Option<(ipc::PeerDeliveryState, usize)> {
+        let unread = self.peer_unread.get(&pane_id).copied().unwrap_or(0);
+        let (holding, held) = match self
+            .pending_codex_peer_messages
+            .get(&pane_id)
+            .and_then(|q| q.front())
+        {
+            Some(PendingCodexPeerDelivery::Draft(_, n, _)) => (true, *n),
+            // Typed after a full drain: only the Enter is left, nothing is owed.
+            Some(PendingCodexPeerDelivery::SubmitAt(_)) => (true, 0),
+            None => self
+                .codex_peer_notification
+                .as_ref()
+                .filter(|n| n.target_pane == pane_id)
+                .map_or((false, 0), |n| (true, n.pending_count)),
+        };
+        let pending = if unread > 0 { unread } else { held };
+        if pending == 0 {
+            return None;
+        }
+        let state = if holding {
+            ipc::PeerDeliveryState::Queued
+        } else {
+            ipc::PeerDeliveryState::Nudged
+        };
+        Some((state, pending))
+    }
+
+    /// Refresh every pane's `peer_delivery` badge state and emit
+    /// `peer_nudge_queued` when a pane starts holding a nudge.
+    fn sync_peer_delivery(&mut self) {
+        let now_ms = ipc::events::now_ms();
+        for ws_idx in 0..self.workspaces.len() {
+            let pane_ids: Vec<usize> = self.workspaces[ws_idx].panes.keys().copied().collect();
+            for pane_id in pane_ids {
+                let derived = self.derive_peer_delivery(pane_id);
+                let Some(pane) = self.workspaces[ws_idx].panes.get_mut(&pane_id) else {
+                    continue;
+                };
+                let prev = pane.peer_delivery;
+                let next = derived.map(|(state, pending)| ipc::PeerDeliveryStatus {
+                    state,
+                    pending,
+                    since_ms: prev
+                        .filter(|p| p.state == state)
+                        .map_or(now_ms, |p| p.since_ms),
+                });
+                if prev == next {
+                    continue;
+                }
+                pane.peer_delivery = next;
+                self.dirty = true;
+                let queued = |d: Option<ipc::PeerDeliveryStatus>| {
+                    d.is_some_and(|d| d.state == ipc::PeerDeliveryState::Queued)
+                };
+                if queued(next) && !queued(prev) {
+                    let (name, role) = self.pane_name_and_role(pane_id);
+                    self.event_bus.emit(ipc::Event::PeerNudgeQueued {
+                        id: pane_id,
+                        name,
+                        role,
+                        pending: next.map_or(0, |d| d.pending),
+                        ts_ms: now_ms,
+                    });
+                }
+            }
+        }
     }
 
     pub(crate) fn pane_expects_codex_peer_delivery(&self, ws_index: usize, pane_id: usize) -> bool {
@@ -644,6 +747,7 @@ impl App {
         // turn the concatenation of the two (Issue #323).
         let user_turn_panes = self.panes_with_user_turn_in_flight();
         let mut empty_panes = Vec::new();
+        let mut submitted = Vec::new();
         for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
             let pane_ids: Vec<usize> = ws.panes.keys().copied().collect();
             for pane_id in pane_ids {
@@ -814,6 +918,7 @@ impl App {
                             if write_input_to_pane(pane, payload.as_bytes(), false).is_ok() {
                                 queue.pop_front();
                                 self.dirty = true;
+                                submitted.push(pane_id);
                             }
                         }
                     }
@@ -826,5 +931,9 @@ impl App {
         for pane_id in empty_panes {
             self.pending_codex_peer_messages.remove(&pane_id);
         }
+        for pane_id in submitted {
+            self.emit_peer_nudge_submitted(pane_id);
+        }
+        self.sync_peer_delivery();
     }
 }

@@ -135,6 +135,8 @@ If neither flag is set the stream runs until the server closes the connection �
 { "type": "pane_waiting_input",   "id": 3, "name": "worker-foo", "role": "worker", "idle_ms": 5000, "ts_ms": 1700000008000 }
 { "type": "pane_mode_changed",    "id": 3, "name": "worker-foo", "role": "worker", "mode": "accept_edits", "prev_mode": "plan", "ts_ms": 1700000009000 }
 { "type": "peer_nudge_stalled",   "id": 4, "name": "codex-worker", "queued_ms": 30012, "ts_ms": 1700000009500 }
+{ "type": "peer_nudge_queued",    "id": 4, "name": "codex-worker", "pending": 1, "ts_ms": 1700000009400 }
+{ "type": "peer_nudge_submitted", "id": 4, "name": "codex-worker", "pending": 1, "ts_ms": 1700000009450 }
 { "type": "peer_inbox_drained", "pane": 3, "count": 2, "ts_ms": 1700000009500 }
 { "type": "events_dropped", "count": 17, "ts_ms": 1700000010000 }
 { "type": "heartbeat",      "ts_ms": 1700000012000 }
@@ -145,6 +147,8 @@ If neither flag is set the stream runs until the server closes the connection �
 - `pane_waiting_input`: the pane has produced no PTY output for 5 s (#72). Once per quiet spell; the next output re-arms it. A silent long-running command looks the same.
 - `pane_mode_changed`: a Claude Code pane's permission mode changed (#49), read from the mode line under Claude's input box. `mode` is `default`, `plan`, `accept_edits`, `bypass_permissions`, `auto`, or `unknown` for an unrecognized `shift+tab to cycle` line; `prev_mode` is the previous reading (absent on the first). Default mode is only recognized from the `? for shortcuts` hint (input empty); frames without a mode line (typing, menus, dialogs) are not a change.
 - `peer_nudge_stalled`: a peer-message nudge for a Codex pane has waited `queued_ms` (at least 30 s) because the pane never looked ready to receive it (#354). Time while Codex shows it is busy (`esc to interrupt` / `tab to queue message`) does not count, so a long turn alone never triggers it. Once per stuck nudge; delivering or dropping it re-arms. The pane title shows `⚠ peer nudge stalled` meanwhile.
+- `peer_nudge_queued`: renga started holding a peer-message nudge for a Codex pane (#352): waiting for the pane to look ready, for the human to answer the focused-pane overlay, or for the Enter after a typed nudge. `pending` is the undrained message count. Once per queued spell. The pane border shows `✉ queued N` meanwhile.
+- `peer_nudge_submitted`: renga finished handing that nudge to the pane — pressed Enter after typing it, or typed it because the human accepted the overlay (#352). The messages now wait for `check_messages`; the border shows `✉ nudged N` until `peer_inbox_drained` brings the count to zero. `list_panes` reports the same state as `peer_delivery {state, pending, since_ms}`.
 - `peer_inbox_drained`: the agent in `pane` read `count` peer messages with `check_messages` (#353). Reported by the pane's MCP peer subprocess, so it means read, not just delivered. Codex (pull-mode) peers only.
 - `events_dropped`: number of events the server had to drop for this subscriber (slow consumer signal; reconcile with `renga list` if you see these).
 - `heartbeat`: emitted every 30 s as a keep-alive. Consumers can safely ignore it.

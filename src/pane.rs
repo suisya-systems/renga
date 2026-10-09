@@ -114,6 +114,9 @@ pub struct Pane {
     /// `CODEX_PEER_NUDGE_STALL_TIMEOUT` (Issue #354). Drives the title
     /// badge; `peer_nudge_stalled` fires on the false → true edge.
     pub peer_nudge_stalled: bool,
+    /// Pending peer delivery shown as a title badge and on `list_panes`
+    /// (Issue #352). Re-derived on every Codex peer flush.
+    pub peer_delivery: Option<crate::ipc::PeerDeliveryStatus>,
     /// Kill-on-close Job Object holding the pane shell and every
     /// descendant the kernel added since spawn. `None` when job
     /// creation/assignment failed at spawn time — `kill()` then falls
@@ -277,6 +280,7 @@ impl Pane {
             waiting_input_reported: false,
             reported_mode: None,
             peer_nudge_stalled: false,
+            peer_delivery: None,
             #[cfg(windows)]
             job,
         };

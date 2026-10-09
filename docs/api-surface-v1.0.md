@@ -623,7 +623,16 @@ unit variant, so on the wire it is the bare string `"all"`, the shape
 `PaneInfo` payload (used by `list` data, `set_pane_identity` ok data, embedded
 in `peer_list` data):
 `{ id, name?, role?, focused, x, y, width, height, cwd?, kind?, receive_mode?,
-summary?, tab?, tab_name?, same_tab? }`.
+summary?, tab?, tab_name?, same_tab?, peer_delivery? }`.
+
+`peer_delivery?` (#352, additive serde) is `{ state, pending, since_ms }` for a
+pull-mode (Codex) pane with undrained peer messages: `state` is `queued` (renga
+still holds the nudge — waiting for the pane to look ready, for the human to
+answer the focused-pane overlay, or for the Enter after a typed nudge) or
+`nudged` (the nudge is in the pane; the messages wait for `check_messages`),
+`pending` the undrained count, `since_ms` the Unix ms the pane entered `state`.
+Omitted when nothing is pending and by older servers. The pane border shows
+the same state as a `✉ queued N` / `✉ nudged N` badge.
 
 The last three are additive serde (`default` + `skip_serializing_if`), added in
 #329, and carry the same meaning as their `PeerInfo` namesakes below: `tab?`
@@ -737,6 +746,8 @@ residual direction is why this is a major-release change.
 | `pane_waiting_input` | `id`, `name?`, `role?`, `idle_ms`, `ts_ms` | Since #72. The pane has produced no PTY output for 5 s. Once per quiet spell; the next output re-arms it. Heuristic: a silent long-running command looks the same as a pane waiting for input. |
 | `pane_mode_changed` | `id`, `name?`, `role?`, `mode`, `prev_mode?`, `ts_ms` | Since #49. Claude Code permission mode read from the mode line under its input box (Claude panes only). `mode` is `default` (only recognized from the `? for shortcuts` hint), `plan`, `accept_edits`, `bypass_permissions`, `auto` or `unknown` (an unrecognized `shift+tab to cycle` line). `prev_mode` is the previous reading, absent on the first. Fires on change only; frames without a mode line are not a reading. |
 | `peer_nudge_stalled` | `id`, `name?`, `role?`, `queued_ms`, `ts_ms` | Since #354. A peer-message nudge for this Codex pane has been queued undelivered for `queued_ms` (≥ 30 s) because the pane never looked ready. Time while Codex shows it is busy (`esc to interrupt` / `tab to queue message`) does not count. Once per stuck nudge; delivering or dropping it re-arms. The pane title shows a badge meanwhile. |
+| `peer_nudge_queued` | `id`, `name?`, `role?`, `pending`, `ts_ms` | Since #352. The Codex pane's `peer_delivery` went to `queued`. Once per queued spell; messages joining the held nudge do not repeat it. |
+| `peer_nudge_submitted` | `id`, `name?`, `role?`, `pending`, `ts_ms` | Since #352. renga finished handing the held nudge to the pane: pressed Enter after typing it, or typed it on the human's accept of the focused-pane overlay. `pending` is the unread count at that moment. |
 | `peer_inbox_drained` | `pane: usize`, `count: usize`, `ts_ms` | Since #353. `pane`'s agent drained `count` peer messages with `check_messages`, as reported by its MCP peer subprocess. Pull-mode (Codex) peers only. |
 | `events_dropped` | `count: u64`, `ts_ms` | Synthesized when a slow subscriber missed events. Per-subscriber. |
 | `heartbeat` | `ts_ms` | Periodic; only purpose is to detect half-closed connections. Buffer cap 256/subscriber. |

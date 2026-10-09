@@ -2099,3 +2099,118 @@ fn a_send_that_never_reached_an_inbox_is_not_unread() {
     assert!(app.pending_codex_peer_messages.contains_key(&codex_id));
     app.shutdown();
 }
+
+fn listed_delivery(app: &App, pane: usize) -> Option<ipc::PeerDeliveryStatus> {
+    app.pane_infos_for_workspace(0, None)
+        .into_iter()
+        .find(|p| p.id == pane)
+        .expect("pane listed")
+        .peer_delivery
+}
+
+fn nudge_events(rx: &std::sync::mpsc::Receiver<ipc::Event>) -> Vec<&'static str> {
+    rx.try_iter()
+        .filter_map(|e| match e {
+            ipc::Event::PeerNudgeQueued { .. } => Some("queued"),
+            ipc::Event::PeerNudgeSubmitted { .. } => Some("submitted"),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn peer_delivery_tracks_queued_nudged_and_drained() {
+    // Issue #352: queued -> (typed, still queued) -> submitted/nudged -> drained.
+    use ipc::PeerDeliveryState::{Nudged, Queued};
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id, _inbox) = codex_sibling_unfocused(&mut app);
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.ws_mut().panes[&codex_id]
+        .parser
+        .lock()
+        .unwrap()
+        .process(b"\x1b[?25lworking");
+    for body in ["one", "two"] {
+        app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), body.into())
+            .expect("send");
+    }
+    app.flush_pending_codex_peer_messages();
+    let queued = listed_delivery(&app, codex_id).expect("queued");
+    assert_eq!((queued.state, queued.pending), (Queued, 2));
+    assert_eq!(nudge_events(&rx), ["queued"]);
+
+    // Ready: the nudge is typed but its Enter is still owed.
+    app.ws_mut().panes[&codex_id]
+        .parser
+        .lock()
+        .unwrap()
+        .process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send\r\n");
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(listed_delivery(&app, codex_id), Some(queued));
+    assert!(nudge_events(&rx).is_empty(), "same queued spell, no repeat");
+
+    app.pending_codex_peer_messages.get_mut(&codex_id).unwrap()[0] =
+        PendingCodexPeerDelivery::SubmitAt(Instant::now());
+    app.flush_pending_codex_peer_messages();
+    let nudged = listed_delivery(&app, codex_id).expect("nudged");
+    assert_eq!((nudged.state, nudged.pending), (Nudged, 2));
+    assert_eq!(nudge_events(&rx), ["submitted"]);
+    assert_eq!(app.ws().panes[&codex_id].peer_delivery, Some(nudged));
+
+    app.handle_peer_inbox_drained(codex_id, 1)
+        .expect("partial drain");
+    app.flush_pending_codex_peer_messages();
+    let left = listed_delivery(&app, codex_id).expect("one left");
+    assert_eq!((left.state, left.pending), (Nudged, 1));
+    assert_eq!(left.since_ms, nudged.since_ms, "same state keeps its clock");
+
+    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(listed_delivery(&app, codex_id), None);
+    app.shutdown();
+}
+
+#[test]
+fn peer_delivery_overlay_accept_counts_as_submitted() {
+    use ipc::PeerDeliveryState::{Nudged, Queued};
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id, _inbox) = codex_sibling_unfocused(&mut app);
+    app.handle_focus(&ipc::PaneRef::Id(codex_id), None)
+        .expect("focus codex");
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "hi".into())
+        .expect("send");
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(
+        listed_delivery(&app, codex_id).map(|d| d.state),
+        Some(Queued)
+    );
+
+    assert!(app.accept_codex_peer_notification().expect("accept"));
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(
+        listed_delivery(&app, codex_id).map(|d| d.state),
+        Some(Nudged)
+    );
+    assert_eq!(nudge_events(&rx), ["queued", "submitted"]);
+    app.shutdown();
+}
+
+#[test]
+fn peer_delivery_owes_nothing_for_an_enter_after_a_full_drain() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id, _inbox) = codex_sibling_unfocused(&mut app);
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "x".into())
+        .expect("send");
+    app.pending_codex_peer_messages.insert(
+        codex_id,
+        [PendingCodexPeerDelivery::SubmitAt(
+            Instant::now() + Duration::from_secs(60),
+        )]
+        .into(),
+    );
+    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(listed_delivery(&app, codex_id), None);
+    app.shutdown();
+}

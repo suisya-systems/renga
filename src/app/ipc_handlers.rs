@@ -294,6 +294,7 @@ impl App {
                 kind,
                 receive_mode: kind.map(|k| k.receive_mode()),
                 summary,
+                peer_delivery: pane.and_then(|p| p.peer_delivery),
             });
         }
         infos
@@ -452,6 +453,7 @@ impl App {
                 .copied()
                 .map(|k| k.receive_mode()),
             summary: pane.summary.clone(),
+            peer_delivery: pane.peer_delivery,
         })
     }
 
@@ -534,6 +536,7 @@ impl App {
                 .copied()
                 .map(|k| k.receive_mode()),
             summary: pane.summary.clone(),
+            peer_delivery: pane.peer_delivery,
         })
     }
 

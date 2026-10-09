@@ -49,6 +49,18 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   inbox are counted (not ones sent before its subprocess subscribed or
   dropped on a full queue); the count resets when the subprocess
   (re)registers, so messages stranded by a dead subprocess clear then.
+- **Codex peer delivery state: border badge, `peer_delivery`, and
+  `peer_nudge_queued` / `peer_nudge_submitted` events.** (#352) A peer
+  message to a Codex pane used to pass through queued / typed / submitted
+  states invisibly. The pane border now shows `✉ queued N` while renga
+  holds the nudge and `✉ nudged N` once it is in the pane but
+  `check_messages` has not drained it; the badge clears on drain.
+  `list_panes` records carry the same state as `peer_delivery {state,
+  pending, since_ms}` (additive, omitted when nothing is pending), and
+  `poll_events` / `renga events` get `peer_nudge_queued` (renga started
+  holding a nudge) and `peer_nudge_submitted` (renga finished handing it
+  to the pane). New `Event` variants are minor under the forward-compat
+  rule.
 
 ### Changed
 
