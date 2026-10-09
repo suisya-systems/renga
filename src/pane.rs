@@ -1407,9 +1407,9 @@ fn detect_prompt_in_lines(
 }
 
 /// Claude Code permission mode behind `pane_mode_changed` (Issue #49),
-/// read from the last two non-blank screen rows, where Claude draws its
-/// mode line under the input box (`⏸ plan mode on (shift+tab to
-/// cycle)`). Default mode has no mode line, so it's only read off the
+/// read from the rows below the input box's bottom border, where
+/// Claude draws its mode line (`⏸ plan mode on (shift+tab to cycle)`).
+/// Text above the border (conversation, the input itself) never counts. Default mode has no mode line, so it's only read off the
 /// `? for shortcuts` hint shown while the input is empty; anything else
 /// (typing, a slash-command menu, a dialog) is `None` = no reading.
 pub fn detect_claude_mode(screen: &vt100::Screen) -> Option<&'static str> {
@@ -1425,7 +1425,12 @@ fn detect_mode_in_lines(lines: &[String]) -> Option<&'static str> {
         ("bypass permissions on", "bypass_permissions"),
         ("auto mode on", "auto"),
     ];
-    for line in lines.iter().rev().filter(|l| !l.trim().is_empty()).take(2) {
+    let is_border = |l: &String| {
+        let t = l.trim();
+        t.starts_with(['─', '╰']) && t.chars().all(|c| matches!(c, '─' | '╰' | '╯'))
+    };
+    let below = lines.iter().rposition(is_border)? + 1;
+    for line in &lines[below..] {
         let lower = line.to_lowercase();
         if let Some((_, mode)) = MODES.iter().find(|(m, _)| lower.contains(m)) {
             return Some(mode);
@@ -1562,8 +1567,17 @@ mod tests {
         );
         // Typing hides the default hint: no reading rather than a guess.
         assert_eq!(mode_after(&ui("")), None);
-        // Mode text higher up (conversation, input) doesn't count.
-        assert_eq!(mode_after("plan mode on\r\nline\r\nline\r\n"), None);
+        // Mode text in the input or above the box doesn't count.
+        assert_eq!(
+            mode_after("plan mode on\r\n────────\r\n> plan mode on\r\n────────\r\n"),
+            None
+        );
+        assert_eq!(mode_after("plan mode on\r\nline\r\n"), None);
+        // Old-style rounded input box.
+        assert_eq!(
+            mode_after("╭──────╮\r\n│ >    │\r\n╰──────╯\r\n  ? for shortcuts\r\n"),
+            Some("default")
+        );
     }
 
     fn prompt_after(bytes: &[u8]) -> Option<(&'static str, String)> {
