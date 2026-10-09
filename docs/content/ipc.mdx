@@ -124,6 +124,7 @@ renga events --timeout 5s --count 10
 { "type": "pane_prompt_detected", "id": 3, "name": "worker-foo", "role": "worker", "kind": "choice", "prompt": "Do you want to proceed?", "ts_ms": 1700000006000 }
 { "type": "pane_waiting_input",   "id": 3, "name": "worker-foo", "role": "worker", "idle_ms": 5000, "ts_ms": 1700000008000 }
 { "type": "pane_mode_changed",    "id": 3, "name": "worker-foo", "role": "worker", "mode": "accept_edits", "prev_mode": "plan", "ts_ms": 1700000009000 }
+{ "type": "peer_nudge_stalled",   "id": 4, "name": "codex-worker", "queued_ms": 30012, "ts_ms": 1700000009500 }
 { "type": "peer_inbox_drained", "pane": 3, "count": 2, "ts_ms": 1700000009500 }
 { "type": "events_dropped", "count": 17, "ts_ms": 1700000010000 }
 { "type": "heartbeat",      "ts_ms": 1700000012000 }
@@ -133,6 +134,7 @@ renga events --timeout 5s --count 10
 - `pane_prompt_detected`: pane の画面に対話プロンプトが出た (#72)。画面テキストのヒューリスティック検査で、`kind` は `choice` (Claude / Codex の `1. Yes` 承認メニュー)、`yes_no` (カーソル行の `(y/n)` 系)、`password` (カーソル行の `password:` / `passphrase:`)。`prompt` は一致した行 (`choice` は質問行)。同じプロンプトにつき 1 回で、画面から消えるか内容が変わると再度出る
 - `pane_waiting_input`: pane の PTY 出力が 5 秒止まった (#72)。静かな区間ごとに 1 回で、次の出力で再度有効になる。出力のない長時間コマンドも同じに見える点に注意
 - `pane_mode_changed`: Claude Code pane の permission mode が変わった (#49)。Claude の入力欄の下に出る mode 行から読む。`mode` は `default` / `plan` / `accept_edits` / `bypass_permissions` / `auto`、知らない `shift+tab to cycle` 行は `unknown`。`prev_mode` は直前の読み取り値 (初回は無し)。`default` は `? for shortcuts` の表示 (入力欄が空のとき) でしか判定できず、mode 行が見えないフレーム (入力中・メニュー・ダイアログ) は変化として扱わない
+- `peer_nudge_stalled`: Codex pane 宛ての peer message の nudge が、pane が受け取れる状態に見えないまま `queued_ms` (30 秒以上) キューに残っている (#354)。Codex が busy 表示 (`esc to interrupt` / `tab to queue message`) の間は数えないので、長いターンだけでは出ない。詰まった nudge 1 件につき 1 回で、配送されるか破棄されると再度有効になる。その間 pane のタイトルに `⚠ peer nudge stalled` が出る
 - `peer_inbox_drained`: `pane` のエージェントが `check_messages` で peer message を `count` 件読んだ (#353)。pane の MCP peer サブプロセスが報告するので、inbox に届いただけでなく読まれたことを意味する。Codex (pull 型) peer のみ
 - `events_dropped`: 購読が遅くて event がドロップされた合算数 (subscriber 側でリコンサイル推奨)
 - `heartbeat`: 30 秒おきに出る keep-alive。接続が生きていることの確認以外に意味はない (無視して良い)

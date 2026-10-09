@@ -259,9 +259,9 @@ fn codex_ready_for_input_string_alone_is_not_enough() {
         codex_readiness_of(b"\x1b[2J\x1b[Hready for input", 8, 40),
         TurnReadiness::NotReady
     );
-    // ...while the existing nudge gate still accepts it, unchanged.
+    // ...while the nudge gate still accepts it, given a blank caret row.
     let mut app = inert_app(40, 80);
-    let pane_id = seed_focused_pane_screen(&mut app, b"\x1b[2J\x1b[Hready for input");
+    let pane_id = seed_focused_pane_screen(&mut app, b"\x1b[2J\x1b[Hready for input\r\n");
     let pane = app.ws().panes.get(&pane_id).expect("pane");
     assert!(App::codex_peer_delivery_ready(true, pane));
     app.shutdown();
@@ -1066,6 +1066,7 @@ fn a_pending_codex_nudge_blocks_a_user_turn_to_that_pane() {
                 from_kind: None,
             },
             1,
+            Instant::now(),
         ));
     let err = user_turn_result(&mut app, pane_id, ipc::PaneRef::Id(pane_id), "/loop")
         .expect_err("nudge in flight");
@@ -1565,6 +1566,7 @@ fn a_nudge_queued_mid_delivery_is_not_typed_into_the_composer() {
                 from_kind: None,
             },
             1,
+            Instant::now(),
         ));
     app.flush_pending_codex_peer_messages();
 
@@ -1829,6 +1831,7 @@ fn no_refusal_path_anywhere_writes_a_byte() {
                             from_kind: None,
                         },
                         1,
+                        Instant::now(),
                     ));
             }),
             ipc::err_code::USER_TURN_NOT_READY,

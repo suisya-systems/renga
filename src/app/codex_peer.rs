@@ -3,6 +3,11 @@ use super::*;
 pub(crate) const CODEX_APPEND_ENTER_DELAY: Duration = Duration::from_millis(75);
 pub(crate) const CODEX_PEER_NUDGE_SUBMIT_DELAY: Duration = Duration::from_millis(1000);
 pub(crate) const CODEX_APPEND_ENTER_SNAPSHOT_LINES: usize = 8;
+/// How long a nudge may sit undelivered as a draft before the pane is
+/// reported as stalled (`peer_nudge_stalled` + title badge). A Codex UI
+/// change that the readiness heuristic no longer recognizes would
+/// otherwise keep the nudge queued forever without any signal (#354).
+pub(crate) const CODEX_PEER_NUDGE_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Smallest terminal (cols, rows) the focused-pane notification box
 /// can be drawn in. Below it the overlay must not count as visible,
 /// or Esc / Alt+Enter would be swallowed by a box nobody can see.
@@ -35,13 +40,23 @@ pub(crate) struct CodexPeerNotificationState {
     /// again. Before this, any stray keystroke discarded it and the
     /// queued request was never nudged at all (Issue #197).
     pub(crate) snoozed: bool,
+    /// When the oldest message this notification covers was first
+    /// queued. Carried across the overlay <-> deferred-nudge handoffs
+    /// so a focus round trip does not restart the stall clock (#354).
+    pub(crate) queued_at: Instant,
 }
 
 impl CodexPeerNotificationState {
-    fn register_messages(&mut self, message: PendingCodexPeerMessage, count: usize) {
+    fn register_messages(
+        &mut self,
+        message: PendingCodexPeerMessage,
+        count: usize,
+        queued_at: Instant,
+    ) {
         self.message = message;
         self.pending_count = self.pending_count.saturating_add(count);
         self.snoozed = false;
+        self.queued_at = self.queued_at.min(queued_at);
     }
 }
 
@@ -49,8 +64,9 @@ impl CodexPeerNotificationState {
 pub(crate) enum PendingCodexPeerDelivery {
     /// Latest message plus how many arrived since the last nudge, so a
     /// notification parked in the queue keeps its count when promoted
-    /// back to the overlay.
-    Draft(PendingCodexPeerMessage, usize),
+    /// back to the overlay. The `Instant` is when the oldest of them
+    /// was queued, which is what the stall timeout measures.
+    Draft(PendingCodexPeerMessage, usize, Instant),
     SubmitAt(Instant),
 }
 
@@ -90,11 +106,6 @@ pub(crate) fn screen_tail_lines(screen: &vt100::Screen) -> Vec<String> {
     lines
 }
 
-fn pane_screen_tail_lines(pane: &Pane) -> Option<Vec<String>> {
-    let parser = pane.parser.lock().ok()?;
-    Some(screen_tail_lines(parser.screen()))
-}
-
 pub(crate) fn screen_has_visible_text(screen: &vt100::Screen) -> bool {
     let (rows, cols) = screen.size();
     for row in 0..rows {
@@ -107,13 +118,6 @@ pub(crate) fn screen_has_visible_text(screen: &vt100::Screen) -> bool {
         }
     }
     false
-}
-
-fn pane_screen_has_visible_text(pane: &Pane) -> bool {
-    let Ok(parser) = pane.parser.lock() else {
-        return false;
-    };
-    screen_has_visible_text(parser.screen())
 }
 
 pub(crate) fn codex_prompt_allows_peer_nudge_on_screen(screen: &vt100::Screen) -> Option<bool> {
@@ -164,19 +168,48 @@ pub(crate) fn codex_prompt_allows_peer_nudge_on_screen(screen: &vt100::Screen) -
     Some(true)
 }
 
-fn codex_prompt_allows_peer_nudge(pane: &Pane) -> Option<bool> {
-    let Ok(parser) = pane.parser.lock() else {
-        return None;
-    };
-    codex_prompt_allows_peer_nudge_on_screen(parser.screen())
+/// Codex is mid-turn: its working line or queue hint is on screen.
+fn codex_screen_busy(screen: &vt100::Screen) -> bool {
+    let tail = screen_tail_lines(screen).join("\n").to_ascii_lowercase();
+    tail.contains("esc to interrupt") || tail.contains("tab to queue message")
 }
 
-fn codex_peer_screen_tail(pane: &Pane) -> Option<String> {
-    Some(
-        pane_screen_tail_lines(pane)?
-            .join("\n")
-            .to_ascii_lowercase(),
-    )
+/// Whether a Codex screen may receive a typed peer nudge right now.
+/// Pinned against real captured Codex screens in
+/// `src/app/tests/fixtures/codex/`.
+pub(crate) fn codex_peer_screen_ready(screen: &vt100::Screen) -> bool {
+    if codex_screen_busy(screen) {
+        return false;
+    }
+    let tail = screen_tail_lines(screen).join("\n").to_ascii_lowercase();
+    if !screen_has_visible_text(screen) {
+        return false;
+    }
+    if let Some(allowed) = codex_prompt_allows_peer_nudge_on_screen(screen) {
+        return allowed;
+    }
+    // No `›` composer, so only a banner vouches for readiness. Demand
+    // what the composer path proves with the caret as well — a visible
+    // cursor at the edit position of an otherwise blank row — or the
+    // nudge lands appended to whatever draft the human left (#354).
+    if !(tail.contains("enter to send") || tail.contains("ready for input")) {
+        return false;
+    }
+    if screen.hide_cursor() {
+        return false;
+    }
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let cols = screen.size().1;
+    let line: String = (0..cols)
+        .filter_map(|col| screen.cell(cursor_row, col))
+        .map(|cell| cell.contents())
+        .collect();
+    // An optional prompt glyph (`>`, `▌`, ...) and nothing else.
+    let rest = line.trim_start();
+    let rest = rest
+        .strip_prefix(|c: char| !c.is_alphanumeric())
+        .unwrap_or(rest);
+    cursor_col <= 2 && rest.trim().is_empty()
 }
 
 fn pending_startup_looks_like_codex(pane: &Pane) -> bool {
@@ -287,10 +320,19 @@ impl App {
                 && self.workspaces[target_ws].focus_target == FocusTarget::Pane
                 && self.workspaces[target_ws].focused_pane_id == target_id;
             if target_is_focused {
-                self.pending_codex_peer_messages.remove(&target_id);
+                // A draft still queued here is the same undelivered
+                // nudge; its age carries into the overlay (#354).
+                let queued_at = match self
+                    .pending_codex_peer_messages
+                    .remove(&target_id)
+                    .and_then(|mut q| q.pop_front())
+                {
+                    Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => queued_at,
+                    _ => Instant::now(),
+                };
                 match self.codex_peer_notification.as_mut() {
                     Some(notification) if notification.target_pane == target_id => {
-                        notification.register_messages(message, 1);
+                        notification.register_messages(message, 1, queued_at);
                     }
                     _ => {
                         self.codex_peer_notification = Some(CodexPeerNotificationState {
@@ -298,12 +340,13 @@ impl App {
                             message,
                             pending_count: 1,
                             snoozed: false,
+                            queued_at,
                         });
                     }
                 }
                 self.dirty = true;
             } else {
-                self.push_pending_codex_peer_nudge(target_id, message, 1);
+                self.push_pending_codex_peer_nudge(target_id, message, 1, Instant::now());
             }
             *self.peer_unread.entry(target_id).or_default() += 1;
         }
@@ -369,7 +412,7 @@ impl App {
     /// still in the inbox and still needs its nudge.
     ///
     /// ponytail: counts, not message ids. A message lost before the
-    /// MCP subprocess queued it (event-bus drop, send racing startup)
+    /// MCP subprocess queued it (event-bus drop for a slow subscriber)
     /// keeps `unread` above zero until the subprocess re-registers;
     /// per-message ids if that residue matters.
     pub(crate) fn handle_peer_inbox_drained(
@@ -388,6 +431,13 @@ impl App {
         let left = unread.saturating_sub(count);
         if left > 0 {
             self.peer_unread.insert(pane_id, left);
+            if let Some(n) = self
+                .codex_peer_notification
+                .as_mut()
+                .filter(|n| n.target_pane == pane_id)
+            {
+                n.pending_count = n.pending_count.min(left);
+            }
         } else {
             // An already-typed nudge (`SubmitAt`) is left to finish:
             // dropping it would strand the half-written draft in the
@@ -422,13 +472,15 @@ impl App {
         pane_id: usize,
         message: PendingCodexPeerMessage,
         count: usize,
+        queued_at: Instant,
     ) {
         let queue = self.pending_codex_peer_messages.entry(pane_id).or_default();
         match queue.front_mut() {
-            None => queue.push_back(PendingCodexPeerDelivery::Draft(message, count)),
-            Some(PendingCodexPeerDelivery::Draft(latest, pending)) => {
+            None => queue.push_back(PendingCodexPeerDelivery::Draft(message, count, queued_at)),
+            Some(PendingCodexPeerDelivery::Draft(latest, pending, oldest)) => {
                 *latest = message;
                 *pending = pending.saturating_add(count);
+                *oldest = (*oldest).min(queued_at);
             }
             // The nudge is already typed; check_messages drains this one too.
             Some(PendingCodexPeerDelivery::SubmitAt(_)) => {}
@@ -513,6 +565,7 @@ impl App {
                 notification.target_pane,
                 notification.message,
                 notification.pending_count,
+                notification.queued_at,
             );
         }
         self.codex_peer_notification = None;
@@ -570,19 +623,10 @@ impl App {
         if !registered_codex && !pane.is_codex_running() {
             return false;
         }
-        let Some(tail) = codex_peer_screen_tail(pane) else {
+        let Ok(parser) = pane.parser.lock() else {
             return false;
         };
-        if tail.contains("esc to interrupt") || tail.contains("tab to queue message") {
-            return false;
-        }
-        if !pane_screen_has_visible_text(pane) {
-            return false;
-        }
-        if let Some(allowed) = codex_prompt_allows_peer_nudge(pane) {
-            return allowed;
-        }
-        tail.contains("enter to send") || tail.contains("ready for input")
+        codex_peer_screen_ready(parser.screen())
     }
 
     pub(crate) fn flush_pending_codex_peer_messages(&mut self) {
@@ -598,6 +642,61 @@ impl App {
         for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
             let pane_ids: Vec<usize> = ws.panes.keys().copied().collect();
             for pane_id in pane_ids {
+                // Report a nudge that has waited out the stall timeout,
+                // whatever is holding it back (unrecognized screen,
+                // overlay unanswered, user turn in flight). The queued
+                // draft and the overlay share one clock, so a focus
+                // round trip neither clears nor re-fires it. Recomputed
+                // every flush, so any path that delivers or drops the
+                // nudge clears it. A busy Codex is expected to hold the
+                // nudge, so the clock does not run while it is busy: it
+                // is held at `now` and only counts once the turn ends.
+                let clock = match self
+                    .pending_codex_peer_messages
+                    .get_mut(&pane_id)
+                    .and_then(|q| q.front_mut())
+                {
+                    Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => Some(queued_at),
+                    _ => None,
+                }
+                .or_else(|| {
+                    self.codex_peer_notification
+                        .as_mut()
+                        .filter(|n| n.target_pane == pane_id)
+                        .map(|n| &mut n.queued_at)
+                });
+                let stalled_for = clock
+                    .map(|queued_at| {
+                        let busy = ws.panes.get(&pane_id).is_some_and(|pane| {
+                            pane.parser
+                                .lock()
+                                .is_ok_and(|parser| codex_screen_busy(parser.screen()))
+                        });
+                        if busy {
+                            *queued_at = now;
+                        }
+                        now.saturating_duration_since(*queued_at)
+                    })
+                    .filter(|waited| *waited >= CODEX_PEER_NUDGE_STALL_TIMEOUT);
+                if let Some(pane) = ws.panes.get_mut(&pane_id) {
+                    if pane.peer_nudge_stalled != stalled_for.is_some() {
+                        pane.peer_nudge_stalled = stalled_for.is_some();
+                        self.dirty = true;
+                        if let Some(waited) = stalled_for {
+                            self.event_bus.emit(ipc::Event::PeerNudgeStalled {
+                                id: pane_id,
+                                name: ws
+                                    .pane_names
+                                    .iter()
+                                    .find(|(_, id)| **id == pane_id)
+                                    .map(|(n, _)| n.clone()),
+                                role: pane.role.clone(),
+                                queued_ms: waited.as_millis() as u64,
+                                ts_ms: ipc::events::now_ms(),
+                            });
+                        }
+                    }
+                }
                 if user_turn_panes.contains(&pane_id) {
                     continue;
                 }
@@ -633,12 +732,12 @@ impl App {
                         // the two conversions cannot fight. If the
                         // overlay is busy elsewhere, stay queued and
                         // retry on a later flush.
-                        Some(PendingCodexPeerDelivery::Draft(message, count))
+                        Some(PendingCodexPeerDelivery::Draft(message, count, queued_at))
                             if self.overlay.is_none() =>
                         {
                             match self.codex_peer_notification.as_mut() {
                                 Some(n) if n.target_pane == pane_id => {
-                                    n.register_messages(message, count);
+                                    n.register_messages(message, count, queued_at);
                                     self.pending_codex_peer_messages.remove(&pane_id);
                                     self.dirty = true;
                                 }
@@ -650,6 +749,7 @@ impl App {
                                             message,
                                             pending_count: count,
                                             snoozed: false,
+                                            queued_at,
                                         });
                                     self.dirty = true;
                                 }
@@ -680,7 +780,7 @@ impl App {
                 };
                 if let Some(pane) = ws.panes.get_mut(&pane_id) {
                     match delivery {
-                        PendingCodexPeerDelivery::Draft(message, _) => {
+                        PendingCodexPeerDelivery::Draft(message, _, _) => {
                             let registered_codex = self.peer_client_kinds.get(&pane_id)
                                 == Some(&PeerClientKind::Codex);
                             if !Self::codex_peer_delivery_ready(registered_codex, pane) {

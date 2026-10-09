@@ -16,7 +16,7 @@ fn seed_focused_pane_screen(app: &mut App, bytes: &[u8]) -> usize {
 #[test]
 fn codex_peer_delivery_ready_accepts_ready_for_input_fallback() {
     let mut app = App::new(40, 80).expect("App::new");
-    let pane_id = seed_focused_pane_screen(&mut app, b"\x1b[2J\x1b[Hready for input");
+    let pane_id = seed_focused_pane_screen(&mut app, b"\x1b[2J\x1b[Hready for input\r\n");
     let pane = app.ws().panes.get(&pane_id).expect("pane");
 
     assert!(App::codex_peer_delivery_ready(true, pane));
@@ -380,7 +380,7 @@ fn flush_delivers_codex_nudge_to_background_tab_focused_pane() {
             .get_mut(&codex_pane)
             .expect("codex pane");
         let mut parser = pane.parser.lock().unwrap();
-        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
+        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send\r\n");
     }
     // Send the human back to tab 0; the Codex tab is now background.
     assert!(app.switch_tab(0), "switch back to the sender tab");
@@ -482,7 +482,7 @@ fn flush_cancels_half_delivered_nudge_once_target_pane_is_watched() {
             .get_mut(&codex_pane)
             .expect("codex pane");
         let mut parser = pane.parser.lock().unwrap();
-        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
+        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send\r\n");
     }
     assert!(app.switch_tab(0), "back to the sender tab");
     app.handle_peer_send(
@@ -588,7 +588,7 @@ fn handle_peer_send_queues_codex_nudge_and_emits_peer_inbox() {
         .expect("queued codex peer message");
     assert_eq!(queued.len(), 1);
     match &queued[0] {
-        PendingCodexPeerDelivery::Draft(msg, 1) => {
+        PendingCodexPeerDelivery::Draft(msg, 1, _) => {
             assert_eq!(msg.from_pane, sender_id);
             assert_eq!(msg.from_name.as_deref(), None);
             assert_eq!(msg.from_kind, None);
@@ -810,7 +810,7 @@ fn handle_peer_send_defers_codex_nudge_while_target_is_focused() {
     {
         let pane = app.ws_mut().panes.get_mut(&sibling_id).expect("pane");
         let mut parser = pane.parser.lock().unwrap();
-        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
+        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send\r\n");
     }
     app.flush_pending_codex_peer_messages();
     assert_eq!(
@@ -1021,7 +1021,7 @@ fn focused_codex_notification_nudges_when_focus_moves_to_file_tree() {
     {
         let pane = app.ws_mut().panes.get_mut(&sibling_id).expect("sibling");
         let mut parser = pane.parser.lock().unwrap();
-        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
+        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send\r\n");
     }
     app.ws_mut().focus_target = FocusTarget::FileTree;
 
@@ -1059,7 +1059,7 @@ fn focused_codex_notification_keeps_pending_count_through_the_queue() {
         app.pending_codex_peer_messages
             .get(&sibling_id)
             .and_then(|q| q.front()),
-        Some(PendingCodexPeerDelivery::Draft(_, 2))
+        Some(PendingCodexPeerDelivery::Draft(_, 2, _))
     ));
     app.handle_peer_send(
         sender_id,
@@ -1192,7 +1192,7 @@ fn flush_pending_codex_peer_messages_requires_ready_screen() {
     {
         let pane = app.ws_mut().panes.get_mut(&sibling_id).expect("pane");
         let mut parser = pane.parser.lock().unwrap();
-        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send");
+        parser.process(b"\x1b[?25h\x1b[2J\x1b[Hready for input\n\nenter to send\r\n");
     }
     app.flush_pending_codex_peer_messages();
     assert_eq!(
@@ -1643,6 +1643,267 @@ fn handle_peer_send_dedupe_does_not_collapse_distinct_senders() {
     app.shutdown();
 }
 
+/// Real Codex screens captured from a PTY (`.vt` files are the vt100
+/// `state_formatted()` of the live byte stream), one directory per
+/// Codex version. A change to the readiness classification of any of
+/// them fails here (#354). To add a version, capture the same states
+/// and add its rows.
+const CODEX_SCREEN_FIXTURES: &[(&str, &[u8], u16, u16, bool)] = &[
+    (
+        "v0.153.4/idle",
+        include_bytes!("fixtures/codex/v0.153.4/idle_100x30.vt"),
+        30,
+        100,
+        true,
+    ),
+    (
+        "v0.153.4/idle_after_turn",
+        include_bytes!("fixtures/codex/v0.153.4/idle_after_turn_100x30.vt"),
+        30,
+        100,
+        true,
+    ),
+    (
+        "v0.153.4/idle_tall",
+        include_bytes!("fixtures/codex/v0.153.4/idle_tall_120x60.vt"),
+        60,
+        120,
+        true,
+    ),
+    (
+        "v0.153.4/draft",
+        include_bytes!("fixtures/codex/v0.153.4/draft_100x30.vt"),
+        30,
+        100,
+        false,
+    ),
+    (
+        "v0.153.4/draft_after_turn",
+        include_bytes!("fixtures/codex/v0.153.4/draft_after_turn_120x60.vt"),
+        60,
+        120,
+        false,
+    ),
+    (
+        "v0.153.4/busy",
+        include_bytes!("fixtures/codex/v0.153.4/busy_100x30.vt"),
+        30,
+        100,
+        false,
+    ),
+    (
+        "v0.153.4/busy_queued_draft",
+        include_bytes!("fixtures/codex/v0.153.4/busy_queued_draft_120x60.vt"),
+        60,
+        120,
+        false,
+    ),
+    (
+        "v0.153.4/approval_menu",
+        include_bytes!("fixtures/codex/v0.153.4/approval_menu_120x60.vt"),
+        60,
+        120,
+        false,
+    ),
+    (
+        "v0.153.4/model_menu",
+        include_bytes!("fixtures/codex/v0.153.4/model_menu_100x30.vt"),
+        30,
+        100,
+        false,
+    ),
+    (
+        "v0.153.4/update_dialog",
+        include_bytes!("fixtures/codex/v0.153.4/update_dialog_120x60.vt"),
+        60,
+        120,
+        false,
+    ),
+];
+
+#[test]
+fn codex_peer_screen_ready_matches_captured_codex_screens() {
+    let mismatches: Vec<_> = CODEX_SCREEN_FIXTURES
+        .iter()
+        .filter_map(|&(name, bytes, rows, cols, expected)| {
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.process(bytes);
+            let actual = codex_peer_screen_ready(parser.screen());
+            (actual != expected).then(|| format!("{name}: expected {expected}, got {actual}"))
+        })
+        .collect();
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[test]
+fn codex_peer_screen_ready_fallback_requires_an_empty_composer() {
+    let ready = |bytes: &[u8]| {
+        let mut parser = vt100::Parser::new(8, 40, 0);
+        parser.process(bytes);
+        codex_peer_screen_ready(parser.screen())
+    };
+    // Banner plus a blank caret row (optionally behind a glyph): ready.
+    assert!(ready(b"\x1b[2J\x1b[Hready for input\r\n"));
+    assert!(ready(b"\x1b[2J\x1b[Henter to send\r\n> "));
+    // The caret row carries the human's draft: never append to it.
+    assert!(!ready(b"\x1b[2J\x1b[Henter to send\r\n> half a thought"));
+    // Caret moved home inside a draft.
+    assert!(!ready(
+        b"\x1b[2J\x1b[Henter to send\r\n> half a thought\x1b[2;1H"
+    ));
+    // Hidden caret: some widget owns input.
+    assert!(!ready(b"\x1b[2J\x1b[Hready for input\r\n\x1b[?25l"));
+}
+
+#[test]
+fn stalled_codex_nudge_emits_once_and_badges_until_drained() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let sender_id = app.ws().focused_pane_id;
+    let codex_pane = app
+        .handle_new_tab(None, None, None, None, None)
+        .expect("new tab succeeds");
+    app.peer_client_kinds
+        .insert(codex_pane, PeerClientKind::Codex);
+    assert!(app.switch_tab(0), "Codex tab goes to the background");
+    // A screen the heuristic does not recognize as ready.
+    app.workspaces[1].panes.get_mut(&codex_pane).unwrap().parser =
+        std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(24, 80, 0)));
+    app.workspaces[1].panes[&codex_pane]
+        .parser
+        .lock()
+        .unwrap()
+        .process(b"\x1b[2J\x1b[Hsomething new from Codex");
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_pane), "ping".into())
+        .expect("peer send");
+    let stalled = |rx: &std::sync::mpsc::Receiver<ipc::Event>| {
+        rx.try_iter()
+            .filter(|e| matches!(e, ipc::Event::PeerNudgeStalled { .. }))
+            .collect::<Vec<_>>()
+    };
+
+    app.flush_pending_codex_peer_messages();
+    assert!(stalled(&rx).is_empty(), "a fresh draft is not stalled");
+    assert!(!app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+
+    // Age the queued draft past the timeout.
+    match app
+        .pending_codex_peer_messages
+        .get_mut(&codex_pane)
+        .unwrap()
+        .front_mut()
+    {
+        Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
+            *queued_at = Instant::now()
+                .checked_sub(CODEX_PEER_NUDGE_STALL_TIMEOUT + Duration::from_secs(1))
+                .expect("monotonic clock is past the stall timeout");
+        }
+        other => panic!("expected a queued draft, got {other:?}"),
+    }
+    app.flush_pending_codex_peer_messages();
+    let evs = stalled(&rx);
+    assert!(
+        matches!(&evs[..], [ipc::Event::PeerNudgeStalled { id, queued_ms, .. }]
+            if *id == codex_pane && *queued_ms >= 31_000),
+        "{evs:?}"
+    );
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+
+    // Still stuck: no repeat.
+    app.flush_pending_codex_peer_messages();
+    assert!(stalled(&rx).is_empty());
+
+    // A focus round trip hands the nudge to the overlay and back; the
+    // stall carries across both handoffs instead of clearing and
+    // re-firing.
+    assert!(app.switch_tab(1), "focus the Codex pane");
+    app.flush_pending_codex_peer_messages();
+    assert!(
+        app.codex_peer_notification
+            .as_ref()
+            .is_some_and(|n| n.target_pane == codex_pane),
+        "draft promoted to the overlay"
+    );
+    app.flush_pending_codex_peer_messages();
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    assert!(app.switch_tab(0), "leave the Codex pane");
+    app.flush_pending_codex_peer_messages();
+    assert!(app.pending_codex_peer_messages.contains_key(&codex_pane));
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    assert!(stalled(&rx).is_empty(), "no re-fire across the round trip");
+
+    // Draining the queue clears the badge.
+    app.pending_codex_peer_messages.remove(&codex_pane);
+    app.flush_pending_codex_peer_messages();
+    assert!(!app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    app.shutdown();
+}
+
+#[test]
+fn stall_clock_does_not_run_while_codex_is_busy() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let sender_id = app.ws().focused_pane_id;
+    let codex_pane = app
+        .handle_new_tab(None, None, None, None, None)
+        .expect("new tab succeeds");
+    app.peer_client_kinds
+        .insert(codex_pane, PeerClientKind::Codex);
+    assert!(app.switch_tab(0), "Codex tab goes to the background");
+    let parser = std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(24, 80, 0)));
+    app.workspaces[1].panes.get_mut(&codex_pane).unwrap().parser = parser.clone();
+    parser
+        .lock()
+        .unwrap()
+        .process("\x1b[2J\x1b[H\u{2022} Working (40s \u{2022} esc to interrupt)\r\n".as_bytes());
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_pane), "ping".into())
+        .expect("peer send");
+    let age_draft = |app: &mut App| match app
+        .pending_codex_peer_messages
+        .get_mut(&codex_pane)
+        .unwrap()
+        .front_mut()
+    {
+        Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
+            *queued_at = Instant::now()
+                .checked_sub(CODEX_PEER_NUDGE_STALL_TIMEOUT + Duration::from_secs(1))
+                .expect("monotonic clock is past the stall timeout");
+        }
+        other => panic!("expected a queued draft, got {other:?}"),
+    };
+    let stalled = |rx: &std::sync::mpsc::Receiver<ipc::Event>| {
+        rx.try_iter()
+            .filter(|e| matches!(e, ipc::Event::PeerNudgeStalled { .. }))
+            .count()
+    };
+
+    // Busy for longer than the timeout: no stall, and the clock is held.
+    age_draft(&mut app);
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(stalled(&rx), 0, "a busy Codex is not stalled");
+    assert!(!app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    match app.pending_codex_peer_messages[&codex_pane].front() {
+        Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
+            assert!(
+                queued_at.elapsed() < Duration::from_secs(5),
+                "clock held at now"
+            );
+        }
+        other => panic!("expected a queued draft, got {other:?}"),
+    }
+
+    // Turn over but the screen still isn't recognized: counts again.
+    parser
+        .lock()
+        .unwrap()
+        .process(b"\x1b[2J\x1b[Hsomething new from Codex");
+    age_draft(&mut app);
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(stalled(&rx), 1, "stalls once 30 s pass after busy ends");
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    app.shutdown();
+}
+
 /// Unfocused Codex sibling of the focused sender. Returns
 /// `(sender, codex)`.
 fn codex_sibling_unfocused(app: &mut App) -> (usize, usize) {
@@ -1746,5 +2007,77 @@ fn drain_clears_focused_codex_notification_and_reregister_resets_unread() {
     assert_eq!(listed_unread(&app, sender_id, codex_id), Some(0));
 
     assert!(app.handle_peer_inbox_drained(9999, 1).is_err());
+    app.shutdown();
+}
+
+#[test]
+fn drain_keeps_an_already_typed_nudge_and_dedupe_does_not_count() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id) = codex_sibling_unfocused(&mut app);
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "x".into())
+        .expect("send");
+    // The identical re-send is deduped: no PeerInbox, so no unread.
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "x".into())
+        .expect("dup send");
+    assert_eq!(listed_unread(&app, sender_id, codex_id), Some(1));
+    // The nudge text is already in the composer; only its Enter is due.
+    app.pending_codex_peer_messages.insert(
+        codex_id,
+        [PendingCodexPeerDelivery::SubmitAt(Instant::now())].into(),
+    );
+
+    app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
+
+    assert!(
+        matches!(
+            app.pending_codex_peer_messages
+                .get(&codex_id)
+                .and_then(|q| q.front()),
+            Some(PendingCodexPeerDelivery::SubmitAt(_))
+        ),
+        "dropping it would strand the half-written draft"
+    );
+    app.shutdown();
+}
+
+#[test]
+fn drain_clears_a_stalled_nudge_badge() {
+    // #354 x #353: the worker drained on its own, so the stuck nudge is
+    // moot and its badge must go on the next flush.
+    let mut app = App::new(40, 80).expect("App::new");
+    let sender_id = app.ws().focused_pane_id;
+    let codex_pane = app
+        .handle_new_tab(None, None, None, None, None)
+        .expect("new tab succeeds");
+    app.peer_client_kinds
+        .insert(codex_pane, PeerClientKind::Codex);
+    assert!(app.switch_tab(0), "Codex tab goes to the background");
+    app.workspaces[1].panes[&codex_pane]
+        .parser
+        .lock()
+        .unwrap()
+        .process(b"\x1b[2J\x1b[Hsomething new from Codex");
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_pane), "ping".into())
+        .expect("peer send");
+    match app
+        .pending_codex_peer_messages
+        .get_mut(&codex_pane)
+        .and_then(|q| q.front_mut())
+    {
+        Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
+            *queued_at = Instant::now()
+                .checked_sub(CODEX_PEER_NUDGE_STALL_TIMEOUT + Duration::from_secs(1))
+                .expect("monotonic clock is past the stall timeout");
+        }
+        other => panic!("expected a queued draft, got {other:?}"),
+    }
+    app.flush_pending_codex_peer_messages();
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+
+    app.handle_peer_inbox_drained(codex_pane, 1).expect("drain");
+    app.flush_pending_codex_peer_messages();
+
+    assert!(!app.pending_codex_peer_messages.contains_key(&codex_pane));
+    assert!(!app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
     app.shutdown();
 }

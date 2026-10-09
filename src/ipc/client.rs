@@ -265,7 +265,7 @@ pub fn subscribe_events<F>(endpoint: &EndpointName, on_event: F) -> Result<()>
 where
     F: FnMut(Event) -> bool,
 {
-    subscribe_events_scoped(endpoint, EventScope::Unscoped, on_event)
+    subscribe_events_scoped(endpoint, EventScope::Unscoped, || {}, on_event)
 }
 
 /// Subscribe to lifecycle events **plus only** the [`Event::PeerInbox`]
@@ -298,11 +298,25 @@ where
 /// unintended delivery to a pane the message was not meant for and the
 /// queue pressure those copies caused. Callers that decline the opt-in
 /// keep the full stream and give up nothing else.
-pub fn subscribe_inbox_events<F>(endpoint: &EndpointName, pane_id: usize, on_event: F) -> Result<()>
+///
+/// `on_subscribed` runs once the server has acknowledged the
+/// subscription, before the first event: from then on every peer
+/// message to `pane_id` reaches this stream (Issue #353 relies on it).
+pub fn subscribe_inbox_events<F>(
+    endpoint: &EndpointName,
+    pane_id: usize,
+    on_subscribed: impl FnOnce(),
+    on_event: F,
+) -> Result<()>
 where
     F: FnMut(Event) -> bool,
 {
-    subscribe_events_scoped(endpoint, EventScope::PaneInbox(pane_id), on_event)
+    subscribe_events_scoped(
+        endpoint,
+        EventScope::PaneInbox(pane_id),
+        on_subscribed,
+        on_event,
+    )
 }
 
 /// Shared body of [`subscribe_events`] and [`subscribe_inbox_events`].
@@ -315,6 +329,7 @@ where
 fn subscribe_events_scoped<F>(
     endpoint: &EndpointName,
     scope: EventScope,
+    on_subscribed: impl FnOnce(),
     mut on_event: F,
 ) -> Result<()>
 where
@@ -338,7 +353,7 @@ where
     // Switch into event-stream mode.
     write_request_line(reader.get_mut(), &subscribe_request_for(scope))?;
     match read_response_line(&mut reader)? {
-        Response::Subscribed => {}
+        Response::Subscribed => on_subscribed(),
         Response::Err { message, code } => {
             return Err(anyhow!("subscribe refused: {}", fmt_err(&message, &code)));
         }
@@ -442,6 +457,7 @@ const KNOWN_EVENT_TAGS: &[&str] = &[
     "pane_prompt_detected",
     "pane_waiting_input",
     "pane_mode_changed",
+    "peer_nudge_stalled",
     "events_dropped",
     "heartbeat",
     "peer_inbox",
@@ -586,6 +602,7 @@ mod tests {
             Event::PanePromptDetected { .. } => "pane_prompt_detected",
             Event::PaneWaitingInput { .. } => "pane_waiting_input",
             Event::PaneModeChanged { .. } => "pane_mode_changed",
+            Event::PeerNudgeStalled { .. } => "peer_nudge_stalled",
             Event::EventsDropped { .. } => "events_dropped",
             Event::Heartbeat { .. } => "heartbeat",
             Event::PeerInbox { .. } => "peer_inbox",
@@ -631,6 +648,13 @@ mod tests {
                 role: None,
                 mode: "plan".into(),
                 prev_mode: Some("default".into()),
+                ts_ms: 1,
+            },
+            Event::PeerNudgeStalled {
+                id: 1,
+                name: None,
+                role: None,
+                queued_ms: 30_000,
                 ts_ms: 1,
             },
             Event::EventsDropped { count: 2, ts_ms: 1 },

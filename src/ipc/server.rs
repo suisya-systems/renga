@@ -1677,7 +1677,7 @@ mod tests {
             let result = match scope {
                 EventScope::Unscoped => client::subscribe_events(&endpoint, forward),
                 EventScope::PaneInbox(pane_id) => {
-                    client::subscribe_inbox_events(&endpoint, pane_id, forward)
+                    client::subscribe_inbox_events(&endpoint, pane_id, || {}, forward)
                 }
             };
             // Surfacing this here beats letting a failed subscribe show

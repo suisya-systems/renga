@@ -156,7 +156,7 @@ user-turn 配送を `send_keys` で自作しないでください。
 
 | ツール | 役割 |
 |---|---|
-| `poll_events(timeout_ms?, since?, types?)` | `pane_started` / `pane_exited` / `pane_prompt_detected` / `pane_waiting_input` / `pane_mode_changed` / `peer_inbox_drained` / `events_dropped` を cursor 付き long-poll で受け取ります。オーケストレータが毎ターン pane 一覧を総当たりせずに、ワーカーの起動・終了だけを追いたいとき向けです。イベントは renga プロセス全体が対象で、呼び出し元のタブに限らず全タブのペインのライフサイクルが届きます。 |
+| `poll_events(timeout_ms?, since?, types?)` | `pane_started` / `pane_exited` / `pane_prompt_detected` / `pane_waiting_input` / `pane_mode_changed` / `peer_nudge_stalled` / `peer_inbox_drained` / `events_dropped` を cursor 付き long-poll で受け取ります。オーケストレータが毎ターン pane 一覧を総当たりせずに、ワーカーの起動・終了だけを追いたいとき向けです。イベントは renga プロセス全体が対象で、呼び出し元のタブに限らず全タブのペインのライフサイクルが届きます。 |
 
 `spawn_pane` / `new_tab` の作業ディレクトリ指定は `cwd` フィールドを使ってください。パス解決が構造化されたまま保て、`claude` 自動アップグレードも維持されます。自動アップグレードは `command` の先頭トークンがちょうど `claude` のときだけ発火するので、`cd <dir> && ...` を埋め込むと一切効かなくなります。
 
