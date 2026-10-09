@@ -1111,7 +1111,20 @@ fn render_single_pane(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(Span::styled(pane_title, title_style))
+        .title(Line::from(vec![
+            Span::styled(pane_title, title_style),
+            // A peer nudge renga could not deliver for 30 s (#354).
+            if pane.peer_nudge_stalled {
+                Span::styled(
+                    " \u{26a0} peer nudge stalled ",
+                    Style::default()
+                        .fg(ACCENT_WARN)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("")
+            },
+        ]))
         .title_bottom(bottom_title)
         .style(Style::default().bg(BG));
 

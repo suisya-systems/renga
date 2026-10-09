@@ -464,7 +464,7 @@ pane. `focused` and names mean YOUR tab; a numeric id may name a pane in any tab
 uniqueness is checked within the resolved pane's tab.\n\n\
 Event monitoring:\n\
 - poll_events: Long-poll for pane lifecycle events (pane_started, pane_exited, \
-pane_prompt_detected, pane_waiting_input, pane_mode_changed, events_dropped). Events are process-wide: pane lifecycle from every renga tab is \
+pane_prompt_detected, pane_waiting_input, pane_mode_changed, peer_nudge_stalled, events_dropped). Events are process-wide: pane lifecycle from every renga tab is \
 delivered, not just the current tab's. First call (no `since`) starts at \"right now\" — \
 no historical replay. \
 Each response includes a `next_since` cursor to pass back on the next call. Optional \
@@ -842,7 +842,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "poll_events",
-            "description": "Long-poll for pane lifecycle events (pane_started, pane_exited, pane_prompt_detected, pane_waiting_input, pane_mode_changed, events_dropped, and any forward-compatible variants). Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. Returns events accumulated since the given cursor; if none are buffered, blocks up to `timeout_ms` for the next one. The first call (omit `since`) starts at \"right now\" — no historical replay, matching `renga events --timeout` semantics. Each response body is a JSON object with `next_since` (an opaque cursor string to pass back) and `events` (an array of event objects in renga's wire format).",
+            "description": "Long-poll for pane lifecycle events (pane_started, pane_exited, pane_prompt_detected, pane_waiting_input, pane_mode_changed, peer_nudge_stalled, events_dropped, and any forward-compatible variants). Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. Returns events accumulated since the given cursor; if none are buffered, blocks up to `timeout_ms` for the next one. The first call (omit `since`) starts at \"right now\" — no historical replay, matching `renga events --timeout` semantics. Each response body is a JSON object with `next_since` (an opaque cursor string to pass back) and `events` (an array of event objects in renga's wire format).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

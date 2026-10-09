@@ -110,6 +110,10 @@ pub struct Pane {
     /// Claude permission mode last reported via `pane_mode_changed`
     /// (Issue #49).
     pub reported_mode: Option<&'static str>,
+    /// A peer nudge for this pane has sat undelivered past
+    /// `CODEX_PEER_NUDGE_STALL_TIMEOUT` (Issue #354). Drives the title
+    /// badge; `peer_nudge_stalled` fires on the false → true edge.
+    pub peer_nudge_stalled: bool,
     /// Kill-on-close Job Object holding the pane shell and every
     /// descendant the kernel added since spawn. `None` when job
     /// creation/assignment failed at spawn time — `kill()` then falls
@@ -272,6 +276,7 @@ impl Pane {
             reported_prompt: None,
             waiting_input_reported: false,
             reported_mode: None,
+            peer_nudge_stalled: false,
             #[cfg(windows)]
             job,
         };

@@ -1422,6 +1422,20 @@ pub enum Event {
         prev_mode: Option<String>,
         ts_ms: u64,
     },
+    /// Emitted when a peer-message nudge for a Codex pane has been
+    /// queued undelivered for `queued_ms` (at least 30 s, Issue #354):
+    /// renga is waiting for the pane to look ready and it hasn't. The
+    /// pane title shows a badge for as long as the nudge stays stuck.
+    /// Fires once per stuck nudge; delivering or dropping it re-arms.
+    PeerNudgeStalled {
+        id: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        queued_ms: u64,
+        ts_ms: u64,
+    },
     /// Meta-event synthesized by the server when a slow subscriber
     /// has caused real events to be dropped. `count` is the number of
     /// events discarded since the last delivered event.

@@ -32,8 +32,8 @@ pub use self::app_state::{App, AppCommand, AppEvent};
 pub(crate) use self::codex_peer::CODEX_PEER_NOTIFICATION_MIN_SIZE;
 #[cfg(test)]
 use self::codex_peer::{
-    codex_prompt_allows_peer_nudge_on_screen, format_codex_peer_message, screen_tail_lines,
-    PendingCodexPeerMessage,
+    codex_peer_screen_ready, codex_prompt_allows_peer_nudge_on_screen, format_codex_peer_message,
+    screen_tail_lines, PendingCodexPeerMessage, CODEX_PEER_NUDGE_STALL_TIMEOUT,
 };
 use self::codex_peer::{write_input_to_pane, CodexPeerNotificationState, PendingCodexPeerDelivery};
 pub(crate) use self::keyboard_input::key_event_to_bytes_pub;

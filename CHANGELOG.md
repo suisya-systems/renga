@@ -31,6 +31,12 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   box, so it's a heuristic: default mode is only recognized while the
   `? for shortcuts` hint is shown (input empty), and frames without a
   mode line (typing, menus, dialogs) don't count as a change.
+- **`peer_nudge_stalled` event and pane badge.** (#354) When a peer
+  message nudge for a Codex pane has waited 30 s because the pane never
+  looked ready, renga emits `peer_nudge_stalled` (`queued_ms`) and the
+  pane title shows `⚠ peer nudge stalled` until the nudge is delivered
+  or dropped. A Codex UI change that the readiness heuristic no longer
+  recognizes used to leave the nudge queued forever without a signal.
 
 ### Changed
 
@@ -57,6 +63,13 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   when it comes back. When the terminal is too small to draw the
   overlay, it no longer captures `Esc` / `Alt+Enter`; the status bar
   shows the pending count instead.
+- **The Codex nudge fallback no longer types into a user draft.** (#354)
+  On screens without Codex's `›` composer, the `enter to send` /
+  `ready for input` banner alone used to make the pane "ready". It now
+  also needs a visible cursor at the start of an otherwise blank row.
+  The readiness heuristic is pinned by tests against real captured
+  Codex v0.153.4 screens (idle, draft, busy, queued draft, approval and
+  model menus, update dialog, tall screen).
 
 ## [3.0.0] — 2026-08-29
 
