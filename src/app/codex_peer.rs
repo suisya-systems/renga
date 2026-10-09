@@ -314,10 +314,19 @@ impl App {
                 && self.workspaces[target_ws].focus_target == FocusTarget::Pane
                 && self.workspaces[target_ws].focused_pane_id == target_id;
             if target_is_focused {
-                self.pending_codex_peer_messages.remove(&target_id);
+                // A draft still queued here is the same undelivered
+                // nudge; its age carries into the overlay (#354).
+                let queued_at = match self
+                    .pending_codex_peer_messages
+                    .remove(&target_id)
+                    .and_then(|mut q| q.pop_front())
+                {
+                    Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => queued_at,
+                    _ => Instant::now(),
+                };
                 match self.codex_peer_notification.as_mut() {
                     Some(notification) if notification.target_pane == target_id => {
-                        notification.register_messages(message, 1, Instant::now());
+                        notification.register_messages(message, 1, queued_at);
                     }
                     _ => {
                         self.codex_peer_notification = Some(CodexPeerNotificationState {
@@ -325,7 +334,7 @@ impl App {
                             message,
                             pending_count: 1,
                             snoozed: false,
-                            queued_at: Instant::now(),
+                            queued_at,
                         });
                     }
                 }
