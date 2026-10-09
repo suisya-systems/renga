@@ -265,7 +265,7 @@ pub fn subscribe_events<F>(endpoint: &EndpointName, on_event: F) -> Result<()>
 where
     F: FnMut(Event) -> bool,
 {
-    subscribe_events_scoped(endpoint, EventScope::Unscoped, || {}, on_event)
+    subscribe_events_scoped(endpoint, EventScope::Unscoped, on_event)
 }
 
 /// Subscribe to lifecycle events **plus only** the [`Event::PeerInbox`]
@@ -298,25 +298,11 @@ where
 /// unintended delivery to a pane the message was not meant for and the
 /// queue pressure those copies caused. Callers that decline the opt-in
 /// keep the full stream and give up nothing else.
-///
-/// `on_subscribed` runs once the server has acknowledged the
-/// subscription, before the first event: from then on every peer
-/// message to `pane_id` reaches this stream (Issue #353 relies on it).
-pub fn subscribe_inbox_events<F>(
-    endpoint: &EndpointName,
-    pane_id: usize,
-    on_subscribed: impl FnOnce(),
-    on_event: F,
-) -> Result<()>
+pub fn subscribe_inbox_events<F>(endpoint: &EndpointName, pane_id: usize, on_event: F) -> Result<()>
 where
     F: FnMut(Event) -> bool,
 {
-    subscribe_events_scoped(
-        endpoint,
-        EventScope::PaneInbox(pane_id),
-        on_subscribed,
-        on_event,
-    )
+    subscribe_events_scoped(endpoint, EventScope::PaneInbox(pane_id), on_event)
 }
 
 /// Shared body of [`subscribe_events`] and [`subscribe_inbox_events`].
@@ -329,7 +315,6 @@ where
 fn subscribe_events_scoped<F>(
     endpoint: &EndpointName,
     scope: EventScope,
-    on_subscribed: impl FnOnce(),
     mut on_event: F,
 ) -> Result<()>
 where
@@ -353,7 +338,7 @@ where
     // Switch into event-stream mode.
     write_request_line(reader.get_mut(), &subscribe_request_for(scope))?;
     match read_response_line(&mut reader)? {
-        Response::Subscribed => on_subscribed(),
+        Response::Subscribed => {}
         Response::Err { message, code } => {
             return Err(anyhow!("subscribe refused: {}", fmt_err(&message, &code)));
         }

@@ -45,9 +45,10 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   drain back to renga, which emits `peer_inbox_drained {pane, count}`
   and drops the pane's not-yet-typed nudge / focused notification once
   nothing is left unread. `list_peers` shows `unread=N` for pull-mode
-  (Codex) peers. The count resets when the pane's MCP subprocess
-  (re)registers; a message lost before reaching the inbox (event-bus
-  drop) keeps it above zero until then.
+  (Codex) peers. Only messages that actually entered the pane's MCP
+  inbox are counted (not ones sent before its subprocess subscribed or
+  dropped on a full queue); the count resets when the subprocess
+  (re)registers, so messages stranded by a dead subprocess clear then.
 
 ### Changed
 

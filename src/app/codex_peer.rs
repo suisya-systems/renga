@@ -310,7 +310,8 @@ impl App {
             .find(|(_, id)| **id == from_pane)
             .map(|(n, _)| n.clone());
         let from_kind = self.peer_client_kinds.get(&from_pane).copied();
-        if self.pane_expects_codex_peer_delivery(target_ws, target_id) {
+        let pull_mode = self.pane_expects_codex_peer_delivery(target_ws, target_id);
+        if pull_mode {
             let message = PendingCodexPeerMessage {
                 from_pane,
                 from_name: from_name.clone(),
@@ -348,9 +349,8 @@ impl App {
             } else {
                 self.push_pending_codex_peer_nudge(target_id, message, 1, Instant::now());
             }
-            *self.peer_unread.entry(target_id).or_default() += 1;
         }
-        self.event_bus.emit(ipc::Event::PeerInbox {
+        let reached_inbox = self.event_bus.emit(ipc::Event::PeerInbox {
             target_pane: target_id,
             from_pane,
             from_name,
@@ -358,6 +358,12 @@ impl App {
             body,
             ts_ms: ipc::events::now_ms(),
         });
+        // Count only what actually entered the pane's MCP inbox: a
+        // message sent before its subprocess subscribed, or dropped on
+        // a full queue, can never be drained (Issue #353).
+        if pull_mode && reached_inbox {
+            *self.peer_unread.entry(target_id).or_default() += 1;
+        }
         Ok(())
     }
 
@@ -411,10 +417,9 @@ impl App {
     /// zero: a message sent between the drain and this report is
     /// still in the inbox and still needs its nudge.
     ///
-    /// ponytail: counts, not message ids. A message lost before the
-    /// MCP subprocess queued it (event-bus drop for a slow subscriber)
-    /// keeps `unread` above zero until the subprocess re-registers;
-    /// per-message ids if that residue matters.
+    /// ponytail: counts, not message ids. Messages still queued when
+    /// the MCP subprocess dies keep `unread` above zero until its
+    /// successor registers; per-message ids if that residue matters.
     pub(crate) fn handle_peer_inbox_drained(
         &mut self,
         pane_id: usize,

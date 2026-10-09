@@ -225,11 +225,17 @@ impl EventBus {
     /// (accumulating a count that is reported via a synthetic
     /// `EventsDropped` on the next successful send). Disconnected
     /// subscribers are removed.
-    pub fn emit(&self, event: Event) {
+    /// Returns whether a subscriber bound to the event's pane inbox
+    /// ([`EventScope::PaneInbox`]) took an [`Event::PeerInbox`] — i.e.
+    /// whether the message actually reached that pane's MCP inbox
+    /// (Issue #353). `false` for every other event.
+    pub fn emit(&self, event: Event) -> bool {
         let mut subs = match self.subs.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
+        let is_peer_inbox = matches!(event, Event::PeerInbox { .. });
+        let mut inbox_delivered = false;
         subs.retain_mut(|sub| {
             // Routing gate first, ahead of every side effect below: a
             // pane-scoped subscriber this event is not addressed to
@@ -258,7 +264,11 @@ impl EventBus {
                 }
             }
             match sub.tx.try_send(event.clone()) {
-                Ok(()) => true,
+                Ok(()) => {
+                    inbox_delivered |=
+                        is_peer_inbox && matches!(sub.scope, EventScope::PaneInbox(_));
+                    true
+                }
                 Err(TrySendError::Full(_)) => {
                     sub.dropped_count = sub.dropped_count.saturating_add(1);
                     true
@@ -266,6 +276,7 @@ impl EventBus {
                 Err(TrySendError::Disconnected(_)) => false,
             }
         });
+        inbox_delivered
     }
 
     #[cfg(test)]

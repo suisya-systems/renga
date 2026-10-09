@@ -98,7 +98,7 @@ pub fn run() -> Result<()> {
                 "connected mode: pane_id={pane_id}, client_kind={:?}",
                 ctx.client_kind
             ));
-            // Registers the client kind itself, once subscribed.
+            register_client_kind(&ctx);
             spawn_inbox_subscriber(ctx.clone());
         }
         Mode::Detached { reason } => {
@@ -3482,88 +3482,74 @@ fn spawn_inbox_subscriber(ctx: PeerCtx) {
     thread::Builder::new()
         .name("renga-mcp-peer-inbox".into())
         .spawn(move || {
-            // Register only once the subscription is live: registration
-            // resets renga's unread count for this pane (Issue #353), so
-            // a message sent before it would be counted but never reach
-            // this inbox, leaving `unread` stuck above zero.
-            let mut registered = false;
-            let on_subscribed = || {
-                register_client_kind(&ctx);
-                registered = true;
-            };
-            let result =
-                client::subscribe_inbox_events(&endpoint_clone, pane_id, on_subscribed, |event| {
-                    // Buffer lifecycle events for `poll_events` first, as
-                    // always. Heartbeat is a wire-keepalive (not a lifecycle
-                    // signal) and PeerInbox is delivered out-of-band via
-                    // channel notifications, so neither belongs in the poll
-                    // buffer. Everything else — PaneStarted / PaneExited /
-                    // EventsDropped plus any forward-compatible variants
-                    // added later — gets stashed.
-                    if should_buffer_for_poll(&event) {
-                        match serde_json::to_value(&event) {
-                            Ok(value) => {
-                                let (lock, cvar) = &*sink;
-                                let mut buf = lock.lock().unwrap_or_else(|p| p.into_inner());
-                                buf.push(value);
-                                cvar.notify_all();
-                            }
-                            Err(e) => log_stderr(&format!(
-                                "failed to serialize event for poll buffer: {e}"
-                            )),
+            let result = client::subscribe_inbox_events(&endpoint_clone, pane_id, |event| {
+                // Buffer lifecycle events for `poll_events` first, as
+                // always. Heartbeat is a wire-keepalive (not a lifecycle
+                // signal) and PeerInbox is delivered out-of-band via
+                // channel notifications, so neither belongs in the poll
+                // buffer. Everything else — PaneStarted / PaneExited /
+                // EventsDropped plus any forward-compatible variants
+                // added later — gets stashed.
+                if should_buffer_for_poll(&event) {
+                    match serde_json::to_value(&event) {
+                        Ok(value) => {
+                            let (lock, cvar) = &*sink;
+                            let mut buf = lock.lock().unwrap_or_else(|p| p.into_inner());
+                            buf.push(value);
+                            cvar.notify_all();
+                        }
+                        Err(e) => {
+                            log_stderr(&format!("failed to serialize event for poll buffer: {e}"))
                         }
                     }
-                    // The EventBus bounds each subscriber at 256 events and
-                    // drops new events for slow consumers, reporting the gap
-                    // via EventsDropped. Log it here — the operator-facing
-                    // half of the notice, which the classifier deliberately
-                    // has no way to emit.
-                    if let ipc::Event::EventsDropped { count, .. } = &event {
-                        log_stderr(&format!(
-                            "event bus dropped {count} event(s) due to slow subscriber"
-                        ));
-                    }
-                    if let InboxDelivery::Deliver {
-                        from_id,
-                        from_name,
-                        from_kind,
-                        body,
-                    } = classify_inbox_event(&event, pane_id)
-                    {
-                        if client_kind.receive_mode() == ipc::PeerReceiveMode::Pull {
-                            queue_pull_message(
-                                &inbox,
-                                QueuedPeerMessage {
-                                    from_id,
-                                    from_name,
-                                    from_kind,
-                                    body,
-                                    sent_at: now_ts_string(),
-                                },
-                            );
-                        } else {
-                            // Both notices go out through the same sink, but
-                            // their write failures have always been
-                            // distinguishable in the log and operators grep
-                            // for them. Pick the label off the variant
-                            // rather than teaching `InboxDelivery` about its
-                            // own provenance.
-                            let failure_label = match &event {
-                                ipc::Event::EventsDropped { .. } => "drop notice",
-                                _ => "channel notification",
-                            };
-                            let note = channel_notification(&body, &from_id, from_name.as_deref());
-                            if let Err(e) = write_frame(&note) {
-                                log_stderr(&format!("failed to push {failure_label}: {e}"));
-                            }
+                }
+                // The EventBus bounds each subscriber at 256 events and
+                // drops new events for slow consumers, reporting the gap
+                // via EventsDropped. Log it here — the operator-facing
+                // half of the notice, which the classifier deliberately
+                // has no way to emit.
+                if let ipc::Event::EventsDropped { count, .. } = &event {
+                    log_stderr(&format!(
+                        "event bus dropped {count} event(s) due to slow subscriber"
+                    ));
+                }
+                if let InboxDelivery::Deliver {
+                    from_id,
+                    from_name,
+                    from_kind,
+                    body,
+                } = classify_inbox_event(&event, pane_id)
+                {
+                    if client_kind.receive_mode() == ipc::PeerReceiveMode::Pull {
+                        queue_pull_message(
+                            &inbox,
+                            QueuedPeerMessage {
+                                from_id,
+                                from_name,
+                                from_kind,
+                                body,
+                                sent_at: now_ts_string(),
+                            },
+                        );
+                    } else {
+                        // Both notices go out through the same sink, but
+                        // their write failures have always been
+                        // distinguishable in the log and operators grep
+                        // for them. Pick the label off the variant
+                        // rather than teaching `InboxDelivery` about its
+                        // own provenance.
+                        let failure_label = match &event {
+                            ipc::Event::EventsDropped { .. } => "drop notice",
+                            _ => "channel notification",
+                        };
+                        let note = channel_notification(&body, &from_id, from_name.as_deref());
+                        if let Err(e) = write_frame(&note) {
+                            log_stderr(&format!("failed to push {failure_label}: {e}"));
                         }
                     }
-                    true
-                });
-            // No live inbox, but still publish the kind for listings.
-            if !registered {
-                register_client_kind(&ctx);
-            }
+                }
+                true
+            });
             match result {
                 Ok(()) => log_stderr("event stream closed"),
                 Err(e) => log_stderr(&format!("event subscription ended: {e}")),
