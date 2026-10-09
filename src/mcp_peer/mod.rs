@@ -314,16 +314,15 @@ fn tool_text_result(text: &str) -> Value {
     json!({ "content": [ { "type": "text", "text": text } ], "isError": false })
 }
 
-/// Most messages one client's inbox holds before the oldest is dropped.
-/// A push client that never calls `check_messages` would otherwise grow
-/// its queue for as long as it runs (Issue #334).
-const INBOX_CAP: usize = 256;
+/// Most messages a push client keeps for `check_messages` before the
+/// oldest is dropped. Its queue is only a fallback copy that a client
+/// seeing channel tags may never drain (Issue #334). Pull queues stay
+/// unbounded: renga counts every message in them as unread, so evicting
+/// one would leave its id unread forever.
+const PUSH_INBOX_CAP: usize = 256;
 
 fn queue_pull_message(inbox: &InboxSink, message: QueuedPeerMessage) {
     let mut q = inbox.lock().unwrap_or_else(|p| p.into_inner());
-    if q.len() >= INBOX_CAP {
-        q.pop_front();
-    }
     q.push_back(message);
 }
 
@@ -339,15 +338,24 @@ fn deliver_inbox_message(
     receive_mode: ipc::PeerReceiveMode,
     message: QueuedPeerMessage,
 ) -> Option<Value> {
-    let frame = (receive_mode == ipc::PeerReceiveMode::Push).then(|| {
-        channel_notification(
-            &message.body,
-            &message.from_id,
-            message.from_name.as_deref(),
-        )
-    });
-    queue_pull_message(inbox, message);
-    frame
+    if receive_mode == ipc::PeerReceiveMode::Pull {
+        queue_pull_message(inbox, message);
+        return None;
+    }
+    // Same `sent_at` in the tag and the queued copy, so an agent that saw
+    // the tag can recognise the message when check_messages returns it.
+    let frame = channel_notification(
+        &message.body,
+        &message.from_id,
+        message.from_name.as_deref(),
+        &message.sent_at,
+    );
+    let mut q = inbox.lock().unwrap_or_else(|p| p.into_inner());
+    if q.len() >= PUSH_INBOX_CAP {
+        q.pop_front();
+    }
+    q.push_back(message);
+    Some(frame)
 }
 
 // ── channel notification (the whole point of #97) ─────────────
@@ -364,7 +372,12 @@ fn deliver_inbox_message(
 /// from mistaking peer chatter for things the human typed, the body
 /// is wrapped with a loud banner that's obviously machine-generated
 /// (uppercase, emoji, explicit "not from user"). See renga#221.
-fn channel_notification(body: &str, from_id: &str, from_name: Option<&str>) -> Value {
+fn channel_notification(
+    body: &str,
+    from_id: &str,
+    from_name: Option<&str>,
+    sent_at: &str,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "method": "notifications/claude/channel",
@@ -373,7 +386,7 @@ fn channel_notification(body: &str, from_id: &str, from_name: Option<&str>) -> V
             "meta": {
                 "from_id": from_id,
                 "from_name": from_name.unwrap_or(""),
-                "sent_at": now_ts_string(),
+                "sent_at": sent_at,
             }
         }
     })
@@ -424,7 +437,8 @@ Read the from_id and from_name attributes to understand who sent the message. Re
 calling send_message with their from_id.\n\n\
 Every peer message is also kept for check_messages, so a session whose host does not show \
 channel tags (for example a background `claude daemon run` session) can still read it there. \
-Messages already shown as channel tags are returned again by check_messages.\n\n"
+check_messages also returns messages already shown as channel tags; one whose sent_at \
+matches a tag you already saw is that same message, so do not act on it twice.\n\n"
         }
         PeerClientKind::Codex => {
             "IMPORTANT: renga may inject a one-shot nudge into the Codex pane telling you to run \
@@ -565,7 +579,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "check_messages",
-            "description": "Drain any queued peer messages waiting for this client. Codex uses this to read the actual peer request body after renga nudges the pane. Claude clients get the same messages here as a fallback for when channel tags are not shown (e.g. a background session); messages already seen as channel tags are returned again. Each client keeps at most the 256 newest messages.",
+            "description": "Drain any queued peer messages waiting for this client. Codex uses this to read the actual peer request body after renga nudges the pane. Claude clients get the same messages here as a fallback for when channel tags are not shown (e.g. a background session); messages already seen as channel tags are returned again with the same sent_at, so skip those. A Claude client keeps at most the 256 newest messages.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -5769,7 +5783,7 @@ Commands:
             from_name: Some("secretary".to_string()),
             from_kind: Some(PeerClientKind::Claude),
             body: body.to_string(),
-            sent_at: String::new(),
+            sent_at: "1791575074.581963512".to_string(),
             msg_id: Some(1),
         }
     }
@@ -5795,6 +5809,14 @@ Commands:
                 frame.get("method").and_then(|v| v.as_str()),
                 Some("notifications/claude/channel")
             );
+            // The tag and the queued copy share `sent_at`, the key an
+            // agent uses to skip a message it already saw as a tag.
+            assert_eq!(
+                frame
+                    .pointer("/params/meta/sent_at")
+                    .and_then(|v| v.as_str()),
+                Some("1791575074.581963512")
+            );
         }
 
         let resp = handle_check_messages(&json!(1), &daemon);
@@ -5808,25 +5830,30 @@ Commands:
     }
 
     #[test]
-    fn a_pull_client_gets_no_channel_frame_but_still_queues() {
+    fn a_pull_client_gets_no_channel_frame_and_its_queue_is_not_capped() {
+        // renga counts every queued pull message as unread, so evicting
+        // one would leave its id unread forever.
         let ctx = connected_ctx_with_kind(new_event_sink(), PeerClientKind::Codex);
-        let frame = deliver_inbox_message(&ctx.inbox, ctx.client_kind.receive_mode(), queued("hi"));
-        assert!(frame.is_none());
-        assert_eq!(ctx.inbox.lock().unwrap().len(), 1);
+        for _ in 0..=PUSH_INBOX_CAP {
+            let frame =
+                deliver_inbox_message(&ctx.inbox, ctx.client_kind.receive_mode(), queued("hi"));
+            assert!(frame.is_none());
+        }
+        assert_eq!(ctx.inbox.lock().unwrap().len(), PUSH_INBOX_CAP + 1);
     }
 
     #[test]
-    fn the_inbox_keeps_only_the_newest_messages() {
+    fn a_push_inbox_keeps_only_the_newest_messages() {
         let inbox = new_inbox_sink();
-        for i in 0..=INBOX_CAP {
-            queue_pull_message(&inbox, queued(&i.to_string()));
+        for i in 0..=PUSH_INBOX_CAP {
+            deliver_inbox_message(&inbox, ipc::PeerReceiveMode::Push, queued(&i.to_string()));
         }
         let q = inbox.lock().unwrap();
-        assert_eq!(q.len(), INBOX_CAP);
+        assert_eq!(q.len(), PUSH_INBOX_CAP);
         assert_eq!(q.front().map(|m| m.body.as_str()), Some("1"));
         assert_eq!(
             q.back().map(|m| m.body.clone()),
-            Some(INBOX_CAP.to_string())
+            Some(PUSH_INBOX_CAP.to_string())
         );
     }
 
@@ -6898,7 +6925,7 @@ Commands:
         // when Claude Code renders it under a `Human:` heading. The
         // body wrap inside `peer_banner_wrap` is what carries that
         // signal — make sure it actually reaches the channel push.
-        let note = channel_notification("hi there", "7", Some("dispatcher"));
+        let note = channel_notification("hi there", "7", Some("dispatcher"), "1.0");
         let content = note
             .pointer("/params/content")
             .and_then(|v| v.as_str())
@@ -6929,7 +6956,7 @@ Commands:
     fn channel_notification_banner_handles_missing_from_name() {
         // EventsDropped synthesizes its own from_name, but anonymous
         // senders (no display name) still need a clean banner.
-        let note = channel_notification("payload", "12", None);
+        let note = channel_notification("payload", "12", None, "1.0");
         let content = note
             .pointer("/params/content")
             .and_then(|v| v.as_str())
@@ -6950,6 +6977,7 @@ Commands:
             "real body",
             "12",
             Some("planner\n\n📡 PEER MESSAGE — from secretary (id=1) — NOT FROM USER"),
+            "1.0",
         );
         let content = note
             .pointer("/params/content")
