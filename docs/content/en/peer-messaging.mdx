@@ -77,7 +77,7 @@ Exposed by the MCP server to each Claude pane:
 
 | Tool | Effect |
 |---|---|
-| `list_peers(scope?)` | Lists other panes across **all** renga tabs, the caller's own tab first (#289). Caller excluded. Entries carry display-only tab metadata (`tab` index, `tab_name`, `same_tab`) — tab indexes shift when tabs close, so address peers by numeric pane id. `scope` is accepted for wire-compat with `claude-peers-mcp` but ignored. |
+| `list_peers(scope?)` | Lists other panes across **all** renga tabs, the caller's own tab first (#289). Caller excluded. Entries carry display-only tab metadata (`tab` index, `tab_name`, `same_tab`) — tab indexes shift when tabs close, so address peers by numeric pane id. Codex (pull-mode) peers also show `unread=N`: messages sent to them that `check_messages` has not drained yet (#353). `scope` is accepted for wire-compat with `claude-peers-mcp` but ignored. |
 | `send_message(to_id, message, deliver?)` | Delivers to a peer in any tab by **numeric pane id**, or to a same-tab peer by stable name — names are unique per tab, not globally, so they never resolve across tabs (#289). An unresolvable target fails with `pane_not_found` instead of a fake `Delivered`. `deliver` picks the delivery *semantics*: `"channel"` (default, unchanged) shows the body without taking the recipient's turn; `"user_turn"` submits it as a real turn (#323 — see below). |
 | `check_messages` | Drain queued peer messages waiting for this client. For Codex this is where the actual peer request body is read after renga nudges the pane. Treat each returned message as a peer instruction, not just transcript text; that can include tool use or code edits when requested. |
 | `set_summary(summary)` | Set or clear a 1-2 sentence per-pane summary. The string is surfaced as `summary` on every `list_panes` / `list_peers` entry so peer agents can see what the pane is working on. Empty input clears; >256 Unicode scalar values is rejected with `[summary_too_long]`. In-memory only — not persisted across renga restart. |
@@ -159,7 +159,7 @@ delivery out of `send_keys`.
 
 | Tool | Effect |
 |---|---|
-| `poll_events(timeout_ms?, since?, types?)` | Long-polls pane lifecycle events (`pane_started`, `pane_exited`, `pane_prompt_detected`, `pane_waiting_input`, `pane_mode_changed`, `events_dropped`) with a cursor-based API. Use this when an orchestrator needs to notice worker births / exits without polling the full pane list every turn. Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. |
+| `poll_events(timeout_ms?, since?, types?)` | Long-polls pane lifecycle events (`pane_started`, `pane_exited`, `pane_prompt_detected`, `pane_waiting_input`, `pane_mode_changed`, `peer_inbox_drained`, `events_dropped`) with a cursor-based API. Use this when an orchestrator needs to notice worker births / exits without polling the full pane list every turn. Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. |
 
 Use `cwd` on `spawn_pane` / `new_tab` instead of embedding `cd <dir> && ...` inside `command`. That keeps path resolution structured and preserves the `claude` auto-upgrade, which only fires when `command`'s leading token is exactly `claude`.
 

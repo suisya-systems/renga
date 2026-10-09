@@ -305,6 +305,7 @@ impl App {
             } else {
                 self.push_pending_codex_peer_nudge(target_id, message, 1);
             }
+            *self.peer_unread.entry(target_id).or_default() += 1;
         }
         self.event_bus.emit(ipc::Event::PeerInbox {
             target_pane: target_id,
@@ -355,6 +356,64 @@ impl App {
                 )
             })?;
         self.peer_client_kinds.insert(pane_id, kind);
+        // A (re)started MCP subprocess begins with an empty inbox, so
+        // whatever was counted against the previous one can never be
+        // drained now.
+        self.peer_unread.remove(&pane_id);
+        Ok(())
+    }
+
+    /// The pane's agent drained `count` peer messages (Issue #353).
+    /// Pending nudge state is dropped only once the unread count hits
+    /// zero: a message sent between the drain and this report is
+    /// still in the inbox and still needs its nudge.
+    ///
+    /// ponytail: counts, not message ids. A message lost before the
+    /// MCP subprocess queued it (event-bus drop, send racing startup)
+    /// keeps `unread` above zero until the subprocess re-registers;
+    /// per-message ids if that residue matters.
+    pub(crate) fn handle_peer_inbox_drained(
+        &mut self,
+        pane_id: usize,
+        count: usize,
+    ) -> std::result::Result<(), ipc::CodedError> {
+        self.resolve_pane_across_workspaces(&PaneRef::Id(pane_id))
+            .ok_or_else(|| {
+                ipc::CodedError::new(
+                    ipc::err_code::PANE_NOT_FOUND,
+                    format!("pane {pane_id} not found for inbox drain"),
+                )
+            })?;
+        let unread = self.peer_unread.remove(&pane_id).unwrap_or(0);
+        let left = unread.saturating_sub(count);
+        if left > 0 {
+            self.peer_unread.insert(pane_id, left);
+        } else {
+            // An already-typed nudge (`SubmitAt`) is left to finish:
+            // dropping it would strand the half-written draft in the
+            // composer.
+            if matches!(
+                self.pending_codex_peer_messages
+                    .get(&pane_id)
+                    .and_then(|q| q.front()),
+                Some(PendingCodexPeerDelivery::Draft(..))
+            ) {
+                self.pending_codex_peer_messages.remove(&pane_id);
+            }
+            if self
+                .codex_peer_notification
+                .as_ref()
+                .is_some_and(|n| n.target_pane == pane_id)
+            {
+                self.codex_peer_notification = None;
+                self.dirty = true;
+            }
+        }
+        self.event_bus.emit(ipc::Event::PeerInboxDrained {
+            pane: pane_id,
+            count,
+            ts_ms: ipc::events::now_ms(),
+        });
         Ok(())
     }
 

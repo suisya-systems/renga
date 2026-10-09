@@ -617,6 +617,14 @@ pub enum Request {
         pane_id: usize,
         kind: PeerClientKind,
     },
+    /// Report that `pane_id`'s MCP peer subprocess just handed `count`
+    /// queued peer messages to its agent via `check_messages` (Issue
+    /// #353). The server lowers the pane's unread count, emits
+    /// [`Event::PeerInboxDrained`], and drops a still-untyped Codex
+    /// nudge once nothing is left unread. Fire-and-forget from the
+    /// client's side: an older server rejects the unknown `cmd` and
+    /// the drain itself has already happened.
+    PeerInboxDrained { pane_id: usize, count: usize },
     /// Rename or (re)assign the stable `name` / `role` of an existing
     /// pane. Both fields use three-state semantics over the wire:
     ///
@@ -968,6 +976,12 @@ pub struct PeerInfo {
     /// survive renga restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Peer messages sent to this pull-mode (Codex) peer that its
+    /// `check_messages` has not drained yet (Issue #353). Absent for
+    /// push-mode peers, which have no inbox to drain, and from servers
+    /// that predate #353.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<usize>,
 }
 
 /// One entry in the `List` response payload.
@@ -1475,6 +1489,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_kind: Option<PeerClientKind>,
         body: String,
+        ts_ms: u64,
+    },
+    /// `pane`'s agent drained `count` peer messages with
+    /// `check_messages` (Issue #353). Reported by the pane's MCP peer
+    /// subprocess, so it means the messages reached the agent's
+    /// context, not merely its inbox. Only pull-mode (Codex) peers
+    /// drain; push-mode peers never produce it.
+    PeerInboxDrained {
+        pane: usize,
+        count: usize,
         ts_ms: u64,
     },
 }
@@ -2838,6 +2862,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            unread: None,
         }
     }
 

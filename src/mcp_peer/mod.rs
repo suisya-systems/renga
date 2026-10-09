@@ -464,7 +464,7 @@ pane. `focused` and names mean YOUR tab; a numeric id may name a pane in any tab
 uniqueness is checked within the resolved pane's tab.\n\n\
 Event monitoring:\n\
 - poll_events: Long-poll for pane lifecycle events (pane_started, pane_exited, \
-pane_prompt_detected, pane_waiting_input, pane_mode_changed, events_dropped). Events are process-wide: pane lifecycle from every renga tab is \
+pane_prompt_detected, pane_waiting_input, pane_mode_changed, peer_inbox_drained, events_dropped). Events are process-wide: pane lifecycle from every renga tab is \
 delivered, not just the current tab's. First call (no `since`) starts at \"right now\" — \
 no historical replay. \
 Each response includes a `next_since` cursor to pass back on the next call. Optional \
@@ -842,7 +842,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "poll_events",
-            "description": "Long-poll for pane lifecycle events (pane_started, pane_exited, pane_prompt_detected, pane_waiting_input, pane_mode_changed, events_dropped, and any forward-compatible variants). Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. Returns events accumulated since the given cursor; if none are buffered, blocks up to `timeout_ms` for the next one. The first call (omit `since`) starts at \"right now\" — no historical replay, matching `renga events --timeout` semantics. Each response body is a JSON object with `next_since` (an opaque cursor string to pass back) and `events` (an array of event objects in renga's wire format).",
+            "description": "Long-poll for pane lifecycle events (pane_started, pane_exited, pane_prompt_detected, pane_waiting_input, pane_mode_changed, peer_inbox_drained, events_dropped, and any forward-compatible variants). Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. Returns events accumulated since the given cursor; if none are buffered, blocks up to `timeout_ms` for the next one. The first call (omit `since`) starts at \"right now\" — no historical replay, matching `renga events --timeout` semantics. Each response body is a JSON object with `next_since` (an opaque cursor string to pass back) and `events` (an array of event objects in renga's wire format).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -954,6 +954,9 @@ tab index shown is display metadata that shifts when tabs close:\n\n",
         }
         if let Some(mode) = p.receive_mode {
             out.push_str(&format!(" receive={}", receive_mode_label(mode)));
+        }
+        if let Some(unread) = p.unread {
+            out.push_str(&format!(" unread={unread}"));
         }
         match (p.same_tab, p.tab) {
             (Some(true), _) => out.push_str(" [your tab]"),
@@ -1136,8 +1139,11 @@ asked, and use send_message only when a reply is part of the task.\n\n",
 }
 
 fn handle_check_messages(id: &Value, ctx: &PeerCtx) -> Value {
-    let mut inbox = ctx.inbox.lock().unwrap_or_else(|p| p.into_inner());
-    let messages: Vec<QueuedPeerMessage> = inbox.drain(..).collect();
+    let messages: Vec<QueuedPeerMessage> = {
+        let mut inbox = ctx.inbox.lock().unwrap_or_else(|p| p.into_inner());
+        inbox.drain(..).collect()
+    };
+    report_inbox_drained(ctx, &messages);
     let structured: Vec<Value> = messages
         .iter()
         .map(|msg| {
@@ -1161,6 +1167,41 @@ fn handle_check_messages(id: &Value, ctx: &PeerCtx) -> Value {
             "isError": false,
         }),
     )
+}
+
+/// Tell renga the agent now holds `messages` (Issue #353), so it can
+/// clear the pane's pending nudge and emit `peer_inbox_drained`. Only
+/// real peer messages count: renga's own `events_dropped` notice was
+/// never counted as unread. Best effort — the drain already happened,
+/// so a failed report (e.g. a pre-#353 server) is only logged.
+fn report_inbox_drained(ctx: &PeerCtx, messages: &[QueuedPeerMessage]) {
+    let Mode::Connected { pane_id, endpoint } = &ctx.mode else {
+        return;
+    };
+    let count = drained_peer_count(messages);
+    if count == 0 {
+        return;
+    }
+    match client::send_request(
+        endpoint,
+        &Request::PeerInboxDrained {
+            pane_id: *pane_id,
+            count,
+        },
+    ) {
+        Ok(Response::Ok { .. }) => {}
+        Ok(other) => log_stderr(&format!("inbox drain report returned: {other:?}")),
+        Err(e) => log_stderr(&format!("inbox drain report failed: {e}")),
+    }
+}
+
+/// Peer messages among `messages`; renga's runtime notices carry the
+/// non-numeric `from_id` `"renga"`.
+fn drained_peer_count(messages: &[QueuedPeerMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.from_id.parse::<usize>().is_ok())
+        .count()
 }
 
 fn fmt_code(message: &str, code: &Option<String>) -> String {
@@ -4155,6 +4196,7 @@ mod tests {
             kind: None,
             receive_mode: None,
             summary: None,
+            unread: None,
         }
     }
 
@@ -5618,6 +5660,18 @@ Commands:
             instructions.contains("actual peer request body comes from check_messages"),
             "Codex instructions should point Codex at check_messages for the real body: {instructions}"
         );
+    }
+
+    #[test]
+    fn drained_peer_count_skips_renga_runtime_notices() {
+        let msg = |from_id: &str| QueuedPeerMessage {
+            from_id: from_id.to_string(),
+            from_name: None,
+            from_kind: None,
+            body: String::new(),
+            sent_at: String::new(),
+        };
+        assert_eq!(drained_peer_count(&[msg("2"), msg("renga"), msg("7")]), 2);
     }
 
     #[test]

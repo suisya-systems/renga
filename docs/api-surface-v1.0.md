@@ -58,7 +58,7 @@ must accept these instead of JSON-RPC errors.
 | `scope` (in) | `"machine"\|"directory"\|"repo"` | Optional; **ignored**. Accepted for wire-compat with `claude-peers-mcp`. Results always span every renga tab (#289; before that, the caller's tab only). |
 
 Result: text content listing `id`, `name`, `role`, `kind` (`claude`/`codex`),
-`receive_mode` (`push`/`pull`), `cwd`, plus display-only tab metadata
+`receive_mode` (`push`/`pull`), `unread` (pull-mode peers only, since #353), `cwd`, plus display-only tab metadata
 (`tab` index, `tab_name`, `same_tab`) since #289. Every workspace is
 enumerated, the caller's own tab first. Empty case: `"No peers in any renga
 tab."` (#289; previously `"No peers in this tab."`).
@@ -583,7 +583,8 @@ Server budgets: 5 s `APP_REPLY_TIMEOUT` (server → app event loop) +
 | `inspect` | `target: PaneRef`, `lines?`, `include_cursor: bool` (default false) | `lines` beyond the visible height reads scrollback since v1.4 (#278) — see §1.12. |
 | `peer_list` | `from_pane: usize` | |
 | `peer_send` | `from_pane: usize`, `target: PaneRef`, `body: string`, `deliver?: channel\|user_turn` | Cross-tab ids deliver since #289; names resolve in the sender's tab only; unresolvable targets fail `pane_not_found`. `deliver` (#323) is `skip_serializing_if = "is_channel"`, so a channel send is byte-identical on the wire to a pre-#323 one; senders must gate `user_turn` on `peer_user_turn` (§3.4). |
-| `peer_register_client` | `pane_id: usize`, `kind: claude\|codex` | Posted by `renga mcp-peer` on startup. |
+| `peer_register_client` | `pane_id: usize`, `kind: claude\|codex` | Posted by `renga mcp-peer` on startup. Resets the pane's unread count. |
+| `peer_inbox_drained` | `pane_id: usize`, `count: usize` | #353. Posted by `renga mcp-peer` after a `check_messages` that returned `count` peer messages. Emits `peer_inbox_drained`. Fire-and-forget: older servers reject the unknown `cmd`, which the client only logs. |
 | `set_pane_identity` | `target: PaneRef`, `name?`, `role?` (three-state: missing / null / value), `from_pane?: usize` | Uses serde `double_option`. `from_pane` (#296) behaves exactly as on `close`. |
 | `set_summary` | `from_pane: usize`, `summary: string` | Empty `summary` clears. >256 `chars` rejected with `summary_too_long`. |
 
@@ -732,6 +733,7 @@ residual direction is why this is a major-release change.
 | `pane_prompt_detected` | `id`, `name?`, `role?`, `kind`, `prompt`, `ts_ms` | Since #72. Heuristic screen scan for an interactive prompt. `kind` is `choice` (Claude / Codex `1. Yes` approval menu), `yes_no` (`(y/n)`-style on the cursor row) or `password` (`password:` / `passphrase:` on the cursor row); `prompt` is the matched line (the question line for `choice`). Once per distinct prompt; re-armed when it leaves the screen or changes. |
 | `pane_waiting_input` | `id`, `name?`, `role?`, `idle_ms`, `ts_ms` | Since #72. The pane has produced no PTY output for 5 s. Once per quiet spell; the next output re-arms it. Heuristic: a silent long-running command looks the same as a pane waiting for input. |
 | `pane_mode_changed` | `id`, `name?`, `role?`, `mode`, `prev_mode?`, `ts_ms` | Since #49. Claude Code permission mode read from the mode line under its input box (Claude panes only). `mode` is `default` (only recognized from the `? for shortcuts` hint), `plan`, `accept_edits`, `bypass_permissions`, `auto` or `unknown` (an unrecognized `shift+tab to cycle` line). `prev_mode` is the previous reading, absent on the first. Fires on change only; frames without a mode line are not a reading. |
+| `peer_inbox_drained` | `pane: usize`, `count: usize`, `ts_ms` | Since #353. `pane`'s agent drained `count` peer messages with `check_messages`, as reported by its MCP peer subprocess. Pull-mode (Codex) peers only. |
 | `events_dropped` | `count: u64`, `ts_ms` | Synthesized when a slow subscriber missed events. Per-subscriber. |
 | `heartbeat` | `ts_ms` | Periodic; only purpose is to detect half-closed connections. Buffer cap 256/subscriber. |
 | `peer_inbox` | `target_pane: usize`, `from_pane: usize`, `from_name?`, `from_kind?`, `body`, `ts_ms` | May originate from any tab since #289 (previously intra-tab by construction). **The only variant whose delivery depends on who is listening**: since #306 a subscription that sent `subscribe.from_pane` (§3.3) receives only the ones matching its pane — all such subscriptions, if several named it — while a subscription that sent no `from_pane`, `renga events` among them, still receives every one of them as before. Pane ids are session-unique, so the routing needs no tab awareness. Clients keep their own `target_pane` check as a backstop, which is what keeps them correct against a pre-#306 server that broadcasts to scoped subscriptions too. |

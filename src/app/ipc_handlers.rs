@@ -131,6 +131,14 @@ impl App {
                 let result = self.handle_peer_register_client(pane_id, kind);
                 let _ = reply.send(result);
             }
+            AppCommand::PeerInboxDrained {
+                pane_id,
+                count,
+                reply,
+            } => {
+                let result = self.handle_peer_inbox_drained(pane_id, count);
+                let _ = reply.send(result);
+            }
             AppCommand::SetPaneIdentity {
                 target,
                 name,
@@ -340,6 +348,9 @@ impl App {
                                 .copied()
                                 .map(|k| k.receive_mode()),
                             summary: pane.and_then(|p| p.summary.clone()),
+                            unread: self
+                                .pane_expects_codex_peer_delivery(ws_idx, id)
+                                .then(|| self.peer_unread.get(&id).copied().unwrap_or(0)),
                         }
                     }),
             );

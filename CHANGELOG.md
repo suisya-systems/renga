@@ -31,6 +31,15 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   box, so it's a heuristic: default mode is only recognized while the
   `? for shortcuts` hint is shown (input empty), and frames without a
   mode line (typing, menus, dialogs) don't count as a change.
+- **`peer_inbox_drained` event and `unread` on `list_peers`.** (#353)
+  `send_message` succeeding only meant the body reached a Codex peer's
+  MCP inbox. The peer MCP server now reports every `check_messages`
+  drain back to renga, which emits `peer_inbox_drained {pane, count}`
+  and drops the pane's not-yet-typed nudge / focused notification once
+  nothing is left unread. `list_peers` shows `unread=N` for pull-mode
+  (Codex) peers. The count resets when the pane's MCP subprocess
+  (re)registers; a message lost before reaching the inbox (event-bus
+  drop) keeps it above zero until then.
 
 ### Changed
 
