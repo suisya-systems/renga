@@ -2,3 +2,7 @@
 # sh + Git Bash chokes on a `#!/usr/bin/env sh\r\n` shebang because
 # the `\r` ends up as part of the interpreter path.
 .githooks/*        text eol=lf
+
+# Captured terminal byte streams: a CRLF conversion would change the
+# screen the readiness fixtures replay (#354).
+*.vt               binary
