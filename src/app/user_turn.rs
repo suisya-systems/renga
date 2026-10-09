@@ -693,7 +693,10 @@ pub(crate) fn codex_turn_readiness(screen: &vt100::Screen) -> TurnReadiness {
 fn codex_working_line_above(screen: &vt100::Screen, prompt_row: u16) -> bool {
     (prompt_row.saturating_sub(4)..prompt_row).any(|row| {
         let t = row_text(screen, row).to_lowercase();
-        t.trim_start().starts_with('\u{2022}') && BUSY_MARKERS.iter().any(|m| t.contains(m))
+        t.trim_start()
+            .strip_prefix('\u{2022}')
+            .is_some_and(|r| r.trim_start().starts_with("working"))
+            && BUSY_MARKERS.iter().any(|m| t.contains(m))
     })
 }
 
@@ -716,10 +719,16 @@ fn codex_prompt_row(screen: &vt100::Screen) -> Option<u16> {
 /// the dim attribute right in the edit position; typed text is never
 /// dim, so dim cells are not a draft.
 fn codex_composer_is_empty(screen: &vt100::Screen, prompt_row: u16) -> bool {
+    // Only the first non-blank cell is the structural glyph; a second `›`
+    // is typed text.
+    let mut glyph_seen = false;
     (0..screen.size().1).all(|col| {
         screen.cell(prompt_row, col).is_none_or(|c| {
             let s = c.contents();
-            c.dim() || s.trim().is_empty() || s == "\u{203A}"
+            if c.dim() || s.trim().is_empty() {
+                return true;
+            }
+            !std::mem::replace(&mut glyph_seen, true) && s == "\u{203A}"
         })
     })
 }

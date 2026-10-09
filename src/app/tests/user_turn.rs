@@ -1993,3 +1993,27 @@ fn codex_captured_screens_distinguish_placeholder_from_draft() {
         assert_eq!(codex_readiness_of(bytes, *rows, *cols), *want, "{name}");
     }
 }
+
+#[test]
+fn codex_bulleted_transcript_quoting_interrupt_is_not_busy() {
+    assert_eq!(
+        codex_readiness_of(
+            b"\x1b[2J\x1b[H\x1b[?25h\xE2\x80\xA2 Press esc to interrupt\r\n\r\n\xE2\x80\xBA \x1b[3;3H",
+            8,
+            40
+        ),
+        TurnReadiness::Ready
+    );
+}
+
+#[test]
+fn codex_typed_glyph_in_the_composer_is_a_draft() {
+    assert_eq!(
+        codex_readiness_of(
+            b"\x1b[2J\x1b[H\x1b[?25h\xE2\x80\xBA \xE2\x80\xBA\x1b[1;3H",
+            8,
+            40
+        ),
+        TurnReadiness::NotReady
+    );
+}
