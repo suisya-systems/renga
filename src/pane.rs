@@ -1916,7 +1916,7 @@ mod tests {
         let lock_is_held =
             |path: &std::path::Path| std::fs::OpenOptions::new().write(true).open(path).is_err();
 
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
         let mut pane = Pane::new(9901, 24, 80, tx).expect("spawn pane");
         // Detach the locker from the shell, then end the shell — the
         // exact "natural exit leaves an orphan" scenario.
@@ -1925,7 +1925,18 @@ mod tests {
         ));
         assert!(
             wait_for(
-                || pane.try_flush_startup().unwrap_or(false),
+                || {
+                    // ConPTY (PSEUDOCONSOLE_INHERIT_CURSOR) holds the
+                    // shell's output until its startup DSR query is
+                    // answered. The app's main loop writes PtyReply back;
+                    // this test has no main loop, so do it here.
+                    for event in rx.try_iter() {
+                        if let AppEvent::PtyReply(_, bytes) = event {
+                            let _ = pane.write_input(&bytes);
+                        }
+                    }
+                    pane.try_flush_startup().unwrap_or(false)
+                },
                 Duration::from_secs(30)
             ),
             "shell prompt should be detected and startup command flushed"
