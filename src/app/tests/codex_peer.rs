@@ -1813,6 +1813,25 @@ fn stalled_codex_nudge_emits_once_and_badges_until_drained() {
     app.flush_pending_codex_peer_messages();
     assert!(stalled(&rx).is_empty());
 
+    // A focus round trip hands the nudge to the overlay and back; the
+    // stall carries across both handoffs instead of clearing and
+    // re-firing.
+    assert!(app.switch_tab(1), "focus the Codex pane");
+    app.flush_pending_codex_peer_messages();
+    assert!(
+        app.codex_peer_notification
+            .as_ref()
+            .is_some_and(|n| n.target_pane == codex_pane),
+        "draft promoted to the overlay"
+    );
+    app.flush_pending_codex_peer_messages();
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    assert!(app.switch_tab(0), "leave the Codex pane");
+    app.flush_pending_codex_peer_messages();
+    assert!(app.pending_codex_peer_messages.contains_key(&codex_pane));
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    assert!(stalled(&rx).is_empty(), "no re-fire across the round trip");
+
     // Draining the queue clears the badge.
     app.pending_codex_peer_messages.remove(&codex_pane);
     app.flush_pending_codex_peer_messages();
