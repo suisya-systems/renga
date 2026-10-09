@@ -661,37 +661,31 @@ impl App {
     /// What is still owed to `pane_id` (Issue #352): `Queued` while
     /// renga holds the nudge (draft, overlay, or typed and awaiting its
     /// Enter), `Nudged` once it is in the pane but `check_messages` has
-    /// not drained the messages. `pending` is the unread count, or the
-    /// nudge's own count for messages that never reached an inbox.
+    /// not drained the messages. `pending` is the unread inbox count;
+    /// messages that never reached an inbox (or were wiped by a
+    /// re-registration) cannot be read, so they are not owed.
     pub(crate) fn derive_peer_delivery(
         &self,
         pane_id: usize,
     ) -> Option<(ipc::PeerDeliveryState, usize)> {
         let unread = self.peer_unread.get(&pane_id).copied().unwrap_or(0);
-        let (holding, held) = match self
-            .pending_codex_peer_messages
-            .get(&pane_id)
-            .and_then(|q| q.front())
-        {
-            Some(PendingCodexPeerDelivery::Draft(_, n, _)) => (true, *n),
-            // Typed after a full drain: only the Enter is left, nothing is owed.
-            Some(PendingCodexPeerDelivery::SubmitAt(_)) => (true, 0),
-            None => self
-                .codex_peer_notification
-                .as_ref()
-                .filter(|n| n.target_pane == pane_id)
-                .map_or((false, 0), |n| (true, n.pending_count)),
-        };
-        let pending = if unread > 0 { unread } else { held };
-        if pending == 0 {
+        if unread == 0 {
             return None;
         }
+        let holding = self
+            .pending_codex_peer_messages
+            .get(&pane_id)
+            .is_some_and(|q| !q.is_empty())
+            || self
+                .codex_peer_notification
+                .as_ref()
+                .is_some_and(|n| n.target_pane == pane_id);
         let state = if holding {
             ipc::PeerDeliveryState::Queued
         } else {
             ipc::PeerDeliveryState::Nudged
         };
-        Some((state, pending))
+        Some((state, unread))
     }
 
     /// Refresh every pane's `peer_delivery` badge state and emit
