@@ -93,9 +93,10 @@ The pane-control tools (`list_panes`, `spawn_pane`, `spawn_claude_pane`, `spawn_
 Codex approvals for `check_messages` / `send_message` can be pane-local, so a freshly spawned Codex pane may stop on an approval menu the first time it handles a peer request — and the nudge then looks like it did nothing. renga does not do this warm-up for you (`spawn_codex_pane` only launches the pane); the documented path is:
 
 1. **Once per machine:** `renga mcp install --client codex --codex-auto-approve-peer-tools` (re-run with `--force` after upgrading renga). This preconfigures the two peer tools to auto-approve where Codex supports it.
-2. **Per new pane:** right after `spawn_codex_pane(name="worker-x", …)`, send it a throwaway request such as `send_message(to_id="worker-x", message="warm-up: call check_messages, then reply \"ready\"")`. This makes the pane hit both approvals (`check_messages`, then `send_message` for the reply) before any real work depends on it. If a menu appears, choose `Always allow`.
-3. **Watch for a stuck pane:** subscribe with `poll_events(types=["pane_prompt_detected"])`. A `kind: "choice"` event for the worker's pane means an approval menu is on screen. `inspect_pane(target="worker-x", lines=20)` to read what is being asked, then answer it with `send_keys` (or have the user do so). Do not approve blindly.
-4. Send the real request once the worker has replied `ready`.
+2. **Take an event cursor first:** call `poll_events(types=["pane_prompt_detected"], timeout_ms=0)` and keep the returned `next_since`. Without `since`, a poll starts at "now", and a prompt is reported once, so an approval menu that appears before your first poll would be missed.
+3. **Per new pane:** right after `spawn_codex_pane(name="worker-x", …)`, send it a throwaway request such as `send_message(to_id="worker-x", message="warm-up: call check_messages, then reply \"ready\"")`. This makes the pane hit both approvals (`check_messages`, then `send_message` for the reply) before any real work depends on it. If a menu appears, choose `Always allow`.
+4. **Watch for a stuck pane:** poll with `poll_events(types=["pane_prompt_detected"], since=<cursor>)`, passing each returned `next_since` into the next call. A `kind: "choice"` event for the worker's pane means an approval menu is on screen. `inspect_pane(target="worker-x", lines=20)` to read what is being asked, then answer it with `send_keys` (or have the user do so). Do not approve blindly.
+5. Send the real request once the worker has replied `ready`.
 
 ## Residual failure modes and non-goals
 

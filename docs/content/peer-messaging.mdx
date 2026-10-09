@@ -222,9 +222,10 @@ src/app.rs の handle_split を読んで要約して
 Codex の `check_messages` / `send_message` の承認は pane ごとに出ることがあり、spawn 直後の Codex pane は最初の peer 依頼で承認メニューに止まることがあります。その場合、nudge は何も起こさなかったように見えます。renga はウォームアップを自動では行いません (`spawn_codex_pane` はペインを起動するだけです)。手順は次のとおりです。
 
 1. **マシンごとに 1 回:** `renga mcp install --client codex --codex-auto-approve-peer-tools` を実行します (renga をアップグレードしたら `--force` 付きで再実行)。Codex が対応する範囲で、2 つの peer ツールの承認を事前設定します。
-2. **新しい pane ごと:** `spawn_codex_pane(name="worker-x", …)` の直後に、捨てても構わない依頼を送ります。例: `send_message(to_id="worker-x", message="warm-up: check_messages を呼んで、\"ready\" と返信して")`。本番の依頼が来る前に、pane が 2 つの承認 (`check_messages`、返信用の `send_message`) を通ります。メニューが出たら `Always allow` を選びます。
-3. **止まった pane の検知:** `poll_events(types=["pane_prompt_detected"])` を購読します。worker の pane で `kind: "choice"` のイベントが来たら、承認メニューが画面に出ています。`inspect_pane(target="worker-x", lines=20)` で内容を読み、`send_keys` で答える (またはユーザーに頼む) ようにしてください。中身を見ずに承認しないでください。
-4. worker が `ready` と返信したら、本番の依頼を送ります。
+2. **先にイベントの cursor を取る:** `poll_events(types=["pane_prompt_detected"], timeout_ms=0)` を呼び、返ってきた `next_since` を保持します。`since` を省くと「今」から読み始め、同じプロンプトの通知は 1 回だけなので、最初の poll より前に出た承認メニューは取りこぼします。
+3. **新しい pane ごと:** `spawn_codex_pane(name="worker-x", …)` の直後に、捨てても構わない依頼を送ります。例: `send_message(to_id="worker-x", message="warm-up: check_messages を呼んで、\"ready\" と返信して")`。本番の依頼が来る前に、pane が 2 つの承認 (`check_messages`、返信用の `send_message`) を通ります。メニューが出たら `Always allow` を選びます。
+4. **止まった pane の検知:** `poll_events(types=["pane_prompt_detected"], since=<cursor>)` で poll し、返ってきた `next_since` を次の呼び出しへ渡し続けます。worker の pane で `kind: "choice"` のイベントが来たら、承認メニューが画面に出ています。`inspect_pane(target="worker-x", lines=20)` で内容を読み、`send_keys` で答える (またはユーザーに頼む) ようにしてください。中身を見ずに承認しないでください。
+5. worker が `ready` と返信したら、本番の依頼を送ります。
 
 ## 残る失敗モードと非目標
 
