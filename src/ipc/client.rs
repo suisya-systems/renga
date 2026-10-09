@@ -128,6 +128,10 @@ pub struct ServerHandshake {
     /// was minted in. `None` must be read as "cannot tell", never as
     /// "same session as before".
     pub session_id: Option<String>,
+    /// Release the server process was built from, or `None` from any
+    /// pre-#312 server. May differ from this client's own version when
+    /// the binary on disk was upgraded under a still-running server.
+    pub server_version: Option<String>,
 }
 
 /// Complete the [`Request::Hello`] handshake and return what the
@@ -196,6 +200,7 @@ fn perform_handshake(reader: &mut BufReader<Stream>) -> Result<ServerHandshake> 
             session_token,
             capabilities,
             session_id,
+            server_version,
         } => {
             // Verifying the token here is also what makes a cached
             // capability answer safe without any staleness key: a
@@ -210,6 +215,7 @@ fn perform_handshake(reader: &mut BufReader<Stream>) -> Result<ServerHandshake> 
                 server_pid,
                 capabilities,
                 session_id,
+                server_version,
             })
         }
         Response::Err { message, code } => Err(anyhow!(
