@@ -1488,6 +1488,7 @@ mod tests {
     }
 
     impl WireHarness {
+        #[cfg(unix)]
         fn start(tag: &str) -> Self {
             Self::start_with_heartbeat(tag, HEARTBEAT_INTERVAL)
         }
@@ -1911,10 +1912,14 @@ mod tests {
             let _ = done_tx.send(result.map(|()| heartbeats));
         });
 
-        let heartbeats = done_rx
-            .recv_timeout(WIRE_TIMEOUT)
-            .expect("idle subscriber never received two heartbeats")
-            .expect("subscribe stream ended with an error");
+        let heartbeats = match done_rx.recv_timeout(WIRE_TIMEOUT) {
+            Ok(result) => result.expect("subscribe stream ended with an error"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("idle subscriber never received two heartbeats")
+            }
+            // The callback's own assertion message is on stderr above.
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("client thread panicked"),
+        };
         assert_eq!(heartbeats, 2);
 
         // `subscribe_events` returning dropped the connection. The server
