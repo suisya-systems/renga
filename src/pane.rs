@@ -1034,6 +1034,7 @@ fn pty_reader_thread(
     let mut tail: Vec<u8> = Vec::with_capacity(TAIL_CAP * 2);
     let mut control_tail: Vec<u8> = Vec::with_capacity(64);
     let mut osc52_tail: Vec<u8> = Vec::with_capacity(4096);
+    let mut dsr_tail: Vec<u8> = Vec::with_capacity(8);
 
     let mut buf = [0u8; 4096];
     loop {
@@ -1116,9 +1117,24 @@ fn pty_reader_thread(
                     osc52_tail.clear();
                 }
 
+                let dsr_queries = count_dsr_queries(&mut dsr_tail, data);
+
                 let mut parser = parser.lock().unwrap_or_else(|e| e.into_inner());
                 parser.process(data);
                 let screen = parser.screen();
+                if dsr_queries > 0 {
+                    // Answer DSR cursor position requests. ConPTY sends one
+                    // at startup (portable-pty 0.9 sets
+                    // PSEUDOCONSOLE_INHERIT_CURSOR) and blocks until it is
+                    // answered. Routed through the main loop rather than
+                    // writing here so this thread never blocks on input.
+                    // ponytail: reports the cursor after the whole chunk, not
+                    // at the query offset; fine since requesters wait for the
+                    // reply before writing more.
+                    let (row, col) = screen.cursor_position();
+                    let reply = format!("\x1b[{};{}R", row + 1, col + 1).repeat(dsr_queries);
+                    let _ = event_tx.send(AppEvent::PtyReply(pane_id, reply.into_bytes()));
+                }
                 let mode = screen.mouse_protocol_mode();
                 if !matches!(mode, vt100::MouseProtocolMode::None) {
                     let mut cache = mouse_protocol_cache
@@ -1191,6 +1207,16 @@ fn find_osc_terminator(buf: &[u8], from: usize) -> Option<(usize, usize)> {
         i += 1;
     }
     None
+}
+
+/// Count DSR cursor position requests (`ESC[6n`) in `data`, carrying a
+/// partial query in `tail` so one split across two reads is still seen.
+fn count_dsr_queries(tail: &mut Vec<u8>, data: &[u8]) -> usize {
+    const DSR: &[u8] = b"\x1b[6n";
+    tail.extend_from_slice(data);
+    let count = tail.windows(DSR.len()).filter(|w| *w == DSR).count();
+    keep_possible_prefix_suffix(tail, DSR);
+    count
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1724,6 +1750,49 @@ mod tests {
         buf.extend_from_slice(b"bG8=\x07");
         assert_eq!(drain_osc52_copies(&mut buf), vec!["hello"]);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn count_dsr_queries_counts_whole_split_and_repeated_queries() {
+        let mut tail = Vec::new();
+        assert_eq!(count_dsr_queries(&mut tail, b"plain output"), 0);
+        assert_eq!(count_dsr_queries(&mut tail, b"a\x1b[6nb\x1b[6n"), 2);
+        // Split across reads at every possible boundary: counted once.
+        for split in 1..4 {
+            let (head, rest) = b"\x1b[6n".split_at(split);
+            let mut tail = b"xyz".to_vec();
+            assert_eq!(count_dsr_queries(&mut tail, head), 0);
+            assert_eq!(count_dsr_queries(&mut tail, rest), 1);
+            assert_eq!(count_dsr_queries(&mut tail, b"next"), 0);
+        }
+        // Other CSI n queries are not cursor position requests.
+        assert_eq!(count_dsr_queries(&mut Vec::new(), b"\x1b[5n\x1b[?6n"), 0);
+    }
+
+    #[test]
+    fn reader_thread_answers_dsr_with_cursor_position() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        pty_reader_thread(
+            Box::new(std::io::Cursor::new(b"\r\nhi\x1b[6n".to_vec())),
+            Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
+            Arc::new(Mutex::new(String::new())),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            7,
+            tx,
+        );
+        let replies: Vec<_> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                AppEvent::PtyReply(id, bytes) => Some((id, bytes)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec![(7, b"\x1b[2;3R".to_vec())]);
     }
 
     /// End-to-end acceptance for the pane Job Object (renga-trx): a
