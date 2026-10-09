@@ -1112,8 +1112,8 @@ fn render_single_pane(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Line::from(vec![
-            Span::styled(pane_title, title_style),
             // A peer nudge renga could not deliver for 30 s (#354).
+            // First, so a narrow pane truncates the label, not this.
             if pane.peer_nudge_stalled {
                 Span::styled(
                     " \u{26a0} peer nudge stalled ",
@@ -1124,6 +1124,7 @@ fn render_single_pane(
             } else {
                 Span::raw("")
             },
+            Span::styled(pane_title, title_style),
         ]))
         .title_bottom(bottom_title)
         .style(Style::default().bg(BG));

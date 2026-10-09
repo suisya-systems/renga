@@ -1794,7 +1794,9 @@ fn stalled_codex_nudge_emits_once_and_badges_until_drained() {
         .front_mut()
     {
         Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
-            *queued_at = Instant::now() - CODEX_PEER_NUDGE_STALL_TIMEOUT - Duration::from_secs(1);
+            *queued_at = Instant::now()
+                .checked_sub(CODEX_PEER_NUDGE_STALL_TIMEOUT + Duration::from_secs(1))
+                .expect("monotonic clock is past the stall timeout");
         }
         other => panic!("expected a queued draft, got {other:?}"),
     }
