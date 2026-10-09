@@ -17,6 +17,15 @@ use super::super::user_turn::{
 };
 use super::super::*;
 
+/// `App::new` with a silent child: a real shell's startup prompt can
+/// land after we seed the screen and overwrite it (Issue #357).
+fn inert_app(rows: u16, cols: u16) -> App {
+    crate::pane::INERT_SPAWN.with(|c| c.set(true));
+    let app = App::new(rows, cols);
+    crate::pane::INERT_SPAWN.with(|c| c.set(false));
+    app.expect("App::new")
+}
+
 /// Paint `bytes` onto the focused pane's vt100 screen without going
 /// near its PTY, and hand back the pane id.
 fn seed_focused_pane_screen(app: &mut App, bytes: &[u8]) -> usize {
@@ -251,7 +260,7 @@ fn codex_ready_for_input_string_alone_is_not_enough() {
         TurnReadiness::NotReady
     );
     // ...while the existing nudge gate still accepts it, unchanged.
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = seed_focused_pane_screen(&mut app, b"\x1b[2J\x1b[Hready for input");
     let pane = app.ws().panes.get(&pane_id).expect("pane");
     assert!(App::codex_peer_delivery_ready(true, pane));
@@ -266,7 +275,7 @@ fn codex_ready_for_input_string_alone_is_not_enough() {
 /// because agents rewrite that title to the in-flight task.
 #[test]
 fn registered_kind_beats_the_window_title() {
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = app.ws().focused_pane_id;
     app.peer_client_kinds
         .insert(pane_id, PeerClientKind::Claude);
@@ -280,7 +289,7 @@ fn registered_kind_beats_the_window_title() {
 /// An unregistered plain shell is not a turn-taking target.
 #[test]
 fn unregistered_shell_pane_has_no_turn_agent() {
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = app.ws().focused_pane_id;
     assert_eq!(app.user_turn_agent(0, pane_id), None);
     assert_eq!(
@@ -523,7 +532,7 @@ fn user_turn_result(
 /// instead.
 #[test]
 fn refusal_writes_nothing_and_emits_no_peer_inbox() {
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = app.ws().focused_pane_id;
     // Bound to the pane the refused turn addresses. A leaked
     // `PeerInbox` could only carry `target_pane == pane_id`, so this is
@@ -552,7 +561,7 @@ fn refusal_writes_nothing_and_emits_no_peer_inbox() {
 
 #[test]
 fn unknown_target_is_pane_not_found() {
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = app.ws().focused_pane_id;
     let err = user_turn_result(&mut app, pane_id, ipc::PaneRef::Id(9999), "hi")
         .expect_err("unknown target");
@@ -564,7 +573,7 @@ fn unknown_target_is_pane_not_found() {
 /// caller's retry after clearing the blocker is not swallowed.
 #[test]
 fn a_refused_user_turn_leaves_no_dedupe_trace() {
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = app.ws().focused_pane_id;
     let _ = user_turn_result(&mut app, pane_id, ipc::PaneRef::Id(pane_id), "/loop");
     assert!(
@@ -704,7 +713,7 @@ fn wait_for_pane_quiet(app: &App, pane_id: usize) {
 /// Stand up a pane that the predicate will accept: registered as
 /// Claude, painting an idle composer.
 fn app_with_ready_claude_pane() -> (App, usize) {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     wait_for_pane_quiet(&app, app.ws().focused_pane_id);
     let pane_id = seed_claude_idle_pane(&mut app, b"");
     app.peer_client_kinds
@@ -803,7 +812,7 @@ fn a_multiline_body_without_bracketed_paste_is_refused() {
 /// application has told us it treats a paste as composer content.
 #[test]
 fn a_multiline_body_is_accepted_when_bracketed_paste_is_on() {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     // `\x1b[?2004h` is the application declaring it handles pastes.
     let pane_id = seed_claude_idle_pane(&mut app, b"\x1b[?2004h");
     app.peer_client_kinds
@@ -915,7 +924,7 @@ fn channel_delivery_reaches_the_bound_subscriber_and_a_user_turn_emits_no_peer_i
 /// turn carrying the same text.
 #[test]
 fn channel_dedupe_does_not_suppress_a_later_user_turn() {
-    let mut app = App::new(40, 80).expect("App::new");
+    let mut app = inert_app(40, 80);
     let pane_id = app.ws().focused_pane_id;
     app.handle_peer_send(pane_id, &ipc::PaneRef::Id(pane_id), "/loop".to_string())
         .expect("channel send");
@@ -977,7 +986,7 @@ fn every_refusal_writes_nothing_to_the_pty() {
     app.shutdown();
 
     // Unsupported: a plain shell.
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     let pane_id = app.ws().focused_pane_id;
     let err = user_turn_result(&mut app, pane_id, ipc::PaneRef::Id(pane_id), "/loop")
         .expect_err("shell refusal");
@@ -1403,7 +1412,7 @@ fn the_delivery_budget_fits_inside_the_ipc_reply_budget() {
 /// a menu row as the draft and press Enter on it.
 #[test]
 fn a_codex_menu_row_is_not_adopted_as_a_draft() {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     let pane_id = app.ws().focused_pane_id;
     app.peer_client_kinds.insert(pane_id, PeerClientKind::Codex);
 
@@ -1672,7 +1681,7 @@ fn a_draft_appearing_between_readiness_and_the_write_refuses() {
 /// outcome, so it is refused before anything is written.
 #[test]
 fn an_over_long_codex_body_is_refused_before_writing() {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     let pane_id = app.ws().focused_pane_id;
     app.peer_client_kinds.insert(pane_id, PeerClientKind::Codex);
     let cols = {
@@ -1901,7 +1910,7 @@ fn enter_is_withheld_when_the_draft_stops_matching() {
 /// an over-long line wraps into one, and the width check never saw it.
 #[test]
 fn a_multiline_codex_body_is_refused() {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     let pane_id = app.ws().focused_pane_id;
     app.peer_client_kinds.insert(pane_id, PeerClientKind::Codex);
     seed_focused_pane_screen(
