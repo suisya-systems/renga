@@ -274,6 +274,7 @@ fn handle_connection(
                 // every thread serving one — reports the same value
                 // without any plumbing to keep in sync.
                 session_id: Some(super::session_id().to_string()),
+                server_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             };
             write_response_line(reader.get_mut(), &hello)?;
         }
@@ -1795,6 +1796,11 @@ mod tests {
         assert_eq!(
             first.session_id, second.session_id,
             "two connections to one server must not disagree about the session"
+        );
+        assert_eq!(
+            first.server_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "the handshake must carry the server's own release version"
         );
     }
 

@@ -1129,6 +1129,13 @@ pub enum Response {
         /// Publishable, unlike `session_token` above.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        /// The renga release this server process was built from
+        /// (`CARGO_PKG_VERSION`). Absent from every pre-#312 server, so
+        /// `None` means "too old to say". The binary on disk can be
+        /// upgraded under a running server, which is exactly why a client
+        /// reads it here rather than from its own build.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_version: Option<String>,
     },
     /// Ack that the connection has entered event-stream mode. The
     /// server follows this with newline-delimited [`Event`] records
@@ -1770,6 +1777,7 @@ mod tests {
             session_token: "t".into(),
             capabilities: SERVER_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
             session_id: None,
+            server_version: None,
         })
         .unwrap();
         assert!(
@@ -1786,6 +1794,7 @@ mod tests {
             session_token: "t".into(),
             capabilities: Vec::new(),
             session_id: None,
+            server_version: None,
         })
         .unwrap();
         assert!(
@@ -1801,6 +1810,7 @@ mod tests {
             session_token: "t".into(),
             capabilities: SERVER_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
             session_id: None,
+            server_version: None,
         })
         .unwrap();
         assert!(
@@ -1816,6 +1826,7 @@ mod tests {
             session_token: "t".into(),
             capabilities: SERVER_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
             session_id: None,
+            server_version: None,
         })
         .unwrap();
         assert!(
@@ -2408,6 +2419,7 @@ mod tests {
             session_token: "abc".into(),
             capabilities: Vec::new(),
             session_id: None,
+            server_version: None,
         };
         let parsed: Response = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(parsed, r);
@@ -2484,6 +2496,7 @@ mod tests {
             session_token: "t".into(),
             capabilities: Vec::new(),
             session_id: Some("17a3f9c2b4d10000-9f1c0d3ea7554b26".into()),
+            server_version: None,
         };
         let encoded = serde_json::to_string(&with).unwrap();
         assert!(encoded.contains("session_id"), "{encoded}");
@@ -2498,12 +2511,40 @@ mod tests {
             session_token: "t".into(),
             capabilities: Vec::new(),
             session_id: None,
+            server_version: None,
         })
         .unwrap();
         assert!(
             !without.contains("session_id"),
             "an unknown session id stays off the wire: {without}"
         );
+    }
+
+    #[test]
+    fn hello_server_version_round_trips_and_is_omitted_when_absent() {
+        let with = Response::Hello {
+            server_pid: 1,
+            session_token: "t".into(),
+            capabilities: Vec::new(),
+            session_id: None,
+            server_version: Some("2.1.0".into()),
+        };
+        let encoded = serde_json::to_string(&with).unwrap();
+        assert_eq!(serde_json::from_str::<Response>(&encoded).unwrap(), with);
+
+        let old: Response =
+            serde_json::from_str(r#"{"status":"hello","server_pid":9,"session_token":"t"}"#)
+                .unwrap();
+        assert!(matches!(
+            old,
+            Response::Hello {
+                server_version: None,
+                ..
+            }
+        ));
+        assert!(!serde_json::to_string(&old)
+            .unwrap()
+            .contains("server_version"));
     }
 
     #[test]
