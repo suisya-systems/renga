@@ -386,8 +386,8 @@ fn instructions_blob(client_kind: PeerClientKind) -> String {
     let receive_guidance = match client_kind {
         PeerClientKind::Claude => {
             "IMPORTANT: When you receive a <channel source=\"renga-peers\" ...> message, RESPOND IMMEDIATELY. \
-Do not wait until your current task is finished. Pause what you are doing, reply to the sender \
-using send_message, then resume your work. Treat incoming peer messages like a coworker tapping \
+Do not wait until your current task is finished. Pause what you are doing, handle the message \
+(replying with send_message when a reply is needed, see below), then resume your work. Treat incoming peer messages like a coworker tapping \
 you on the shoulder — answer right away, even if you're in the middle of something.\n\n\
 Read the from_id and from_name attributes to understand who sent the message. Reply by \
 calling send_message with their from_id.\n\n\
@@ -395,7 +395,8 @@ Every message you send lands in the recipient's session and costs them a turn, s
 exchanges short. Reply only when the message asks you something, hands you work, or needs a \
 result, decision, or status that the sender is waiting for. Do NOT send a message that only \
 acknowledges, thanks, or confirms receipt, and never answer such a message: silence is the \
-normal way to close an exchange. Put everything into one message instead of following up in \
+normal way to close an exchange. If the sender or your own instructions explicitly ask for a \
+confirmation, send it once. Put everything into one message instead of following up in \
 pieces.\n\n"
         }
         PeerClientKind::Codex => {
@@ -511,7 +512,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "send_message",
-            "description": "Send a message to another pane in any renga tab. A numeric to_id reaches every tab; a name resolves ONLY within your own tab — pane names are unique per tab, not globally, so a pane in another tab cannot be addressed by an unqualified name even if the name is unique right now. Use the numeric id from list_peers for cross-tab sends. `deliver` picks between two semantically different deliveries: the default channel tag, which never touches the recipient's composer and does NOT arm slash commands (a Claude recipient still wakes up and spends a turn on it, so do not send pure acknowledgements), and `user_turn`, which types the message into the recipient's composer and submits it as a real user turn (so `/loop`, `/clear` and friends actually run). Neither one is send_keys: send_keys writes raw bytes for dialogs and key chords, with no input-box precondition.",
+            "description": "Send a message to another pane in any renga tab. A numeric to_id reaches every tab; a name resolves ONLY within your own tab — pane names are unique per tab, not globally, so a pane in another tab cannot be addressed by an unqualified name even if the name is unique right now. Use the numeric id from list_peers for cross-tab sends. `deliver` picks between two semantically different deliveries: the default channel tag, which never submits your text as the recipient's user turn and does NOT arm slash commands (the recipient still spends a turn on every channel message, so do not send pure acknowledgements), and `user_turn`, which types the message into the recipient's composer and submits it as a real user turn (so `/loop`, `/clear` and friends actually run). Neither one is send_keys: send_keys writes raw bytes for dialogs and key chords, with no input-box precondition.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -520,7 +521,7 @@ fn tools_spec() -> Value {
                     "deliver": {
                         "type": "string",
                         "enum": ["channel", "user_turn"],
-                        "description": "How the body reaches the recipient. `channel` (default, unchanged behavior) delivers it as a <channel source=\"renga-peers\"> tag to Claude recipients, or as a pane-local nudge to Codex panes that then read it via `check_messages` — right for requests, reports and status updates, because it never types into the recipient's composer. It is not free, though: a Claude recipient processes each channel message as a turn, so skip messages that only acknowledge. `user_turn` instead types the body into the recipient agent's composer and submits it, so it arrives as a genuine user turn: use it for `/loop`, `/clear` and any instruction that only takes effect when a turn is actually taken. renga owns the mechanics (readiness check, settle, separate Enter, submission check) — do NOT hand-roll it with send_keys. `user_turn` refuses rather than guessing: [user_turn_busy] the agent is mid-turn, [user_turn_not_ready] a permission prompt / modal / existing draft is in the way or the screen is unreadable, [user_turn_unsupported_target] the pane is not running Claude or Codex. Those three guarantee nothing was written, so retry is safe once you clear the blocker (answering a dialog is still send_keys' job). [user_turn_stalled] is different: the body WAS typed but the submit was not observed, so inspect the pane before retrying. An identical user_turn to the same pane within 5s is suppressed and reports status=\"duplicate_suppressed\"."
+                        "description": "How the body reaches the recipient. `channel` (default, unchanged behavior) delivers it as a <channel source=\"renga-peers\"> tag to Claude recipients, or as a pane-local nudge to Codex panes that then read it via `check_messages` — right for requests, reports and status updates, because your text is never submitted as the recipient's user turn. It is not free, though: a Claude recipient processes each channel message as a turn and a Codex recipient is nudged to drain it, so skip messages that only acknowledge. `user_turn` instead types the body into the recipient agent's composer and submits it, so it arrives as a genuine user turn: use it for `/loop`, `/clear` and any instruction that only takes effect when a turn is actually taken. renga owns the mechanics (readiness check, settle, separate Enter, submission check) — do NOT hand-roll it with send_keys. `user_turn` refuses rather than guessing: [user_turn_busy] the agent is mid-turn, [user_turn_not_ready] a permission prompt / modal / existing draft is in the way or the screen is unreadable, [user_turn_unsupported_target] the pane is not running Claude or Codex. Those three guarantee nothing was written, so retry is safe once you clear the blocker (answering a dialog is still send_keys' job). [user_turn_stalled] is different: the body WAS typed but the submit was not observed, so inspect the pane before retrying. An identical user_turn to the same pane within 5s is suppressed and reports status=\"duplicate_suppressed\"."
                     }
                 },
                 "required": ["to_id", "message"]

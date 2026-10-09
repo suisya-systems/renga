@@ -891,8 +891,9 @@ pub enum Direction {
 /// How a [`Request::PeerSend`] body reaches the recipient (Issue #323).
 ///
 /// The two modes are semantically different deliveries, not two
-/// encodings of one: a channel message is *shown* to the recipient
-/// without taking its turn, while a user turn *is* a turn and therefore
+/// encodings of one: a channel message reaches the recipient
+/// without being submitted as its user turn (a Claude recipient still
+/// spends a turn processing it), while a user turn *is* a user turn and therefore
 /// arms slash commands (`/loop`, `/clear`) that a channel tag never
 /// arms. Naming the difference in the request keeps it visible in the
 /// API instead of hiding it behind "just send keys".

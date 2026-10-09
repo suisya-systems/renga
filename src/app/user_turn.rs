@@ -1,8 +1,8 @@
 //! `deliver="user_turn"` — delivering a peer message as a real user
 //! turn (Issue #323).
 //!
-//! A channel message is *shown* to the recipient without taking its
-//! turn. Some instructions only take effect as a genuine user turn:
+//! A channel message reaches the recipient without being submitted as
+//! its user turn. Some instructions only take effect as a genuine user turn:
 //! `/loop`, `/clear` and slash commands generally are not armed by a
 //! `<channel>` tag. Reaching that today means driving `send_keys` by
 //! hand — write the text, check it landed, send Enter as a *separate*
