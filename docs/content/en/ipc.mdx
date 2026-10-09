@@ -133,6 +133,7 @@ If neither flag is set the stream runs until the server closes the connection â€
 { "type": "pane_exited",    "id": 3, "name": "worker-foo", "role": "worker", "ts_ms": 1700000005000 }
 { "type": "pane_prompt_detected", "id": 3, "name": "worker-foo", "role": "worker", "kind": "choice", "prompt": "Do you want to proceed?", "ts_ms": 1700000006000 }
 { "type": "pane_waiting_input",   "id": 3, "name": "worker-foo", "role": "worker", "idle_ms": 5000, "ts_ms": 1700000008000 }
+{ "type": "pane_mode_changed",    "id": 3, "name": "worker-foo", "role": "worker", "mode": "accept_edits", "prev_mode": "plan", "ts_ms": 1700000009000 }
 { "type": "events_dropped", "count": 17, "ts_ms": 1700000010000 }
 { "type": "heartbeat",      "ts_ms": 1700000012000 }
 ```
@@ -140,6 +141,7 @@ If neither flag is set the stream runs until the server closes the connection â€
 - `pane_started` / `pane_exited`: pane lifecycle transitions.
 - `pane_prompt_detected`: an interactive prompt appeared on the pane's screen (#72). A heuristic screen scan: `kind` is `choice` (a Claude / Codex `1. Yes` approval menu), `yes_no` (`(y/n)`-style on the cursor row) or `password` (`password:` / `passphrase:` on the cursor row). `prompt` is the matched line (the question line for `choice`). Fires once per distinct prompt; fires again once it leaves the screen or changes.
 - `pane_waiting_input`: the pane has produced no PTY output for 5 s (#72). Once per quiet spell; the next output re-arms it. A silent long-running command looks the same.
+- `pane_mode_changed`: a Claude Code pane's permission mode changed (#49), read from the mode line under Claude's input box. `mode` is `default`, `plan`, `accept_edits`, `bypass_permissions`, `auto`, or `unknown` for an unrecognized `shift+tab to cycle` line; `prev_mode` is the previous reading (absent on the first). Default mode is only recognized from the `? for shortcuts` hint (input empty); frames without a mode line (typing, menus, dialogs) are not a change.
 - `events_dropped`: number of events the server had to drop for this subscriber (slow consumer signal; reconcile with `renga list` if you see these).
 - `heartbeat`: emitted every 30 s as a keep-alive. Consumers can safely ignore it.
 

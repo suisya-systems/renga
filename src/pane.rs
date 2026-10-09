@@ -107,6 +107,9 @@ pub struct Pane {
     pub reported_prompt: Option<String>,
     /// Set once `pane_waiting_input` fired for the current quiet spell.
     pub waiting_input_reported: bool,
+    /// Claude permission mode last reported via `pane_mode_changed`
+    /// (Issue #49).
+    pub reported_mode: Option<&'static str>,
     /// Kill-on-close Job Object holding the pane shell and every
     /// descendant the kernel added since spawn. `None` when job
     /// creation/assignment failed at spawn time — `kill()` then falls
@@ -252,6 +255,7 @@ impl Pane {
             output_seen: false,
             reported_prompt: None,
             waiting_input_reported: false,
+            reported_mode: None,
             #[cfg(windows)]
             job,
         };
@@ -1402,6 +1406,40 @@ fn detect_prompt_in_lines(
     ))
 }
 
+/// Claude Code permission mode behind `pane_mode_changed` (Issue #49),
+/// read from the last two non-blank screen rows, where Claude draws its
+/// mode line under the input box (`⏸ plan mode on (shift+tab to
+/// cycle)`). Default mode has no mode line, so it's only read off the
+/// `? for shortcuts` hint shown while the input is empty; anything else
+/// (typing, a slash-command menu, a dialog) is `None` = no reading.
+pub fn detect_claude_mode(screen: &vt100::Screen) -> Option<&'static str> {
+    let (_, cols) = screen.size();
+    let lines: Vec<String> = screen.rows(0, cols).collect();
+    detect_mode_in_lines(&lines)
+}
+
+fn detect_mode_in_lines(lines: &[String]) -> Option<&'static str> {
+    const MODES: &[(&str, &str)] = &[
+        ("plan mode on", "plan"),
+        ("accept edits on", "accept_edits"),
+        ("bypass permissions on", "bypass_permissions"),
+        ("auto mode on", "auto"),
+    ];
+    for line in lines.iter().rev().filter(|l| !l.trim().is_empty()).take(2) {
+        let lower = line.to_lowercase();
+        if let Some((_, mode)) = MODES.iter().find(|(m, _)| lower.contains(m)) {
+            return Some(mode);
+        }
+        if lower.contains("shift+tab to cycle") {
+            return Some("unknown");
+        }
+        if lower.contains("? for shortcuts") {
+            return Some("default");
+        }
+    }
+    None
+}
+
 fn strip_csi_escapes(buf: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(buf.len());
     let mut i = 0;
@@ -1493,6 +1531,40 @@ fn detect_shell_unix() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mode_after(bytes: &str) -> Option<&'static str> {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(bytes.as_bytes());
+        detect_claude_mode(p.screen())
+    }
+
+    #[test]
+    fn detect_mode_reads_claude_mode_line() {
+        let ui = |footer: &str| {
+            format!("● Done.\r\n\r\n────────\r\n> \r\n────────\r\n  {footer}\r\n\r\n")
+        };
+        assert_eq!(mode_after(&ui("? for shortcuts")), Some("default"));
+        assert_eq!(
+            mode_after(&ui("⏸ plan mode on (shift+tab to cycle)")),
+            Some("plan")
+        );
+        assert_eq!(
+            mode_after(&ui("⏵⏵ accept edits on (shift+tab to cycle)")),
+            Some("accept_edits")
+        );
+        assert_eq!(
+            mode_after(&ui("⏵⏵ bypass permissions on (shift+tab to cycle)")),
+            Some("bypass_permissions")
+        );
+        assert_eq!(
+            mode_after(&ui("⏵⏵ turbo mode on (shift+tab to cycle)")),
+            Some("unknown")
+        );
+        // Typing hides the default hint: no reading rather than a guess.
+        assert_eq!(mode_after(&ui("")), None);
+        // Mode text higher up (conversation, input) doesn't count.
+        assert_eq!(mode_after("plan mode on\r\nline\r\nline\r\n"), None);
+    }
 
     fn prompt_after(bytes: &[u8]) -> Option<(&'static str, String)> {
         let mut p = vt100::Parser::new(24, 80, 0);

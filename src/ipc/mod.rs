@@ -1404,6 +1404,24 @@ pub enum Event {
         idle_ms: u64,
         ts_ms: u64,
     },
+    /// Emitted when a Claude Code pane's permission mode changes
+    /// (Issue #49), read from the mode line Claude draws under its
+    /// input box. `mode` is `"default"`, `"plan"`, `"accept_edits"`,
+    /// `"bypass_permissions"`, `"auto"`, or `"unknown"` for a
+    /// `shift+tab to cycle` line renga doesn't recognize. `prev_mode`
+    /// is absent on the first reading for a Claude session. Fires only
+    /// on change.
+    PaneModeChanged {
+        id: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prev_mode: Option<String>,
+        ts_ms: u64,
+    },
     /// Meta-event synthesized by the server when a slow subscriber
     /// has caused real events to be dropped. `count` is the number of
     /// events discarded since the last delivered event.
