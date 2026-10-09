@@ -1039,6 +1039,7 @@ fn pty_reader_thread(
     let mut tail: Vec<u8> = Vec::with_capacity(TAIL_CAP * 2);
     let mut control_tail: Vec<u8> = Vec::with_capacity(64);
     let mut osc52_tail: Vec<u8> = Vec::with_capacity(4096);
+    let mut dsr_tail: Vec<u8> = Vec::with_capacity(8);
 
     let mut buf = [0u8; 4096];
     loop {
@@ -1121,8 +1122,31 @@ fn pty_reader_thread(
                     osc52_tail.clear();
                 }
 
+                let dsr_ends = dsr_query_ends(&mut dsr_tail, data);
+
                 let mut parser = parser.lock().unwrap_or_else(|e| e.into_inner());
-                parser.process(data);
+                // Answer DSR cursor position requests with the cursor as of
+                // each query, so feed vt100 one query at a time. ConPTY
+                // sends one at startup (portable-pty 0.9 sets
+                // PSEUDOCONSOLE_INHERIT_CURSOR) and blocks until answered.
+                // Routed through the main loop rather than writing here so
+                // this thread never blocks on PTY input.
+                let mut reply = String::new();
+                let mut start = 0;
+                for end in dsr_ends {
+                    parser.process(&data[start..end]);
+                    let screen = parser.screen();
+                    let (row, col) = screen.cursor_position();
+                    // vt100 parks a pending wrap at col == width; a real
+                    // terminal reports the last column there.
+                    let col = col.min(screen.size().1.saturating_sub(1));
+                    reply.push_str(&format!("\x1b[{};{}R", row + 1, col + 1));
+                    start = end;
+                }
+                parser.process(&data[start..]);
+                if !reply.is_empty() {
+                    let _ = event_tx.send(AppEvent::PtyReply(pane_id, reply.into_bytes()));
+                }
                 let screen = parser.screen();
                 let mode = screen.mouse_protocol_mode();
                 if !matches!(mode, vt100::MouseProtocolMode::None) {
@@ -1196,6 +1220,23 @@ fn find_osc_terminator(buf: &[u8], from: usize) -> Option<(usize, usize)> {
         i += 1;
     }
     None
+}
+
+/// Offsets in `data` just past each DSR cursor position request
+/// (`ESC[6n`). A partial query is carried in `tail` so one split across
+/// two reads is still seen (its end offset then lands in the later read).
+fn dsr_query_ends(tail: &mut Vec<u8>, data: &[u8]) -> Vec<usize> {
+    const DSR: &[u8] = b"\x1b[6n";
+    let carried = tail.len();
+    tail.extend_from_slice(data);
+    let ends = tail
+        .windows(DSR.len())
+        .enumerate()
+        .filter(|(_, w)| *w == DSR)
+        .map(|(i, _)| i + DSR.len() - carried)
+        .collect();
+    keep_possible_prefix_suffix(tail, DSR);
+    ends
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1731,6 +1772,82 @@ mod tests {
         assert!(buf.is_empty());
     }
 
+    #[test]
+    fn dsr_query_ends_finds_whole_split_and_repeated_queries() {
+        let mut tail = Vec::new();
+        assert!(dsr_query_ends(&mut tail, b"plain output").is_empty());
+        assert_eq!(dsr_query_ends(&mut tail, b"a\x1b[6nb\x1b[6n"), vec![5, 10]);
+        // Split across reads at every possible boundary: found once, at
+        // the end of the query bytes in the later read.
+        for split in 1..4 {
+            let (head, rest) = b"\x1b[6n".split_at(split);
+            let mut tail = b"xyz".to_vec();
+            assert!(dsr_query_ends(&mut tail, head).is_empty());
+            assert_eq!(dsr_query_ends(&mut tail, rest), vec![rest.len()]);
+            assert!(dsr_query_ends(&mut tail, b"next").is_empty());
+        }
+        // Other CSI n queries are not cursor position requests.
+        assert!(dsr_query_ends(&mut Vec::new(), b"\x1b[5n\x1b[?6n").is_empty());
+    }
+
+    #[test]
+    fn reader_thread_answers_dsr_with_cursor_position() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        pty_reader_thread(
+            // Output after a query in the same read must not move the
+            // reported position; each query gets its own position.
+            Box::new(std::io::Cursor::new(
+                b"\r\nhi\x1b[6n\r\n\x1b[6nabc".to_vec(),
+            )),
+            Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
+            Arc::new(Mutex::new(String::new())),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            7,
+            tx,
+        );
+        let replies: Vec<_> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                AppEvent::PtyReply(id, bytes) => Some((id, bytes)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec![(7, b"\x1b[2;3R\x1b[3;1R".to_vec())]);
+    }
+
+    #[test]
+    fn reader_thread_dsr_at_pending_wrap_reports_last_column() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut out = vec![b'x'; 10];
+        out.extend_from_slice(b"\x1b[6n");
+        pty_reader_thread(
+            Box::new(std::io::Cursor::new(out)),
+            Arc::new(Mutex::new(vt100::Parser::new(5, 10, 0))),
+            Arc::new(Mutex::new(String::new())),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            7,
+            tx,
+        );
+        let replies: Vec<_> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                AppEvent::PtyReply(_, bytes) => Some(bytes),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec![b"\x1b[1;10R".to_vec()]);
+    }
+
     /// End-to-end acceptance for the pane Job Object (renga-trx): a
     /// grandchild that outlives its shell — the shell spawns it
     /// detached (`disown`) and then exits — must still die when the
@@ -1799,7 +1916,7 @@ mod tests {
         let lock_is_held =
             |path: &std::path::Path| std::fs::OpenOptions::new().write(true).open(path).is_err();
 
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
         let mut pane = Pane::new(9901, 24, 80, tx).expect("spawn pane");
         // Detach the locker from the shell, then end the shell — the
         // exact "natural exit leaves an orphan" scenario.
@@ -1808,7 +1925,18 @@ mod tests {
         ));
         assert!(
             wait_for(
-                || pane.try_flush_startup().unwrap_or(false),
+                || {
+                    // ConPTY (PSEUDOCONSOLE_INHERIT_CURSOR) holds the
+                    // shell's output until its startup DSR query is
+                    // answered. The app's main loop writes PtyReply back;
+                    // this test has no main loop, so do it here.
+                    for event in rx.try_iter() {
+                        if let AppEvent::PtyReply(_, bytes) = event {
+                            let _ = pane.write_input(&bytes);
+                        }
+                    }
+                    pane.try_flush_startup().unwrap_or(false)
+                },
                 Duration::from_secs(30)
             ),
             "shell prompt should be detected and startup command flushed"
