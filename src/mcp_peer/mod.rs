@@ -390,7 +390,13 @@ Do not wait until your current task is finished. Pause what you are doing, reply
 using send_message, then resume your work. Treat incoming peer messages like a coworker tapping \
 you on the shoulder — answer right away, even if you're in the middle of something.\n\n\
 Read the from_id and from_name attributes to understand who sent the message. Reply by \
-calling send_message with their from_id.\n\n"
+calling send_message with their from_id.\n\n\
+Every message you send lands in the recipient's session and costs them a turn, so keep \
+exchanges short. Reply only when the message asks you something, hands you work, or needs a \
+result, decision, or status that the sender is waiting for. Do NOT send a message that only \
+acknowledges, thanks, or confirms receipt, and never answer such a message: silence is the \
+normal way to close an exchange. Put everything into one message instead of following up in \
+pieces.\n\n"
         }
         PeerClientKind::Codex => {
             "IMPORTANT: renga may inject a one-shot nudge into the Codex pane telling you to run \
@@ -505,7 +511,7 @@ fn tools_spec() -> Value {
         },
         {
             "name": "send_message",
-            "description": "Send a message to another pane in any renga tab. A numeric to_id reaches every tab; a name resolves ONLY within your own tab — pane names are unique per tab, not globally, so a pane in another tab cannot be addressed by an unqualified name even if the name is unique right now. Use the numeric id from list_peers for cross-tab sends. `deliver` picks between two semantically different deliveries: the default channel tag, which does NOT take the recipient's turn and does NOT arm slash commands, and `user_turn`, which types the message into the recipient's composer and submits it as a real user turn (so `/loop`, `/clear` and friends actually run). Neither one is send_keys: send_keys writes raw bytes for dialogs and key chords, with no input-box precondition.",
+            "description": "Send a message to another pane in any renga tab. A numeric to_id reaches every tab; a name resolves ONLY within your own tab — pane names are unique per tab, not globally, so a pane in another tab cannot be addressed by an unqualified name even if the name is unique right now. Use the numeric id from list_peers for cross-tab sends. `deliver` picks between two semantically different deliveries: the default channel tag, which never touches the recipient's composer and does NOT arm slash commands (a Claude recipient still wakes up and spends a turn on it, so do not send pure acknowledgements), and `user_turn`, which types the message into the recipient's composer and submits it as a real user turn (so `/loop`, `/clear` and friends actually run). Neither one is send_keys: send_keys writes raw bytes for dialogs and key chords, with no input-box precondition.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -514,7 +520,7 @@ fn tools_spec() -> Value {
                     "deliver": {
                         "type": "string",
                         "enum": ["channel", "user_turn"],
-                        "description": "How the body reaches the recipient. `channel` (default, unchanged behavior) delivers it as a <channel source=\"renga-peers\"> tag to Claude recipients, or as a pane-local nudge to Codex panes that then read it via `check_messages` — good for reports and acks, because it does not hijack the recipient's turn. `user_turn` instead types the body into the recipient agent's composer and submits it, so it arrives as a genuine user turn: use it for `/loop`, `/clear` and any instruction that only takes effect when a turn is actually taken. renga owns the mechanics (readiness check, settle, separate Enter, submission check) — do NOT hand-roll it with send_keys. `user_turn` refuses rather than guessing: [user_turn_busy] the agent is mid-turn, [user_turn_not_ready] a permission prompt / modal / existing draft is in the way or the screen is unreadable, [user_turn_unsupported_target] the pane is not running Claude or Codex. Those three guarantee nothing was written, so retry is safe once you clear the blocker (answering a dialog is still send_keys' job). [user_turn_stalled] is different: the body WAS typed but the submit was not observed, so inspect the pane before retrying. An identical user_turn to the same pane within 5s is suppressed and reports status=\"duplicate_suppressed\"."
+                        "description": "How the body reaches the recipient. `channel` (default, unchanged behavior) delivers it as a <channel source=\"renga-peers\"> tag to Claude recipients, or as a pane-local nudge to Codex panes that then read it via `check_messages` — right for requests, reports and status updates, because it never types into the recipient's composer. It is not free, though: a Claude recipient processes each channel message as a turn, so skip messages that only acknowledge. `user_turn` instead types the body into the recipient agent's composer and submits it, so it arrives as a genuine user turn: use it for `/loop`, `/clear` and any instruction that only takes effect when a turn is actually taken. renga owns the mechanics (readiness check, settle, separate Enter, submission check) — do NOT hand-roll it with send_keys. `user_turn` refuses rather than guessing: [user_turn_busy] the agent is mid-turn, [user_turn_not_ready] a permission prompt / modal / existing draft is in the way or the screen is unreadable, [user_turn_unsupported_target] the pane is not running Claude or Codex. Those three guarantee nothing was written, so retry is safe once you clear the blocker (answering a dialog is still send_keys' job). [user_turn_stalled] is different: the body WAS typed but the submit was not observed, so inspect the pane before retrying. An identical user_turn to the same pane within 5s is suppressed and reports status=\"duplicate_suppressed\"."
                     }
                 },
                 "required": ["to_id", "message"]
@@ -974,9 +980,19 @@ tab index shown is display metadata that shifts when tabs close:\n\n",
         if let Some(cwd) = &p.cwd {
             out.push_str(&format!("\n  cwd: {cwd}"));
         }
+        push_summary(&mut out, p.summary.as_deref());
         out.push('\n');
     }
     out
+}
+
+/// Render a `set_summary` string as its own indented line. The summary
+/// is free-form text from another agent, so it gets the same
+/// control-character strip as `role`.
+fn push_summary(out: &mut String, summary: Option<&str>) {
+    if let Some(s) = summary {
+        out.push_str(&format!("\n  summary: {}", ipc::sanitized_label(s)));
+    }
 }
 
 fn kind_label(kind: PeerClientKind) -> &'static str {
@@ -2032,6 +2048,7 @@ fn format_pane_list(panes: &[PaneInfo], scope: &ListScope) -> String {
                 d.pending, d.since_ms
             ));
         }
+        push_summary(&mut out, p.summary.as_deref());
         out.push('\n');
     }
     out
@@ -4297,6 +4314,44 @@ mod tests {
         assert!(text.contains("- id=5\n"), "{text}");
         assert!(!text.contains("[tab"), "{text}");
         assert!(!text.contains("[your tab]"), "{text}");
+    }
+
+    /// `set_summary` is documented as surfacing on list_peers /
+    /// list_panes; the summary is what lets a recipient skip the
+    /// "what are you working on?" round trip (Issue #105). It is
+    /// free-form, so a newline must not forge a list entry.
+    #[test]
+    fn format_lists_render_sanitized_summary() {
+        let peer = PeerInfo {
+            summary: Some("fixing #105\n- id=99".into()),
+            ..bare_peer_info(4)
+        };
+        let text = format_peer_list(&[peer]);
+        assert!(text.contains("\n  summary: fixing #105"), "{text}");
+        assert!(!text.contains("\n- id=99"), "{text}");
+
+        let pane = PaneInfo {
+            summary: Some("reviewing".into()),
+            ..bare_pane_info(4)
+        };
+        let text = format_pane_list(&[pane], &ListScope::CallerTab);
+        assert!(text.contains("\n  summary: reviewing"), "{text}");
+
+        let text = format_peer_list(&[bare_peer_info(5)]);
+        assert!(!text.contains("summary:"), "{text}");
+    }
+
+    /// Issue #105: the shared "RESPOND IMMEDIATELY" clause, with no
+    /// stopping rule, turns hello/ack into ack-of-ack ping-pong. The
+    /// Claude guidance must carry the convergence rule.
+    #[test]
+    fn claude_instructions_discourage_ack_only_replies() {
+        let text = instructions_blob(PeerClientKind::Claude);
+        assert!(text.contains("only acknowledges"), "{text}");
+        assert!(
+            text.contains("silence is the normal way to close"),
+            "{text}"
+        );
     }
 
     #[test]

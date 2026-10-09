@@ -78,7 +78,7 @@ Exposed by the MCP server to each Claude pane:
 | Tool | Effect |
 |---|---|
 | `list_peers(scope?)` | Lists other panes across **all** renga tabs, the caller's own tab first (#289). Caller excluded. Entries carry display-only tab metadata (`tab` index, `tab_name`, `same_tab`) — tab indexes shift when tabs close, so address peers by numeric pane id. Codex (pull-mode) peers also show `unread=N`: messages sent to them that `check_messages` has not drained yet (#353). `scope` is accepted for wire-compat with `claude-peers-mcp` but ignored. |
-| `send_message(to_id, message, deliver?)` | Delivers to a peer in any tab by **numeric pane id**, or to a same-tab peer by stable name — names are unique per tab, not globally, so they never resolve across tabs (#289). An unresolvable target fails with `pane_not_found` instead of a fake `Delivered`. `deliver` picks the delivery *semantics*: `"channel"` (default, unchanged) shows the body without taking the recipient's turn; `"user_turn"` submits it as a real turn (#323 — see below). |
+| `send_message(to_id, message, deliver?)` | Delivers to a peer in any tab by **numeric pane id**, or to a same-tab peer by stable name — names are unique per tab, not globally, so they never resolve across tabs (#289). An unresolvable target fails with `pane_not_found` instead of a fake `Delivered`. `deliver` picks the delivery *semantics*: `"channel"` (default, unchanged) shows the body without typing into the recipient's composer; `"user_turn"` submits it as a real turn (#323 — see below). |
 | `check_messages` | Drain queued peer messages waiting for this client. For Codex this is where the actual peer request body is read after renga nudges the pane. Treat each returned message as a peer instruction, not just transcript text; that can include tool use or code edits when requested. |
 | `set_summary(summary)` | Set or clear a 1-2 sentence per-pane summary. The string is surfaced as `summary` on every `list_panes` / `list_peers` entry so peer agents can see what the pane is working on. Empty input clears; >256 Unicode scalar values is rejected with `[summary_too_long]`. In-memory only — not persisted across renga restart. |
 
@@ -88,9 +88,11 @@ These are two different deliveries, not two encodings of one.
 
 - **`deliver="channel"`** (default) pushes the body as a
   `<channel source="renga-peers">` tag to Claude peers, or as a
-  pane-local nudge that Codex peers read with `check_messages`. It does
-  **not** take the recipient's turn — right for reports, acks and
-  status updates.
+  pane-local nudge that Codex peers read with `check_messages`. It never
+  types into the recipient's composer — right for requests, reports and
+  status updates. It is not free: a Claude recipient still processes
+  each channel message as a turn, so pure acknowledgements only add
+  ping-pong (#105).
 - **`deliver="user_turn"`** types the body into the recipient agent's
   composer and submits it, so it arrives as a genuine user turn. Use it
   when the instruction only takes effect as one: `/loop`, `/clear` and
