@@ -274,7 +274,7 @@ serde_json = "1"
 dirs = "5"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 # 2.4.2 removes the `CannotUnwind` guard from `exsync_op`. On 2.4.0 a
 # Win32 write failure during IPC — normal when a `renga events` client
 # disconnects ahead of the 30 s heartbeat — propagated via `?` before
