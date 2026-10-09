@@ -695,7 +695,7 @@ fn codex_working_line_above(screen: &vt100::Screen, prompt_row: u16) -> bool {
         let t = row_text(screen, row).to_lowercase();
         t.trim_start()
             .strip_prefix('\u{2022}')
-            .is_some_and(|r| r.trim_start().starts_with("working"))
+            .is_some_and(|r| r.trim_start().starts_with("working ("))
             && BUSY_MARKERS.iter().any(|m| t.contains(m))
     })
 }

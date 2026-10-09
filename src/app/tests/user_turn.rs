@@ -2017,3 +2017,15 @@ fn codex_typed_glyph_in_the_composer_is_a_draft() {
         TurnReadiness::NotReady
     );
 }
+
+#[test]
+fn codex_bulleted_working_prose_quoting_interrupt_is_not_busy() {
+    assert_eq!(
+        codex_readiness_of(
+            b"\x1b[2J\x1b[H\x1b[?25h\xE2\x80\xA2 Working with Codex: press esc to interrupt\r\n\r\n\xE2\x80\xBA \x1b[3;3H",
+            8,
+            60
+        ),
+        TurnReadiness::Ready
+    );
+}
