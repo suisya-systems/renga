@@ -41,6 +41,13 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   the queued request was then never nudged. The overlay is now hidden
   but kept: a newer message shows it again, and leaving the pane hands
   it to the usual deferred `check_messages` nudge.
+- **Focused Codex peer notification edge cases.** (#355) Moving focus to
+  the file tree or preview of the same tab now counts as leaving the
+  pane, so the deferred nudge goes out instead of waiting for focus to
+  return. A notification parked in the queue keeps its pending count
+  when it comes back. When the terminal is too small to draw the
+  overlay, it no longer captures `Esc` / `Alt+Enter`; the status bar
+  shows the pending count instead.
 
 ## [3.0.0] — 2026-08-29
 

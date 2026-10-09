@@ -1050,11 +1050,14 @@ fn a_pending_codex_nudge_blocks_a_user_turn_to_that_pane() {
     app.pending_codex_peer_messages
         .entry(pane_id)
         .or_default()
-        .push_back(PendingCodexPeerDelivery::Draft(PendingCodexPeerMessage {
-            from_pane: 99,
-            from_name: None,
-            from_kind: None,
-        }));
+        .push_back(PendingCodexPeerDelivery::Draft(
+            PendingCodexPeerMessage {
+                from_pane: 99,
+                from_name: None,
+                from_kind: None,
+            },
+            1,
+        ));
     let err = user_turn_result(&mut app, pane_id, ipc::PaneRef::Id(pane_id), "/loop")
         .expect_err("nudge in flight");
     assert_eq!(err.code, Some(ipc::err_code::USER_TURN_NOT_READY));
@@ -1546,11 +1549,14 @@ fn a_nudge_queued_mid_delivery_is_not_typed_into_the_composer() {
     app.pending_codex_peer_messages
         .entry(pane_id)
         .or_default()
-        .push_back(PendingCodexPeerDelivery::Draft(PendingCodexPeerMessage {
-            from_pane: 99,
-            from_name: None,
-            from_kind: None,
-        }));
+        .push_back(PendingCodexPeerDelivery::Draft(
+            PendingCodexPeerMessage {
+                from_pane: 99,
+                from_name: None,
+                from_kind: None,
+            },
+            1,
+        ));
     app.flush_pending_codex_peer_messages();
 
     assert!(
@@ -1807,11 +1813,14 @@ fn no_refusal_path_anywhere_writes_a_byte() {
                 app.pending_codex_peer_messages
                     .entry(pane_id)
                     .or_default()
-                    .push_back(PendingCodexPeerDelivery::Draft(PendingCodexPeerMessage {
-                        from_pane: 99,
-                        from_name: None,
-                        from_kind: None,
-                    }));
+                    .push_back(PendingCodexPeerDelivery::Draft(
+                        PendingCodexPeerMessage {
+                            from_pane: 99,
+                            from_name: None,
+                            from_kind: None,
+                        },
+                        1,
+                    ));
             }),
             ipc::err_code::USER_TURN_NOT_READY,
         ),

@@ -29,6 +29,7 @@ pub(crate) use self::app_core::{MIN_LAYOUT_COLS, MIN_LAYOUT_ROWS};
 pub(crate) use self::app_state::CloseConfirm;
 pub(crate) use self::app_state::CLAUDE_PEER_LAUNCH_CMD;
 pub use self::app_state::{App, AppCommand, AppEvent};
+pub(crate) use self::codex_peer::CODEX_PEER_NOTIFICATION_MIN_SIZE;
 #[cfg(test)]
 use self::codex_peer::{
     codex_prompt_allows_peer_nudge_on_screen, format_codex_peer_message, screen_tail_lines,
