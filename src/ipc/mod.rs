@@ -1424,7 +1424,8 @@ pub enum Event {
     },
     /// Emitted when a peer-message nudge for a Codex pane has been
     /// queued undelivered for `queued_ms` (at least 30 s, Issue #354):
-    /// renga is waiting for the pane to look ready and it hasn't. The
+    /// renga is waiting for the pane to look ready and it hasn't. Time
+    /// while Codex shows it is busy does not count. The
     /// pane title shows a badge for as long as the nudge stays stuck.
     /// Fires once per stuck nudge; delivering or dropping it re-arms.
     PeerNudgeStalled {

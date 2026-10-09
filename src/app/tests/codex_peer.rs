@@ -1838,3 +1838,68 @@ fn stalled_codex_nudge_emits_once_and_badges_until_drained() {
     assert!(!app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
     app.shutdown();
 }
+
+#[test]
+fn stall_clock_does_not_run_while_codex_is_busy() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let sender_id = app.ws().focused_pane_id;
+    let codex_pane = app
+        .handle_new_tab(None, None, None, None, None)
+        .expect("new tab succeeds");
+    app.peer_client_kinds
+        .insert(codex_pane, PeerClientKind::Codex);
+    assert!(app.switch_tab(0), "Codex tab goes to the background");
+    let parser = std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(24, 80, 0)));
+    app.workspaces[1].panes.get_mut(&codex_pane).unwrap().parser = parser.clone();
+    parser
+        .lock()
+        .unwrap()
+        .process("\x1b[2J\x1b[H\u{2022} Working (40s \u{2022} esc to interrupt)\r\n".as_bytes());
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_pane), "ping".into())
+        .expect("peer send");
+    let age_draft = |app: &mut App| match app
+        .pending_codex_peer_messages
+        .get_mut(&codex_pane)
+        .unwrap()
+        .front_mut()
+    {
+        Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
+            *queued_at = Instant::now()
+                .checked_sub(CODEX_PEER_NUDGE_STALL_TIMEOUT + Duration::from_secs(1))
+                .expect("monotonic clock is past the stall timeout");
+        }
+        other => panic!("expected a queued draft, got {other:?}"),
+    };
+    let stalled = |rx: &std::sync::mpsc::Receiver<ipc::Event>| {
+        rx.try_iter()
+            .filter(|e| matches!(e, ipc::Event::PeerNudgeStalled { .. }))
+            .count()
+    };
+
+    // Busy for longer than the timeout: no stall, and the clock is held.
+    age_draft(&mut app);
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(stalled(&rx), 0, "a busy Codex is not stalled");
+    assert!(!app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    match app.pending_codex_peer_messages[&codex_pane].front() {
+        Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => {
+            assert!(
+                queued_at.elapsed() < Duration::from_secs(5),
+                "clock held at now"
+            );
+        }
+        other => panic!("expected a queued draft, got {other:?}"),
+    }
+
+    // Turn over but the screen still isn't recognized: counts again.
+    parser
+        .lock()
+        .unwrap()
+        .process(b"\x1b[2J\x1b[Hsomething new from Codex");
+    age_draft(&mut app);
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(stalled(&rx), 1, "stalls once 30 s pass after busy ends");
+    assert!(app.workspaces[1].panes[&codex_pane].peer_nudge_stalled);
+    app.shutdown();
+}

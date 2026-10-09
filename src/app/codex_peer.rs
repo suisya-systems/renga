@@ -168,14 +168,20 @@ pub(crate) fn codex_prompt_allows_peer_nudge_on_screen(screen: &vt100::Screen) -
     Some(true)
 }
 
+/// Codex is mid-turn: its working line or queue hint is on screen.
+fn codex_screen_busy(screen: &vt100::Screen) -> bool {
+    let tail = screen_tail_lines(screen).join("\n").to_ascii_lowercase();
+    tail.contains("esc to interrupt") || tail.contains("tab to queue message")
+}
+
 /// Whether a Codex screen may receive a typed peer nudge right now.
 /// Pinned against real captured Codex screens in
 /// `src/app/tests/fixtures/codex/`.
 pub(crate) fn codex_peer_screen_ready(screen: &vt100::Screen) -> bool {
-    let tail = screen_tail_lines(screen).join("\n").to_ascii_lowercase();
-    if tail.contains("esc to interrupt") || tail.contains("tab to queue message") {
+    if codex_screen_busy(screen) {
         return false;
     }
+    let tail = screen_tail_lines(screen).join("\n").to_ascii_lowercase();
     if !screen_has_visible_text(screen) {
         return false;
     }
@@ -576,23 +582,35 @@ impl App {
                 // draft and the overlay share one clock, so a focus
                 // round trip neither clears nor re-fires it. Recomputed
                 // every flush, so any path that delivers or drops the
-                // nudge clears it.
-                let queued_at = match self
+                // nudge clears it. A busy Codex is expected to hold the
+                // nudge, so the clock does not run while it is busy: it
+                // is held at `now` and only counts once the turn ends.
+                let clock = match self
                     .pending_codex_peer_messages
-                    .get(&pane_id)
-                    .and_then(|q| q.front())
+                    .get_mut(&pane_id)
+                    .and_then(|q| q.front_mut())
                 {
-                    Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => Some(*queued_at),
+                    Some(PendingCodexPeerDelivery::Draft(_, _, queued_at)) => Some(queued_at),
                     _ => None,
                 }
                 .or_else(|| {
                     self.codex_peer_notification
-                        .as_ref()
+                        .as_mut()
                         .filter(|n| n.target_pane == pane_id)
-                        .map(|n| n.queued_at)
+                        .map(|n| &mut n.queued_at)
                 });
-                let stalled_for = queued_at
-                    .map(|queued_at| now.saturating_duration_since(queued_at))
+                let stalled_for = clock
+                    .map(|queued_at| {
+                        let busy = ws.panes.get(&pane_id).is_some_and(|pane| {
+                            pane.parser
+                                .lock()
+                                .is_ok_and(|parser| codex_screen_busy(parser.screen()))
+                        });
+                        if busy {
+                            *queued_at = now;
+                        }
+                        now.saturating_duration_since(*queued_at)
+                    })
                     .filter(|waited| *waited >= CODEX_PEER_NUDGE_STALL_TIMEOUT);
                 if let Some(pane) = ws.panes.get_mut(&pane_id) {
                     if pane.peer_nudge_stalled != stalled_for.is_some() {

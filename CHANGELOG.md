@@ -35,7 +35,9 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   message nudge for a Codex pane has waited 30 s because the pane never
   looked ready, renga emits `peer_nudge_stalled` (`queued_ms`) and the
   pane title shows `⚠ peer nudge stalled` until the nudge is delivered
-  or dropped. A Codex UI change that the readiness heuristic no longer
+  or dropped. Time while Codex shows it is busy (`esc to interrupt` /
+  `tab to queue message`) does not count, so a long turn alone never
+  trips it. A Codex UI change that the readiness heuristic no longer
   recognizes used to leave the nudge queued forever without a signal.
 
 ### Changed
