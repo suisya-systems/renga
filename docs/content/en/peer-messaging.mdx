@@ -159,7 +159,7 @@ delivery out of `send_keys`.
 
 | Tool | Effect |
 |---|---|
-| `poll_events(timeout_ms?, since?, types?)` | Long-polls pane lifecycle events (`pane_started`, `pane_exited`, `pane_prompt_detected`, `pane_waiting_input`, `events_dropped`) with a cursor-based API. Use this when an orchestrator needs to notice worker births / exits without polling the full pane list every turn. Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. |
+| `poll_events(timeout_ms?, since?, types?)` | Long-polls pane lifecycle events (`pane_started`, `pane_exited`, `pane_prompt_detected`, `pane_waiting_input`, `pane_mode_changed`, `events_dropped`) with a cursor-based API. Use this when an orchestrator needs to notice worker births / exits without polling the full pane list every turn. Events are process-wide: pane lifecycle from every renga tab is delivered, not just the caller's tab. |
 
 Use `cwd` on `spawn_pane` / `new_tab` instead of embedding `cd <dir> && ...` inside `command`. That keeps path resolution structured and preserves the `claude` auto-upgrade, which only fires when `command`'s leading token is exactly `claude`.
 

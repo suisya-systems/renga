@@ -430,7 +430,7 @@ fn run_event_loop(
         // throttled, and a no-op while the sidebar is hidden.
         app.tick_claude_snapshots();
 
-        // Issue #72: prompt / idle events for event-driven monitors.
+        // Issue #72 / #49: prompt / idle / mode events for event-driven monitors.
         // Self-throttled; never marks the UI dirty.
         app.tick_prompt_events();
 

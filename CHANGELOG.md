@@ -22,6 +22,15 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   delivered on `renga events` and `poll_events`, and fire once per
   prompt / quiet spell. New `Event` variants are minor under the
   forward-compat rule.
+- **`pane_mode_changed` event.** (#49) Fires when a Claude Code pane's
+  permission mode changes, so a monitor can confirm a `Shift+Tab` switch
+  (e.g. plan → accept edits) without asking the worker. `mode` is
+  `default`, `plan`, `accept_edits`, `bypass_permissions`, `auto`, or
+  `unknown` for an unrecognized `shift+tab to cycle` line; `prev_mode`
+  is the last reading. Read from the mode line under Claude's input
+  box, so it's a heuristic: default mode is only recognized while the
+  `? for shortcuts` hint is shown (input empty), and frames without a
+  mode line (typing, menus, dialogs) don't count as a change.
 
 ### Changed
 

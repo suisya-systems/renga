@@ -231,7 +231,8 @@ pub enum IpcCommand {
     ///
     /// The stream is unscoped, exactly as it has always been: it carries
     /// `pane_started`, `pane_exited`, `pane_prompt_detected`,
-    /// `pane_waiting_input`, `events_dropped` and `heartbeat`,
+    /// `pane_waiting_input`, `pane_mode_changed`, `events_dropped` and
+    /// `heartbeat`,
     /// plus every `peer_inbox` no matter which pane the message was
     /// addressed to. Since #306 an IPC client may narrow that by sending
     /// `from_pane` on its `subscribe` request and receive only the
