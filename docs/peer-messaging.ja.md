@@ -90,6 +90,22 @@ Claude B の次のターンのコンテキストに `<channel source="renga-peer
 
 > **タブ横断の列挙 (`tab`、Issue #329)。** `list_panes` は読み取り側で同じ `tab` セレクタを受け付けます — `{"name": "workers"}` / `{"index": 2}` / `{"pane_id": 17}` (サーバ側の解決処理は spawn 側と共通で、`tab_not_found` / `tab_ambiguous` / `pane_not_found` の意味も同じ) に加えて、全タブを返す `{"all": true}` (自分のタブが先頭、以降は index 順)。`{"new": …}` は読み取りには意味がないため存在しません。`tab` を省略した場合は #329 以前の挙動がバイト単位でそのまま残り、自分のタブだけを返します。全タブ形は、オーケストレータが **id を保持していない**ペイン — バックグラウンドタブに置いた worker を含む — を列挙するための経路です。#329 以前はそうしたペインが監視母集団からも容量会計からも落ち、生存している worker が退役され、spawn が過剰方向にずれていました。レコードには `tab` (0 始まりの index) と `tab_name` (表示ラベル) が加わりますが、どちらも**表示用メタデータのみ**です (index はタブを閉じるとずれ、ラベルは一意ではありません)。さらに `same_tab` が付きますが、これは複数タブにまたがりうる応答 (ペインから `tab` セレクタ付きで呼んだ場合) にだけ含まれます。タブを跨いで安定するアドレスは今も数値 `id` だけです。独立した 2 つの orchestration が別タブで動くと、どちらにも `dispatcher` と `worker-<task_id>` が実在するため `name` では判別できません — 判別材料は `cwd` です。`tab` を使うにはサーバが `cross_tab_list` capability を広告している必要があります。#329 以前のプロセスは未知のフィールドを捨てて自分のタブだけを返し、それは正しい答えと見分けのつかない well-formed な `Ok` になってしまうため、黙って狭い集合を返す代わりに `[server_too_old]` で fail closed します。CLI の `renga list` には新しいレコードのフィールドが出ますが、CLI 側のタブセレクタは見送りです。
 
+## 新しい Codex worker のウォームアップ
+
+Codex の `check_messages` / `send_message` の承認は pane ごとに出ることがあり、spawn 直後の Codex pane は最初の peer 依頼で承認メニューに止まることがあります。その場合、nudge は何も起こさなかったように見えます。renga はウォームアップを自動では行いません (`spawn_codex_pane` はペインを起動するだけです)。手順は次のとおりです。
+
+1. **マシンごとに 1 回:** `renga mcp install --client codex --codex-auto-approve-peer-tools` を実行します (renga をアップグレードしたら `--force` 付きで再実行)。Codex が対応する範囲で、2 つの peer ツールの承認を事前設定します。
+2. **新しい pane ごと:** `spawn_codex_pane(name="worker-x", …)` の直後に、捨てても構わない依頼を送ります。例: `send_message(to_id="worker-x", message="warm-up: check_messages を呼んで、\"ready\" と返信して")`。本番の依頼が来る前に、pane が 2 つの承認 (`check_messages`、返信用の `send_message`) を通ります。メニューが出たら `Always allow` を選びます。
+3. **止まった pane の検知:** `poll_events(types=["pane_prompt_detected"])` を購読します。worker の pane で `kind: "choice"` のイベントが来たら、承認メニューが画面に出ています。`inspect_pane(target="worker-x", lines=20)` で内容を読み、`send_keys` で答える (またはユーザーに頼む) ようにしてください。中身を見ずに承認しないでください。
+4. worker が `ready` と返信したら、本番の依頼を送ります。
+
+## 残る失敗モードと非目標
+
+- **`--codex-auto-approve-peer-tools` を付けても、最初の承認が出ることがあります。** Codex のバージョンと実行形態しだいです。上のウォームアップは承認を本番の依頼より前に動かすだけで、なくすものではありません。
+- **renga は配送のブロックを自動検知しません。** `pane_prompt_detected` は画面テキストのヒューリスティック検査 (#72) で、購読が必要です。renga はこれを保留中の peer 配送と結びつけず、pending バッジにも送信側への報告にも出しません。返信が来ない送信側は `inspect_pane` で相手を確認してください。
+- **自動ウォームアップも自動承認もありません。** `spawn_codex_pane` はウォームアップのメッセージを送らず、renga が承認メニューに自分で答えることもありません。判断はオーケストレータかユーザーに残ります。
+- **配送確認はありません。** `send_message` は fire-and-forget のため、承認待ちで止まった依頼と、そもそも読まれていない依頼は見分けられません。
+
 ## うまく動かないとき
 
 - **`list_peers` が "renga not reachable from this peer client" を返す** — client が renga の外で起動されたか、renga ペインの環境変数を引き継げていません。renga のペイン内から起動し直してください（Claude は `Alt+P` / `renga split --role claude`、Codex は `renga mcp install --client codex` 後の plain `codex` または `spawn_codex_pane`）。
