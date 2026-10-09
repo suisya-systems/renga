@@ -2212,5 +2212,61 @@ fn peer_delivery_owes_nothing_for_an_enter_after_a_full_drain() {
     app.handle_peer_inbox_drained(codex_id, 1).expect("drain");
     app.flush_pending_codex_peer_messages();
     assert_eq!(listed_delivery(&app, codex_id), None);
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.pending_codex_peer_messages.get_mut(&codex_id).unwrap()[0] =
+        PendingCodexPeerDelivery::SubmitAt(Instant::now());
+    app.flush_pending_codex_peer_messages();
+    assert!(
+        nudge_events(&rx).is_empty(),
+        "no orphan peer_nudge_submitted"
+    );
+    app.shutdown();
+}
+
+#[test]
+fn peer_delivery_dismissed_overlay_is_not_nudged() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id, _inbox) = codex_sibling_unfocused(&mut app);
+    app.handle_focus(&ipc::PaneRef::Id(codex_id), None)
+        .expect("focus codex");
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "hi".into())
+        .expect("send");
+    app.flush_pending_codex_peer_messages();
+    assert!(listed_delivery(&app, codex_id).is_some());
+
+    app.dismiss_codex_peer_notification();
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(listed_delivery(&app, codex_id), None);
+    assert_eq!(listed_unread(&app, sender_id, codex_id), Some(1));
+    app.shutdown();
+}
+
+#[test]
+fn peer_delivery_typed_nudge_handed_to_a_watching_human_is_submitted() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let (sender_id, codex_id, _inbox) = codex_sibling_unfocused(&mut app);
+    let (_sub, rx) = app.event_bus.subscribe();
+    app.handle_peer_send(sender_id, &ipc::PaneRef::Id(codex_id), "x".into())
+        .expect("send");
+    // Listed right away, not one frame later.
+    assert_eq!(
+        listed_delivery(&app, codex_id).map(|d| d.state),
+        Some(ipc::PeerDeliveryState::Queued)
+    );
+    app.pending_codex_peer_messages.insert(
+        codex_id,
+        [PendingCodexPeerDelivery::SubmitAt(
+            Instant::now() + Duration::from_secs(60),
+        )]
+        .into(),
+    );
+    app.handle_focus(&ipc::PaneRef::Id(codex_id), None)
+        .expect("focus codex");
+    app.flush_pending_codex_peer_messages();
+    assert_eq!(
+        listed_delivery(&app, codex_id).map(|d| d.state),
+        Some(ipc::PeerDeliveryState::Nudged)
+    );
+    assert_eq!(nudge_events(&rx), ["queued", "submitted"]);
     app.shutdown();
 }

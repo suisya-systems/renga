@@ -364,6 +364,7 @@ impl App {
         if pull_mode && reached_inbox {
             *self.peer_unread.entry(target_id).or_default() += 1;
         }
+        self.sync_peer_delivery();
         Ok(())
     }
 
@@ -409,6 +410,7 @@ impl App {
         // whatever was counted against the previous one can never be
         // drained now.
         self.peer_unread.remove(&pane_id);
+        self.sync_peer_delivery();
         Ok(())
     }
 
@@ -469,6 +471,7 @@ impl App {
             count,
             ts_ms: ipc::events::now_ms(),
         });
+        self.sync_peer_delivery();
         Ok(())
     }
 
@@ -537,7 +540,16 @@ impl App {
     }
 
     pub(crate) fn dismiss_codex_peer_notification(&mut self) {
-        if self.codex_peer_notification.take().is_some() {
+        if let Some(n) = self.codex_peer_notification.take() {
+            // Nothing was handed to the pane, so its unread messages
+            // must not read as `nudged` (see `sync_peer_delivery`).
+            if let Some((ws_idx, _)) =
+                self.resolve_pane_across_workspaces(&PaneRef::Id(n.target_pane))
+            {
+                if let Some(pane) = self.workspaces[ws_idx].panes.get_mut(&n.target_pane) {
+                    pane.peer_delivery = None;
+                }
+            }
             self.dirty = true;
         }
     }
@@ -603,6 +615,7 @@ impl App {
         self.codex_peer_notification = None;
         self.dirty = true;
         self.emit_peer_nudge_submitted(notification.target_pane);
+        self.sync_peer_delivery();
         Ok(true)
     }
 
@@ -620,7 +633,21 @@ impl App {
         )
     }
 
+    /// Only for a pane tracked as `queued`, so the event always pairs
+    /// with a `peer_nudge_queued` (an Enter after a full drain, or for
+    /// a message that never reached an inbox, owes nothing).
     fn emit_peer_nudge_submitted(&self, pane_id: usize) {
+        let Some((ws_idx, _)) = self.resolve_pane_across_workspaces(&PaneRef::Id(pane_id)) else {
+            return;
+        };
+        let tracked = self.workspaces[ws_idx]
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.peer_delivery)
+            .is_some_and(|d| d.state == ipc::PeerDeliveryState::Queued);
+        if !tracked {
+            return;
+        }
         let (name, role) = self.pane_name_and_role(pane_id);
         self.event_bus.emit(ipc::Event::PeerNudgeSubmitted {
             id: pane_id,
@@ -679,6 +706,12 @@ impl App {
                     continue;
                 };
                 let prev = pane.peer_delivery;
+                // `Nudged` only continues a tracked delivery: unread
+                // messages whose nudge was dismissed were never handed
+                // to the pane.
+                let derived = derived.filter(|(state, _)| {
+                    *state == ipc::PeerDeliveryState::Queued || prev.is_some()
+                });
                 let next = derived.map(|(state, pending)| ipc::PeerDeliveryStatus {
                     state,
                     pending,
@@ -872,9 +905,11 @@ impl App {
                         // deferred Enter could submit *their* content,
                         // not ours. Cancel the pending submit instead
                         // of resuming it later (Codex review of #289).
+                        // The typed nudge is the human's to submit now.
                         Some(PendingCodexPeerDelivery::SubmitAt(_)) => {
                             self.pending_codex_peer_messages.remove(&pane_id);
                             self.dirty = true;
+                            submitted.push(pane_id);
                         }
                         _ => {}
                     }

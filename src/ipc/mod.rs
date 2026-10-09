@@ -1492,8 +1492,9 @@ pub enum Event {
         ts_ms: u64,
     },
     /// renga finished handing a queued nudge to a Codex pane (Issue
-    /// #352): it pressed Enter after typing it, or typed it because the
-    /// human accepted the focused-pane overlay. The messages then wait
+    /// #352): it pressed Enter after typing it, typed it because the
+    /// human accepted the focused-pane overlay, or left a typed nudge
+    /// to the human who focused the pane before its Enter. The messages then wait
     /// for `check_messages` (`peer_inbox_drained`).
     PeerNudgeSubmitted {
         id: usize,
