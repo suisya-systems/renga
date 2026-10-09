@@ -99,6 +99,26 @@ impl IpcServer {
         session_token: String,
         event_bus: EventBus,
     ) -> Result<Self> {
+        Self::spawn_with_heartbeat(
+            endpoint,
+            command_tx,
+            session_token,
+            event_bus,
+            HEARTBEAT_INTERVAL,
+        )
+    }
+
+    /// [`spawn`](Self::spawn) with the subscribe-stream keep-alive
+    /// interval exposed, so wire tests can watch heartbeats and
+    /// half-close detection without waiting on the 30 s production
+    /// value.
+    fn spawn_with_heartbeat(
+        endpoint: EndpointName,
+        command_tx: Sender<AppCommand>,
+        session_token: String,
+        event_bus: EventBus,
+        heartbeat_interval: Duration,
+    ) -> Result<Self> {
         let listener = bind_listener(&endpoint)
             .with_context(|| format!("bind IPC endpoint {}", endpoint.as_str()))?;
 
@@ -117,6 +137,7 @@ impl IpcServer {
                     endpoint_for_log,
                     stop_for_thread,
                     event_bus,
+                    heartbeat_interval,
                 );
                 // Signal Drop that the accept loop has returned. If the
                 // receiver is already gone (Drop finished first because
@@ -168,6 +189,7 @@ fn accept_loop(
     endpoint_for_log: String,
     stop: Arc<AtomicBool>,
     event_bus: EventBus,
+    heartbeat_interval: Duration,
 ) {
     for conn in listener.incoming() {
         // The self-connect triggered by IpcServer::drop returns here;
@@ -196,7 +218,7 @@ fn accept_loop(
         if let Err(e) = thread::Builder::new()
             .name("renga-ipc-worker".into())
             .spawn(move || {
-                if let Err(e) = handle_connection(conn, tx, &token, bus) {
+                if let Err(e) = handle_connection(conn, tx, &token, bus, heartbeat_interval) {
                     eprintln!("renga IPC: connection error: {e}");
                 }
             })
@@ -216,6 +238,7 @@ fn handle_connection(
     command_tx: Sender<AppCommand>,
     session_token: &str,
     event_bus: EventBus,
+    heartbeat_interval: Duration,
 ) -> Result<()> {
     // The stream is split by wrapping in BufReader for line-buffered
     // reads; writes go through BufReader::get_mut. We can't construct
@@ -318,7 +341,13 @@ fn handle_connection(
             event_bus.unsubscribe(sub_id);
             return Err(e);
         }
-        return stream_events(reader.into_inner(), event_bus, sub_id, rx);
+        return stream_events(
+            reader.into_inner(),
+            event_bus,
+            sub_id,
+            rx,
+            heartbeat_interval,
+        );
     }
     let resp = dispatch_request(req, &command_tx);
     write_response_line(reader.get_mut(), &resp)?;
@@ -342,7 +371,8 @@ fn handle_connection(
 /// right and the queue pressure wrong, which is the whole payoff of
 /// opting in.
 ///
-/// If no real event shows up within [`HEARTBEAT_INTERVAL`], the loop
+/// If no real event shows up within `heartbeat_interval`
+/// ([`HEARTBEAT_INTERVAL`] outside tests), the loop
 /// wakes up and writes a [`Event::Heartbeat`] to the wire. Its only
 /// purpose is to force an I/O write: if the peer's read side is dead
 /// (half-close) and the OS send buffer has filled, the write fails
@@ -354,8 +384,9 @@ fn stream_events(
     event_bus: EventBus,
     sub_id: super::events::SubId,
     rx: std::sync::mpsc::Receiver<super::Event>,
+    heartbeat_interval: Duration,
 ) -> Result<()> {
-    stream_events_inner(conn, rx, HEARTBEAT_INTERVAL);
+    stream_events_inner(conn, rx, heartbeat_interval);
     event_bus.unsubscribe(sub_id);
     Ok(())
 }
@@ -1386,20 +1417,18 @@ mod tests {
     // come back out of `client::subscribe_events` /
     // `client::subscribe_inbox_events`.
     //
-    // Unix-only because the harness needs a filesystem path it can make
-    // unique per test. Nothing platform-specific is left unverified —
-    // the routing decision is transport-independent.
+    // The routing tests are Unix-only: the routing decision is
+    // transport-independent, so a socket covers it. The harness itself
+    // runs on Windows too (over a named pipe) because the Issue #50
+    // heartbeat / teardown tests below are about the transport.
 
-    #[cfg(unix)]
     use crate::ipc::client;
-    #[cfg(unix)]
     use crate::ipc::endpoint::ENV_TOKEN;
 
     /// The token the harness publishes as `RENGA_TOKEN` *and* hands to
     /// `IpcServer::spawn`, so the real client handshake
     /// (`verify_session_token`) accepts the connection instead of
     /// refusing it as a foreign instance.
-    #[cfg(unix)]
     const WIRE_TOKEN: &str = "renga-306-wire-test-token";
 
     /// Ceiling on every blocking wait in these tests. Long enough that
@@ -1407,8 +1436,8 @@ mod tests {
     /// regression fails the suite in seconds instead of hanging it
     /// until the harness is killed — which is why the assertions below
     /// use `recv_timeout` rather than `recv`. Also well under
-    /// [`HEARTBEAT_INTERVAL`], so no keep-alive can arrive mid-test.
-    #[cfg(unix)]
+    /// [`HEARTBEAT_INTERVAL`], so no keep-alive can arrive mid-test
+    /// on a harness started with the production interval.
     const WIRE_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Pane id carried by the barrier event. Deliberately far outside
@@ -1422,13 +1451,11 @@ mod tests {
     /// environment on each subscriber thread. Serialize the wire tests
     /// among themselves so one test's restore cannot land in the middle
     /// of another's handshake.
-    #[cfg(unix)]
     static WIRE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Distinguishes concurrent harnesses inside one test process
     /// without spending path bytes on a nanosecond timestamp — see
     /// [`WireHarness::start`] for why every byte matters here.
-    #[cfg(unix)]
     static WIRE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     /// Longest socket path these tests will build before refusing to
@@ -1446,7 +1473,6 @@ mod tests {
     /// Teardown runs in `Drop` rather than at the end of each test so a
     /// failed assertion still unlinks the socket and puts `RENGA_TOKEN`
     /// back.
-    #[cfg(unix)]
     struct WireHarness {
         /// `Option` only so `Drop` can shut the server down before the
         /// directory is removed.
@@ -1461,9 +1487,13 @@ mod tests {
         prev_token: Option<String>,
     }
 
-    #[cfg(unix)]
     impl WireHarness {
+        #[cfg(unix)]
         fn start(tag: &str) -> Self {
+            Self::start_with_heartbeat(tag, HEARTBEAT_INTERVAL)
+        }
+
+        fn start_with_heartbeat(tag: &str, heartbeat_interval: Duration) -> Self {
             let env_guard = WIRE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             // The path has to stay *short*, which is why `tag` names the
             // harness in panic messages instead of appearing in the
@@ -1484,27 +1514,38 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir)
                 .unwrap_or_else(|e| panic!("create wire-test dir for {tag}: {e}"));
-            let sock_path = dir.join("s");
-            assert!(
-                sock_path.as_os_str().len() <= WIRE_SOCKET_PATH_MAX,
-                "wire-test socket path for {tag} is {} bytes ({}); \
-                 sockaddr_un::sun_path caps this at 104 on macOS. \
-                 Shorten it or point TMPDIR somewhere shallower.",
-                sock_path.as_os_str().len(),
-                sock_path.display()
-            );
-            let endpoint = EndpointName::socket(sock_path);
+            #[cfg(unix)]
+            let endpoint = {
+                let sock_path = dir.join("s");
+                assert!(
+                    sock_path.as_os_str().len() <= WIRE_SOCKET_PATH_MAX,
+                    "wire-test socket path for {tag} is {} bytes ({}); \
+                     sockaddr_un::sun_path caps this at 104 on macOS. \
+                     Shorten it or point TMPDIR somewhere shallower.",
+                    sock_path.as_os_str().len(),
+                    sock_path.display()
+                );
+                EndpointName::socket(sock_path)
+            };
+            // Named pipes live in their own namespace rather than under
+            // `dir`; borrow the directory's already-unique name.
+            #[cfg(windows)]
+            let endpoint = EndpointName::pipe(format!(
+                r"\\.\pipe\{}",
+                dir.file_name().unwrap().to_string_lossy()
+            ));
 
             let prev_token = std::env::var(ENV_TOKEN).ok();
             std::env::set_var(ENV_TOKEN, WIRE_TOKEN);
 
             let bus = EventBus::new();
             let (command_tx, command_rx) = mpsc::channel::<AppCommand>();
-            let server = IpcServer::spawn(
+            let server = IpcServer::spawn_with_heartbeat(
                 endpoint.clone(),
                 command_tx,
                 WIRE_TOKEN.to_string(),
                 bus.clone(),
+                heartbeat_interval,
             )
             .expect("bind wire-test IPC server");
 
@@ -1522,25 +1563,32 @@ mod tests {
         /// Start a subscriber and wait until the bus has actually
         /// registered it. Without the wait the test would race the
         /// handshake and could emit into an empty subscriber table.
+        #[cfg(unix)]
         fn subscribe(&self, scope: EventScope) -> Collector {
             let want = self.bus.subscriber_count() + 1;
             let collector = spawn_collector(self.endpoint.clone(), scope);
+            self.wait_for_subscriber_count(want);
+            collector
+        }
+
+        /// Poll until the bus holds exactly `want` subscribers, failing
+        /// after [`WIRE_TIMEOUT`].
+        fn wait_for_subscriber_count(&self, want: usize) {
             let deadline = std::time::Instant::now() + WIRE_TIMEOUT;
             loop {
                 let have = self.bus.subscriber_count();
-                if have >= want {
-                    return collector;
+                if have == want {
+                    return;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "only {have} of {want} subscribers registered on the bus"
+                    "bus holds {have} subscribers, expected {want}"
                 );
                 thread::sleep(Duration::from_millis(5));
             }
         }
     }
 
-    #[cfg(unix)]
     impl Drop for WireHarness {
         fn drop(&mut self) {
             // Server first: its own Drop unlinks the socket file, and
@@ -1821,5 +1869,113 @@ mod tests {
             vec![wire_inbox(OTHER_TAB_PANE, "across tabs")],
             "an unscoped subscriber must still receive a cross-tab PeerInbox"
         );
+    }
+
+    // ─── Issue #50: heartbeat + teardown over a real transport ─────
+    //
+    // `stream_events_emits_heartbeat_when_idle` drives the loop against
+    // an in-memory sink. These run the same loop behind a real socket /
+    // named pipe, where "the peer went away" is an OS write error rather
+    // than a closed channel, and check that the server actually turns
+    // that error into a released subscriber slot.
+
+    /// Keep-alive interval for the Issue #50 tests: short enough that
+    /// several fire well inside [`WIRE_TIMEOUT`] even on a slow runner,
+    /// long enough not to spin the worker thread.
+    const WIRE_HEARTBEAT: Duration = Duration::from_millis(100);
+
+    #[test]
+    fn wire_idle_subscriber_gets_heartbeats_and_its_slot_is_freed_once_it_hangs_up() {
+        let harness = WireHarness::start_with_heartbeat("heartbeat-hangup", WIRE_HEARTBEAT);
+        let endpoint = harness.endpoint.clone();
+        let bus = harness.bus.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        // The real client, on its own thread so a missing heartbeat
+        // fails on `recv_timeout` below instead of hanging the suite in
+        // a blocking read.
+        thread::spawn(move || {
+            let mut heartbeats = 0;
+            let result = client::subscribe_events(&endpoint, |event| {
+                assert!(
+                    matches!(event, Event::Heartbeat { .. }),
+                    "nothing was emitted, so only heartbeats may arrive: {event:?}"
+                );
+                // The slot is held for as long as the client is still
+                // connected — otherwise the count dropping to 0 below
+                // would prove nothing.
+                assert_eq!(bus.subscriber_count(), 1);
+                heartbeats += 1;
+                // Two, not one: the keep-alive must repeat, not fire
+                // once after the ack.
+                heartbeats < 2
+            });
+            let _ = done_tx.send(result.map(|()| heartbeats));
+        });
+
+        let heartbeats = match done_rx.recv_timeout(WIRE_TIMEOUT) {
+            Ok(result) => result.expect("subscribe stream ended with an error"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("idle subscriber never received two heartbeats")
+            }
+            // The callback's own assertion message is on stderr above.
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("client thread panicked"),
+        };
+        assert_eq!(heartbeats, 2);
+
+        // `subscribe_events` returning dropped the connection. The server
+        // only notices on its next write — the next heartbeat — and must
+        // then unsubscribe rather than keep a dead slot.
+        harness.wait_for_subscriber_count(0);
+    }
+
+    /// The half-close case proper: the client keeps its end of the
+    /// connection open and only shuts down its read side. On Linux that
+    /// makes the server's next write fail with `EPIPE`; other platforms
+    /// do not promise that for `SHUT_RD` (and named pipes have no
+    /// half-close at all), so this one is Linux-only.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wire_subscriber_that_shuts_down_its_read_side_is_released_on_the_next_heartbeat() {
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        let harness = WireHarness::start_with_heartbeat("half-close", WIRE_HEARTBEAT);
+        // A raw socket rather than `client::subscribe_events`, which owns
+        // its connection and can only drop it whole.
+        let stream = UnixStream::connect(harness.endpoint.as_str()).expect("connect");
+        stream.set_read_timeout(Some(WIRE_TIMEOUT)).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut read_line = |what: &str| {
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .unwrap_or_else(|e| panic!("reading {what}: {e}"));
+            line
+        };
+
+        write_request_line(&mut writer, &Request::Hello { client_pid: 0 });
+        let hello: Response = serde_json::from_str(&read_line("hello")).unwrap();
+        assert!(matches!(hello, Response::Hello { .. }), "{hello:?}");
+        write_request_line(&mut writer, &Request::Subscribe { from_pane: None });
+        let ack: Response = serde_json::from_str(&read_line("subscribe ack")).unwrap();
+        assert_eq!(ack, Response::Subscribed);
+        let first: Event = serde_json::from_str(&read_line("heartbeat")).unwrap();
+        assert!(matches!(first, Event::Heartbeat { .. }), "{first:?}");
+        assert_eq!(harness.bus.subscriber_count(), 1);
+
+        writer.shutdown(Shutdown::Read).expect("shutdown read side");
+        harness.wait_for_subscriber_count(0);
+        // Held to here on purpose: the slot must be released while the
+        // connection is still half-open, not because it was closed.
+        drop(writer);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_request_line<W: Write>(w: &mut W, req: &Request) {
+        let mut json = serde_json::to_string(req).unwrap();
+        json.push('\n');
+        w.write_all(json.as_bytes()).unwrap();
+        w.flush().unwrap();
     }
 }
