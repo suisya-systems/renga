@@ -73,7 +73,9 @@ impl App {
                     .accept_codex_peer_notification()
                     .map_err(|e| anyhow::anyhow!(e.to_string()));
             }
-            self.dismiss_codex_peer_notification();
+            // Typing past the overlay is not an "ignore": park it so
+            // the request is still nudged once focus leaves (#197).
+            self.snooze_codex_peer_notification();
         }
 
         // Rename mode — swallow all input until Enter/Esc.

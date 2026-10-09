@@ -174,6 +174,11 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    /// Failure bound only: every wait below polls for its condition and
+    /// returns the moment it holds, so a generous value costs nothing on
+    /// the happy path and absorbs slow powershell/cmd startup on loaded CI.
+    const WAIT_BUDGET: Duration = Duration::from_secs(30);
+
     fn wait_exited(child: &mut std::process::Child, budget: Duration) -> bool {
         let deadline = Instant::now() + budget;
         while Instant::now() < deadline {
@@ -262,7 +267,7 @@ mod tests {
         let job = PaneJob::assign(child.id()).expect("assign job");
         job.terminate();
         assert!(
-            wait_exited(&mut child, Duration::from_secs(5)),
+            wait_exited(&mut child, WAIT_BUDGET),
             "direct child should die on TerminateJobObject"
         );
     }
@@ -279,16 +284,16 @@ mod tests {
         // has exited so only the orphaned grandchild remains — the
         // exact shape `taskkill /T` cannot reach.
         assert!(
-            wait_for(|| lock_is_held(&lock_path), Duration::from_secs(10)),
+            wait_for(|| lock_is_held(&lock_path), WAIT_BUDGET),
             "grandchild should start and hold the lock"
         );
         assert!(
-            wait_exited(&mut cmd, Duration::from_secs(10)),
+            wait_exited(&mut cmd, WAIT_BUDGET),
             "cmd wrapper should exit quickly"
         );
         job.terminate();
         assert!(
-            wait_for(|| !lock_is_held(&lock_path), Duration::from_secs(5)),
+            wait_for(|| !lock_is_held(&lock_path), WAIT_BUDGET),
             "grandchild should be dead after job termination"
         );
     }

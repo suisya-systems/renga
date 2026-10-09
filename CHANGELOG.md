@@ -42,6 +42,15 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   frozen contract only said a non-matching arrival *can* early-return,
   so this is within it.
 
+### Fixed
+
+- **Typing into a focused Codex pane no longer drops its peer
+  notification.** (#197) Any key other than `Esc` / `Ctrl+C` /
+  `Alt+Enter` used to discard the "pending Codex messages" overlay, and
+  the queued request was then never nudged. The overlay is now hidden
+  but kept: a newer message shows it again, and leaving the pane hands
+  it to the usual deferred `check_messages` nudge.
+
 ## [3.0.0] — 2026-08-29
 
 > **Major release.** Governed by

@@ -1800,7 +1800,7 @@ mod tests {
         pane.kill();
 
         assert!(
-            wait_for(|| !lock_is_held(&lock_path), Duration::from_secs(10)),
+            wait_for(|| !lock_is_held(&lock_path), Duration::from_secs(30)),
             "orphaned grandchild should be dead after pane kill"
         );
     }

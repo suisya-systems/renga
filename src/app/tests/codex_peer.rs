@@ -918,6 +918,71 @@ fn focused_codex_notification_esc_dismisses_without_queueing_nudge() {
 }
 
 #[test]
+fn focused_codex_notification_typing_snoozes_until_focus_leaves() {
+    let mut app = App::new(40, 80).expect("App::new");
+    let sender_id = app.ws().focused_pane_id;
+    let sibling_id = app
+        .handle_split(
+            &ipc::PaneRef::Focused,
+            ipc::Direction::Vertical,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("split succeeds");
+    app.peer_client_kinds
+        .insert(sibling_id, PeerClientKind::Codex);
+    app.handle_focus(&ipc::PaneRef::Id(sibling_id), None)
+        .expect("focus sibling");
+    app.handle_peer_send(
+        sender_id,
+        &ipc::PaneRef::Id(sibling_id),
+        "hello focused codex".to_string(),
+    )
+    .expect("peer send");
+
+    // An ordinary keystroke hides the overlay and reaches the pane...
+    app.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .expect("type past notification");
+    assert!(app.visible_codex_peer_notification().is_none());
+    // ...but the request is parked, not lost, while the pane stays watched.
+    app.flush_pending_codex_peer_messages();
+    assert!(app.visible_codex_peer_notification().is_none());
+    assert!(!app.pending_codex_peer_messages.contains_key(&sibling_id));
+
+    // A newer message brings the overlay back with both counted.
+    app.handle_peer_send(
+        sender_id,
+        &ipc::PaneRef::Id(sibling_id),
+        "second message".to_string(),
+    )
+    .expect("second peer send");
+    assert_eq!(
+        app.visible_codex_peer_notification()
+            .map(|n| n.pending_count),
+        Some(2)
+    );
+    app.snooze_codex_peer_notification();
+
+    // Leaving the pane hands the parked request to the deferred nudge.
+    app.handle_focus(&ipc::PaneRef::Id(sender_id), None)
+        .expect("refocus sender");
+    app.flush_pending_codex_peer_messages();
+    assert!(app.codex_peer_notification.is_none());
+    assert_eq!(
+        app.pending_codex_peer_messages
+            .get(&sibling_id)
+            .map(|q| q.len()),
+        Some(1),
+        "a snoozed notification must still nudge once focus leaves"
+    );
+    app.shutdown();
+}
+
+#[test]
 fn focused_codex_notification_commit_clears_notification() {
     let mut app = App::new(40, 80).expect("App::new");
     let sender_id = app.ws().focused_pane_id;
