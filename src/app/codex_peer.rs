@@ -25,12 +25,19 @@ pub(crate) struct CodexPeerNotificationState {
     pub(crate) target_pane: usize,
     pub(crate) message: PendingCodexPeerMessage,
     pub(crate) pending_count: usize,
+    /// Hidden because the human kept typing into the pane. The
+    /// notification is parked, not dropped: it hands off to the
+    /// deferred nudge once focus leaves, and a newer message shows it
+    /// again. Before this, any stray keystroke discarded it and the
+    /// queued request was never nudged at all (Issue #197).
+    pub(crate) snoozed: bool,
 }
 
 impl CodexPeerNotificationState {
     fn register_message(&mut self, message: PendingCodexPeerMessage) {
         self.message = message;
         self.pending_count = self.pending_count.saturating_add(1);
+        self.snoozed = false;
     }
 }
 
@@ -283,6 +290,7 @@ impl App {
                             target_pane: target_id,
                             message,
                             pending_count: 1,
+                            snoozed: false,
                         });
                     }
                 }
@@ -350,16 +358,22 @@ impl App {
         }
     }
 
-    pub(crate) fn codex_peer_notification_is_visible(&self) -> bool {
-        if self.overlay.is_some() {
-            return false;
-        }
+    fn codex_peer_notification_target_is_watched(&self) -> bool {
         let Some(notification) = self.codex_peer_notification.as_ref() else {
             return false;
         };
         self.ws().focus_target == FocusTarget::Pane
             && self.ws().focused_pane_id == notification.target_pane
             && self.ws().panes.contains_key(&notification.target_pane)
+    }
+
+    pub(crate) fn codex_peer_notification_is_visible(&self) -> bool {
+        self.overlay.is_none()
+            && self
+                .codex_peer_notification
+                .as_ref()
+                .is_some_and(|n| !n.snoozed)
+            && self.codex_peer_notification_target_is_watched()
     }
 
     pub(crate) fn visible_codex_peer_notification(&self) -> Option<&CodexPeerNotificationState> {
@@ -374,11 +388,22 @@ impl App {
         }
     }
 
+    pub(crate) fn snooze_codex_peer_notification(&mut self) {
+        if let Some(notification) = self.codex_peer_notification.as_mut() {
+            notification.snoozed = true;
+            self.dirty = true;
+        }
+    }
+
     fn materialize_unfocused_codex_peer_notification(&mut self) {
         let Some(notification) = self.codex_peer_notification.clone() else {
             return;
         };
-        if self.codex_peer_notification_is_visible() {
+        // A snoozed notification stays parked while the human is still
+        // on the pane; it only becomes a PTY nudge once they leave.
+        if self.codex_peer_notification_is_visible()
+            || (notification.snoozed && self.codex_peer_notification_target_is_watched())
+        {
             return;
         }
         if self
@@ -516,6 +541,7 @@ impl App {
                                             target_pane: pane_id,
                                             message,
                                             pending_count: 1,
+                                            snoozed: false,
                                         });
                                     self.dirty = true;
                                 }
