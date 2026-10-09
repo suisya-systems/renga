@@ -1117,24 +1117,28 @@ fn pty_reader_thread(
                     osc52_tail.clear();
                 }
 
-                let dsr_queries = count_dsr_queries(&mut dsr_tail, data);
+                let dsr_ends = dsr_query_ends(&mut dsr_tail, data);
 
                 let mut parser = parser.lock().unwrap_or_else(|e| e.into_inner());
-                parser.process(data);
-                let screen = parser.screen();
-                if dsr_queries > 0 {
-                    // Answer DSR cursor position requests. ConPTY sends one
-                    // at startup (portable-pty 0.9 sets
-                    // PSEUDOCONSOLE_INHERIT_CURSOR) and blocks until it is
-                    // answered. Routed through the main loop rather than
-                    // writing here so this thread never blocks on input.
-                    // ponytail: reports the cursor after the whole chunk, not
-                    // at the query offset; fine since requesters wait for the
-                    // reply before writing more.
-                    let (row, col) = screen.cursor_position();
-                    let reply = format!("\x1b[{};{}R", row + 1, col + 1).repeat(dsr_queries);
+                // Answer DSR cursor position requests with the cursor as of
+                // each query, so feed vt100 one query at a time. ConPTY
+                // sends one at startup (portable-pty 0.9 sets
+                // PSEUDOCONSOLE_INHERIT_CURSOR) and blocks until answered.
+                // Routed through the main loop rather than writing here so
+                // this thread never blocks on PTY input.
+                let mut reply = String::new();
+                let mut start = 0;
+                for end in dsr_ends {
+                    parser.process(&data[start..end]);
+                    let (row, col) = parser.screen().cursor_position();
+                    reply.push_str(&format!("\x1b[{};{}R", row + 1, col + 1));
+                    start = end;
+                }
+                parser.process(&data[start..]);
+                if !reply.is_empty() {
                     let _ = event_tx.send(AppEvent::PtyReply(pane_id, reply.into_bytes()));
                 }
+                let screen = parser.screen();
                 let mode = screen.mouse_protocol_mode();
                 if !matches!(mode, vt100::MouseProtocolMode::None) {
                     let mut cache = mouse_protocol_cache
@@ -1209,14 +1213,21 @@ fn find_osc_terminator(buf: &[u8], from: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// Count DSR cursor position requests (`ESC[6n`) in `data`, carrying a
-/// partial query in `tail` so one split across two reads is still seen.
-fn count_dsr_queries(tail: &mut Vec<u8>, data: &[u8]) -> usize {
+/// Offsets in `data` just past each DSR cursor position request
+/// (`ESC[6n`). A partial query is carried in `tail` so one split across
+/// two reads is still seen (its end offset then lands in the later read).
+fn dsr_query_ends(tail: &mut Vec<u8>, data: &[u8]) -> Vec<usize> {
     const DSR: &[u8] = b"\x1b[6n";
+    let carried = tail.len();
     tail.extend_from_slice(data);
-    let count = tail.windows(DSR.len()).filter(|w| *w == DSR).count();
+    let ends = tail
+        .windows(DSR.len())
+        .enumerate()
+        .filter(|(_, w)| *w == DSR)
+        .map(|(i, _)| i + DSR.len() - carried)
+        .collect();
     keep_possible_prefix_suffix(tail, DSR);
-    count
+    ends
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1753,27 +1764,32 @@ mod tests {
     }
 
     #[test]
-    fn count_dsr_queries_counts_whole_split_and_repeated_queries() {
+    fn dsr_query_ends_finds_whole_split_and_repeated_queries() {
         let mut tail = Vec::new();
-        assert_eq!(count_dsr_queries(&mut tail, b"plain output"), 0);
-        assert_eq!(count_dsr_queries(&mut tail, b"a\x1b[6nb\x1b[6n"), 2);
-        // Split across reads at every possible boundary: counted once.
+        assert!(dsr_query_ends(&mut tail, b"plain output").is_empty());
+        assert_eq!(dsr_query_ends(&mut tail, b"a\x1b[6nb\x1b[6n"), vec![5, 10]);
+        // Split across reads at every possible boundary: found once, at
+        // the end of the query bytes in the later read.
         for split in 1..4 {
             let (head, rest) = b"\x1b[6n".split_at(split);
             let mut tail = b"xyz".to_vec();
-            assert_eq!(count_dsr_queries(&mut tail, head), 0);
-            assert_eq!(count_dsr_queries(&mut tail, rest), 1);
-            assert_eq!(count_dsr_queries(&mut tail, b"next"), 0);
+            assert!(dsr_query_ends(&mut tail, head).is_empty());
+            assert_eq!(dsr_query_ends(&mut tail, rest), vec![rest.len()]);
+            assert!(dsr_query_ends(&mut tail, b"next").is_empty());
         }
         // Other CSI n queries are not cursor position requests.
-        assert_eq!(count_dsr_queries(&mut Vec::new(), b"\x1b[5n\x1b[?6n"), 0);
+        assert!(dsr_query_ends(&mut Vec::new(), b"\x1b[5n\x1b[?6n").is_empty());
     }
 
     #[test]
     fn reader_thread_answers_dsr_with_cursor_position() {
         let (tx, rx) = std::sync::mpsc::channel();
         pty_reader_thread(
-            Box::new(std::io::Cursor::new(b"\r\nhi\x1b[6n".to_vec())),
+            // Output after a query in the same read must not move the
+            // reported position; each query gets its own position.
+            Box::new(std::io::Cursor::new(
+                b"\r\nhi\x1b[6n\r\n\x1b[6nabc".to_vec(),
+            )),
             Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
             Arc::new(Mutex::new(String::new())),
             Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -1792,7 +1808,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(replies, vec![(7, b"\x1b[2;3R".to_vec())]);
+        assert_eq!(replies, vec![(7, b"\x1b[2;3R\x1b[3;1R".to_vec())]);
     }
 
     /// End-to-end acceptance for the pane Job Object (renga-trx): a
