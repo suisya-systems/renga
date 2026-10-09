@@ -1,0 +1,11 @@
+[?25h[m[H[J[2m╭──────────────────────────────────────────────────╮
+│ >_ [1mOpenAI Codex[2m (v0.153.4)                       │
+│                                                  │
+│ model:     [mgpt-6-astra medium[2m   [36;22m/model[39;2m to change │
+│ directory: [m~/work/org/workers/renga/…/cap3/work[2m  │
+╰──────────────────────────────────────────────────╯[8;1H[m  [1mTip:[m [3mNew[m Use [1m/fast[m to enable our fastest inference with increased plan usage.[10;1H[2m• [mYou have 3 usage limit resets available. Run /usage to use one.
+ 
+ 
+[1m›[m [2mAsk Codex to do anything
+[m 
+  [38;2;246;226;183mgpt-6-astra medium[39;2m · [38;2;171;223;167;22m~/work/org/workers/renga/.worktrees/renga-354-codex-readiness-fixtures/.work…[13;3H[m>[?1l[?2004h

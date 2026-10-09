@@ -1,0 +1,17 @@
+[?25h[m[H[J[2m╭─────────────────────────────────────────────────╮
+│ [36;1m✨ Update available![m [1m0.153.4 -> 0.162.0[2m         │
+│ [mRun [36mnpm install -g @openai/codex[m to update.[2m     │
+│                                                 │
+│ [mSee full release notes:[2m                         │
+│ [36;22;4mhttps://github.com/openai/codex/releases/latest[39;2;24m │
+╰─────────────────────────────────────────────────╯[9;1H╭──────────────────────────────────────────────────╮
+│ >_ [1mOpenAI Codex[2m (v0.153.4)                       │
+│                                                  │
+│ model:     [mgpt-6-astra medium[2m   [36;22m/model[39;2m to change │
+│ directory: [m~/work/org/workers/renga/…/cap4/work[2m  │
+╰──────────────────────────────────────────────────╯[16;1H[m  [1mTip:[m When the composer is empty, press Esc to step back and edit your last message; Enter confirms.[19;1H[2m› [m00 word poem about mountains.[22;1H[2m• [mYou have 3 usage limit resets available. Run /usage to use one.[24;1H[2m• [mHow many words would you like—100, 200, or another length?
+ 
+ 
+[1m›[m [2mAsk Codex to do anything
+[m 
+  [38;2;246;226;183mgpt-6-astra medium[39;2m · [38;2;171;223;167;22m~/work/org/workers/renga/.worktrees/renga-354-codex-readiness-fixtures/.worker-scratch/cap4/work[27;3H[m>[?1l[?2004h

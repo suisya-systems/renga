@@ -1,0 +1,17 @@
+[?25l[m[H[J[2m╭──────────────────────────────────────────────────╮
+│ >_ [1mOpenAI Codex[2m (v0.153.4)                       │
+│                                                  │
+│ model:     [mgpt-6-astra medium[2m   [36;22m/model[39;2m to change │
+│ directory: [m~/work/org/workers/renga/…/cap3/work[2m  │
+╰──────────────────────────────────────────────────╯[8;1H[m  [1mTip:[m [3mNew[m Use [1m/fast[m to enable our fastest inference with increased plan usage.[10;1H[2m• [mYou have 3 usage limit resets available. Run /usage to use one.
+ 
+ 
+  [1mSelect Model and Effort
+[m  [2mAccess legacy models by running codex -m <model_name> or in your config.toml
+[m 
+[36;1m› 1. gpt-6-astra (current)  Frontier intelligence for the most demanding work.
+[m  2. gpt-5.6-sol            [2mOlder generation workhorse model.
+[m  3. gpt-5.6-terra          [2mOlder balanced model for straightforward work.
+[m  4. gpt-5.6-luna           [2mOlder fast and efficient model.
+[m 
+  [2mPress enter to confirm or esc to go back                                                          [m>[?1l[?2004h
