@@ -449,7 +449,7 @@ impl App {
             })?;
         let mut unread = self.peer_unread.remove(&pane_id).unwrap_or_default();
         if ids.is_empty() {
-            for _ in 0..count {
+            for _ in 0..count.min(unread.len()) {
                 unread.pop_first();
             }
         } else {
