@@ -1938,3 +1938,94 @@ fn a_multiline_codex_body_is_refused() {
     assert!(app.user_turn_writes.is_empty());
     app.shutdown();
 }
+
+// ── readiness: Codex, real captured screens (#364) ────────────
+
+/// The idle composer's dim "Ask Codex to do anything" hint is not a
+/// draft; a typed draft is. Fixtures are real v0.153.4 captures.
+#[test]
+fn codex_captured_screens_distinguish_placeholder_from_draft() {
+    let cases: &[(&str, &[u8], u16, u16, TurnReadiness)] = &[
+        (
+            "idle",
+            include_bytes!("fixtures/codex/v0.153.4/idle_100x30.vt"),
+            30,
+            100,
+            TurnReadiness::Ready,
+        ),
+        (
+            "idle_after_turn",
+            include_bytes!("fixtures/codex/v0.153.4/idle_after_turn_100x30.vt"),
+            30,
+            100,
+            TurnReadiness::Ready,
+        ),
+        (
+            "idle_tall",
+            include_bytes!("fixtures/codex/v0.153.4/idle_tall_120x60.vt"),
+            60,
+            120,
+            TurnReadiness::Ready,
+        ),
+        (
+            "draft",
+            include_bytes!("fixtures/codex/v0.153.4/draft_100x30.vt"),
+            30,
+            100,
+            TurnReadiness::NotReady,
+        ),
+        (
+            "draft_after_turn",
+            include_bytes!("fixtures/codex/v0.153.4/draft_after_turn_120x60.vt"),
+            60,
+            120,
+            TurnReadiness::NotReady,
+        ),
+        (
+            "busy",
+            include_bytes!("fixtures/codex/v0.153.4/busy_100x30.vt"),
+            30,
+            100,
+            TurnReadiness::Busy,
+        ),
+    ];
+    for (name, bytes, rows, cols, want) in cases {
+        assert_eq!(codex_readiness_of(bytes, *rows, *cols), *want, "{name}");
+    }
+}
+
+#[test]
+fn codex_bulleted_transcript_quoting_interrupt_is_not_busy() {
+    assert_eq!(
+        codex_readiness_of(
+            b"\x1b[2J\x1b[H\x1b[?25h\xE2\x80\xA2 Press esc to interrupt\r\n\r\n\xE2\x80\xBA \x1b[3;3H",
+            8,
+            40
+        ),
+        TurnReadiness::Ready
+    );
+}
+
+#[test]
+fn codex_typed_glyph_in_the_composer_is_a_draft() {
+    assert_eq!(
+        codex_readiness_of(
+            b"\x1b[2J\x1b[H\x1b[?25h\xE2\x80\xBA \xE2\x80\xBA\x1b[1;3H",
+            8,
+            40
+        ),
+        TurnReadiness::NotReady
+    );
+}
+
+#[test]
+fn codex_bulleted_working_prose_quoting_interrupt_is_not_busy() {
+    assert_eq!(
+        codex_readiness_of(
+            b"\x1b[2J\x1b[H\x1b[?25h\xE2\x80\xA2 Working with Codex: press esc to interrupt\r\n\r\n\xE2\x80\xBA \x1b[3;3H",
+            8,
+            60
+        ),
+        TurnReadiness::Ready
+    );
+}

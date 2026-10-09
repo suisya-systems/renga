@@ -85,6 +85,15 @@ impl App {
                 AppEvent::ClipboardCopy(text) => {
                     self.copy_to_clipboard(&text);
                 }
+                AppEvent::PtyReply(pane_id, bytes) => {
+                    if let Some(pane) = self
+                        .workspaces
+                        .iter_mut()
+                        .find_map(|ws| ws.panes.get_mut(&pane_id))
+                    {
+                        let _ = pane.write_input(&bytes);
+                    }
+                }
             }
         }
         if had_events {

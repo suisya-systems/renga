@@ -658,7 +658,7 @@ pub(crate) fn codex_turn_readiness(screen: &vt100::Screen) -> TurnReadiness {
     // Codex paints its working indicator directly above the composer,
     // so the scan reaches one row up — but no further, so transcript
     // text cannot pin the pane at busy.
-    if busy_near_composer(screen, prompt_row, 1) {
+    if busy_near_composer(screen, prompt_row, 1) || codex_working_line_above(screen, prompt_row) {
         return TurnReadiness::Busy;
     }
     // `codex_prompt_allows_peer_nudge_on_screen` proves the caret is at
@@ -686,6 +686,20 @@ pub(crate) fn codex_turn_readiness(screen: &vt100::Screen) -> TurnReadiness {
     }
 }
 
+/// Codex's status line (`• Working (2s • esc to interrupt)`) is followed
+/// by blank spacer rows before the composer, so the 1-row scan misses
+/// it (#364). Anchoring on the leading bullet keeps transcript text that
+/// merely quotes the marker from pinning the pane.
+fn codex_working_line_above(screen: &vt100::Screen, prompt_row: u16) -> bool {
+    (prompt_row.saturating_sub(4)..prompt_row).any(|row| {
+        let t = row_text(screen, row).to_lowercase();
+        t.trim_start()
+            .strip_prefix('\u{2022}')
+            .is_some_and(|r| r.trim_start().starts_with("working ("))
+            && BUSY_MARKERS.iter().any(|m| t.contains(m))
+    })
+}
+
 /// First editable column of Codex's composer — the glyph plus its
 /// separating space. Mirrors the column
 /// [`codex_prompt_allows_peer_nudge_on_screen`] treats as "empty".
@@ -701,13 +715,22 @@ fn codex_prompt_row(screen: &vt100::Screen) -> Option<u16> {
 }
 
 /// Whether Codex's composer holds nothing: the `›` glyph and nothing
-/// after it.
+/// after it. Codex paints its idle hint ("Ask Codex to do anything") in
+/// the dim attribute right in the edit position; typed text is never
+/// dim, so dim cells are not a draft.
 fn codex_composer_is_empty(screen: &vt100::Screen, prompt_row: u16) -> bool {
-    row_text(screen, prompt_row)
-        .trim_start()
-        .trim_start_matches('\u{203A}')
-        .trim()
-        .is_empty()
+    // Only the first non-blank cell is the structural glyph; a second `›`
+    // is typed text.
+    let mut glyph_seen = false;
+    (0..screen.size().1).all(|col| {
+        screen.cell(prompt_row, col).is_none_or(|c| {
+            let s = c.contents();
+            if c.dim() || s.trim().is_empty() {
+                return true;
+            }
+            !std::mem::replace(&mut glyph_seen, true) && s == "\u{203A}"
+        })
+    })
 }
 
 // ── body handling ─────────────────────────────────────────────

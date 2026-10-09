@@ -178,6 +178,9 @@ pub enum AppEvent {
     PtyOutput(usize),
     /// A pane emitted OSC 52 with clipboard text.
     ClipboardCopy(String),
+    /// Bytes the terminal must answer back to a pane's PTY (e.g. the
+    /// cursor position report for a DSR `ESC[6n` query).
+    PtyReply(usize, Vec<u8>),
     /// PTY process exited for a pane.
     PtyEof(usize),
     /// Shell changed working directory (pane_id, new path).
