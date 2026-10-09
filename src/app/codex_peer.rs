@@ -3,6 +3,10 @@ use super::*;
 pub(crate) const CODEX_APPEND_ENTER_DELAY: Duration = Duration::from_millis(75);
 pub(crate) const CODEX_PEER_NUDGE_SUBMIT_DELAY: Duration = Duration::from_millis(1000);
 pub(crate) const CODEX_APPEND_ENTER_SNAPSHOT_LINES: usize = 8;
+/// Smallest terminal (cols, rows) the focused-pane notification box
+/// can be drawn in. Below it the overlay must not count as visible,
+/// or Esc / Alt+Enter would be swallowed by a box nobody can see.
+pub(crate) const CODEX_PEER_NOTIFICATION_MIN_SIZE: (u16, u16) = (44, 5);
 
 /// Window during which a `(target, from, body)` triple is treated as
 /// a re-send and dropped before reaching `Event::PeerInbox`. Set to a
@@ -34,16 +38,19 @@ pub(crate) struct CodexPeerNotificationState {
 }
 
 impl CodexPeerNotificationState {
-    fn register_message(&mut self, message: PendingCodexPeerMessage) {
+    fn register_messages(&mut self, message: PendingCodexPeerMessage, count: usize) {
         self.message = message;
-        self.pending_count = self.pending_count.saturating_add(1);
+        self.pending_count = self.pending_count.saturating_add(count);
         self.snoozed = false;
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PendingCodexPeerDelivery {
-    Draft(PendingCodexPeerMessage),
+    /// Latest message plus how many arrived since the last nudge, so a
+    /// notification parked in the queue keeps its count when promoted
+    /// back to the overlay.
+    Draft(PendingCodexPeerMessage, usize),
     SubmitAt(Instant),
 }
 
@@ -283,7 +290,7 @@ impl App {
                 self.pending_codex_peer_messages.remove(&target_id);
                 match self.codex_peer_notification.as_mut() {
                     Some(notification) if notification.target_pane == target_id => {
-                        notification.register_message(message);
+                        notification.register_messages(message, 1);
                     }
                     _ => {
                         self.codex_peer_notification = Some(CodexPeerNotificationState {
@@ -296,7 +303,7 @@ impl App {
                 }
                 self.dirty = true;
             } else {
-                self.push_pending_codex_peer_nudge(target_id, message);
+                self.push_pending_codex_peer_nudge(target_id, message, 1);
             }
         }
         self.event_bus.emit(ipc::Event::PeerInbox {
@@ -351,11 +358,41 @@ impl App {
         Ok(())
     }
 
-    fn push_pending_codex_peer_nudge(&mut self, pane_id: usize, message: PendingCodexPeerMessage) {
+    fn push_pending_codex_peer_nudge(
+        &mut self,
+        pane_id: usize,
+        message: PendingCodexPeerMessage,
+        count: usize,
+    ) {
         let queue = self.pending_codex_peer_messages.entry(pane_id).or_default();
-        if queue.is_empty() {
-            queue.push_back(PendingCodexPeerDelivery::Draft(message));
+        match queue.front_mut() {
+            None => queue.push_back(PendingCodexPeerDelivery::Draft(message, count)),
+            Some(PendingCodexPeerDelivery::Draft(latest, pending)) => {
+                *latest = message;
+                *pending = pending.saturating_add(count);
+            }
+            // The nudge is already typed; check_messages drains this one too.
+            Some(PendingCodexPeerDelivery::SubmitAt(_)) => {}
         }
+    }
+
+    fn codex_peer_notification_fits(&self) -> bool {
+        let (cols, rows) = self.last_term_size;
+        let (min_cols, min_rows) = CODEX_PEER_NOTIFICATION_MIN_SIZE;
+        // Below the UI's own minimum nothing but "too small" is drawn.
+        cols >= min_cols.max(crate::ui::MIN_TERMINAL_WIDTH)
+            && rows >= min_rows.max(crate::ui::MIN_TERMINAL_HEIGHT)
+    }
+
+    /// A live notification for the watched pane that the terminal is
+    /// too small to draw. The status bar says so instead.
+    pub(crate) fn codex_peer_notification_needs_hint(&self) -> Option<usize> {
+        let n = self.codex_peer_notification.as_ref()?;
+        (!n.snoozed
+            && self.overlay.is_none()
+            && !self.codex_peer_notification_fits()
+            && self.codex_peer_notification_target_is_watched())
+        .then_some(n.pending_count)
     }
 
     fn codex_peer_notification_target_is_watched(&self) -> bool {
@@ -373,6 +410,7 @@ impl App {
                 .codex_peer_notification
                 .as_ref()
                 .is_some_and(|n| !n.snoozed)
+            && self.codex_peer_notification_fits()
             && self.codex_peer_notification_target_is_watched()
     }
 
@@ -399,10 +437,12 @@ impl App {
         let Some(notification) = self.codex_peer_notification.clone() else {
             return;
         };
-        // A snoozed notification stays parked while the human is still
-        // on the pane; it only becomes a PTY nudge once they leave.
+        // A snoozed or too-small-to-draw notification stays parked
+        // while the human is still on the pane; it only becomes a PTY
+        // nudge once they leave.
         if self.codex_peer_notification_is_visible()
-            || (notification.snoozed && self.codex_peer_notification_target_is_watched())
+            || ((notification.snoozed || !self.codex_peer_notification_fits())
+                && self.codex_peer_notification_target_is_watched())
         {
             return;
         }
@@ -410,7 +450,11 @@ impl App {
             .resolve_pane_across_workspaces(&PaneRef::Id(notification.target_pane))
             .is_some()
         {
-            self.push_pending_codex_peer_nudge(notification.target_pane, notification.message);
+            self.push_pending_codex_peer_nudge(
+                notification.target_pane,
+                notification.message,
+                notification.pending_count,
+            );
         }
         self.codex_peer_notification = None;
         self.dirty = true;
@@ -504,8 +548,13 @@ impl App {
                 // just a bookmark — skipping it too would strand
                 // cross-tab nudges forever on single-pane tabs, where
                 // the only pane is always the workspace-focused one
-                // (Issue #289).
-                if ws_idx == active_tab && ws.focused_pane_id == pane_id {
+                // (Issue #289). Focus on the file tree / preview of
+                // the same tab is "away" too: the human cannot type
+                // into the pane, so the nudge goes out (Issue #355).
+                if ws_idx == active_tab
+                    && ws.focus_target == FocusTarget::Pane
+                    && ws.focused_pane_id == pane_id
+                {
                     // A nudge that was queued while the pane was hidden
                     // would otherwise stall for as long as the human
                     // stays on it — no overlay exists because
@@ -525,12 +574,12 @@ impl App {
                         // the two conversions cannot fight. If the
                         // overlay is busy elsewhere, stay queued and
                         // retry on a later flush.
-                        Some(PendingCodexPeerDelivery::Draft(message))
-                            if ws.focus_target == FocusTarget::Pane && self.overlay.is_none() =>
+                        Some(PendingCodexPeerDelivery::Draft(message, count))
+                            if self.overlay.is_none() =>
                         {
                             match self.codex_peer_notification.as_mut() {
                                 Some(n) if n.target_pane == pane_id => {
-                                    n.register_message(message);
+                                    n.register_messages(message, count);
                                     self.pending_codex_peer_messages.remove(&pane_id);
                                     self.dirty = true;
                                 }
@@ -540,7 +589,7 @@ impl App {
                                         Some(CodexPeerNotificationState {
                                             target_pane: pane_id,
                                             message,
-                                            pending_count: 1,
+                                            pending_count: count,
                                             snoozed: false,
                                         });
                                     self.dirty = true;
@@ -572,7 +621,7 @@ impl App {
                 };
                 if let Some(pane) = ws.panes.get_mut(&pane_id) {
                     match delivery {
-                        PendingCodexPeerDelivery::Draft(message) => {
+                        PendingCodexPeerDelivery::Draft(message, _) => {
                             let registered_codex = self.peer_client_kinds.get(&pane_id)
                                 == Some(&PeerClientKind::Codex);
                             if !Self::codex_peer_delivery_ready(registered_codex, pane) {
