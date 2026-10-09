@@ -17,6 +17,15 @@ use super::super::user_turn::{
 };
 use super::super::*;
 
+/// `App::new` with a silent child: a real shell's startup prompt can
+/// land after we seed the screen and overwrite it (Issue #357).
+fn inert_app(rows: u16, cols: u16) -> App {
+    crate::pane::INERT_SPAWN.with(|c| c.set(true));
+    let app = App::new(rows, cols);
+    crate::pane::INERT_SPAWN.with(|c| c.set(false));
+    app.expect("App::new")
+}
+
 /// Paint `bytes` onto the focused pane's vt100 screen without going
 /// near its PTY, and hand back the pane id.
 fn seed_focused_pane_screen(app: &mut App, bytes: &[u8]) -> usize {
@@ -1403,7 +1412,7 @@ fn the_delivery_budget_fits_inside_the_ipc_reply_budget() {
 /// a menu row as the draft and press Enter on it.
 #[test]
 fn a_codex_menu_row_is_not_adopted_as_a_draft() {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     let pane_id = app.ws().focused_pane_id;
     app.peer_client_kinds.insert(pane_id, PeerClientKind::Codex);
 
@@ -1672,7 +1681,7 @@ fn a_draft_appearing_between_readiness_and_the_write_refuses() {
 /// outcome, so it is refused before anything is written.
 #[test]
 fn an_over_long_codex_body_is_refused_before_writing() {
-    let mut app = App::new(40, 120).expect("App::new");
+    let mut app = inert_app(40, 120);
     let pane_id = app.ws().focused_pane_id;
     app.peer_client_kinds.insert(pane_id, PeerClientKind::Codex);
     let cols = {

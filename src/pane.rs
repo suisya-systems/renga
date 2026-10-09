@@ -140,8 +140,19 @@ impl Pane {
 
         let pair = pty_system.openpty(pty_size).context("Failed to open PTY")?;
 
-        let shell = detect_shell();
+        #[cfg(test)]
+        let inert = INERT_SPAWN.with(|c| c.get());
+        #[cfg(not(test))]
+        let inert = false;
+        let shell = if inert {
+            PathBuf::from("sleep")
+        } else {
+            detect_shell()
+        };
         let mut cmd = CommandBuilder::new(&shell);
+        if inert {
+            cmd.arg("3600");
+        }
 
         let shell_name = shell
             .file_name()
@@ -1436,6 +1447,14 @@ fn title_mentions_client(title: &str, needle: &str) -> bool {
 }
 
 /// Detect the appropriate shell to launch.
+// Test-only, per-thread: spawn a silent `sleep` instead of the user's
+// shell so its startup prompt cannot overwrite a screen a test seeded
+// into the parser (Issue #357).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INERT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn detect_shell() -> PathBuf {
     #[cfg(windows)]
     {
