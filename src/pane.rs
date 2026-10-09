@@ -145,13 +145,18 @@ impl Pane {
         #[cfg(not(test))]
         let inert = false;
         let shell = if inert {
-            PathBuf::from("sleep")
+            PathBuf::from(if cfg!(windows) { "cmd.exe" } else { "sleep" })
         } else {
             detect_shell()
         };
         let mut cmd = CommandBuilder::new(&shell);
         if inert {
-            cmd.arg("3600");
+            // Silent and long-lived; killed by `App::shutdown`.
+            if cfg!(windows) {
+                cmd.args(["/c", "pause >nul"]);
+            } else {
+                cmd.arg("3600");
+            }
         }
 
         let shell_name = shell
@@ -1446,8 +1451,7 @@ fn title_mentions_client(title: &str, needle: &str) -> bool {
     title.to_ascii_lowercase().contains(needle)
 }
 
-/// Detect the appropriate shell to launch.
-// Test-only, per-thread: spawn a silent `sleep` instead of the user's
+// Test-only, per-thread: spawn a silent child instead of the user's
 // shell so its startup prompt cannot overwrite a screen a test seeded
 // into the parser (Issue #357).
 #[cfg(test)]
@@ -1455,6 +1459,7 @@ thread_local! {
     pub(crate) static INERT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Detect the appropriate shell to launch.
 pub fn detect_shell() -> PathBuf {
     #[cfg(windows)]
     {
