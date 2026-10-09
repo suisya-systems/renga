@@ -1130,7 +1130,11 @@ fn pty_reader_thread(
                 let mut start = 0;
                 for end in dsr_ends {
                     parser.process(&data[start..end]);
-                    let (row, col) = parser.screen().cursor_position();
+                    let screen = parser.screen();
+                    let (row, col) = screen.cursor_position();
+                    // vt100 parks a pending wrap at col == width; a real
+                    // terminal reports the last column there.
+                    let col = col.min(screen.size().1.saturating_sub(1));
                     reply.push_str(&format!("\x1b[{};{}R", row + 1, col + 1));
                     start = end;
                 }
@@ -1809,6 +1813,34 @@ mod tests {
             })
             .collect();
         assert_eq!(replies, vec![(7, b"\x1b[2;3R\x1b[3;1R".to_vec())]);
+    }
+
+    #[test]
+    fn reader_thread_dsr_at_pending_wrap_reports_last_column() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut out = vec![b'x'; 10];
+        out.extend_from_slice(b"\x1b[6n");
+        pty_reader_thread(
+            Box::new(std::io::Cursor::new(out)),
+            Arc::new(Mutex::new(vt100::Parser::new(5, 10, 0))),
+            Arc::new(Mutex::new(String::new())),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
+            7,
+            tx,
+        );
+        let replies: Vec<_> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                AppEvent::PtyReply(_, bytes) => Some(bytes),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, vec![b"\x1b[1;10R".to_vec()]);
     }
 
     /// End-to-end acceptance for the pane Job Object (renga-trx): a
