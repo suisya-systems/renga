@@ -1409,8 +1409,8 @@ pub enum Event {
     /// input box. `mode` is `"default"`, `"plan"`, `"accept_edits"`,
     /// `"bypass_permissions"`, `"auto"`, or `"unknown"` for a
     /// `shift+tab to cycle` line renga doesn't recognize. `prev_mode`
-    /// is absent on the first reading for a Claude session. Fires only
-    /// on change.
+    /// is the pane's previous reading, absent on its first; it is kept
+    /// across a Claude restart in the same pane. Fires only on change.
     PaneModeChanged {
         id: usize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
