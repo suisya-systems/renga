@@ -282,7 +282,7 @@ toml = "1"
 # `std::process::abort()` / `__fastfail`. Silent death, no panic. Pin
 # so a downgrade can't reintroduce it.
 interprocess = "2.4.2"
-oneshot = "0.1"
+oneshot = { version = "0.2", features = ["std"] }
 subtle = "2"
 humantime = "2"
 # Upstream image-preview sync (#7): image decoding + ratatui-image
