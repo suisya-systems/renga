@@ -45,10 +45,12 @@ pub fn spawn_check(info: VersionInfo) {
 }
 
 fn fetch_latest() -> Result<String, Box<dyn std::error::Error>> {
-    let response = ureq::get("https://registry.npmjs.org/@suisya-systems%2frenga/latest")
-        .timeout(Duration::from_secs(5))
+    let mut response = ureq::get("https://registry.npmjs.org/@suisya-systems%2frenga/latest")
+        .config()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
         .call()?;
-    let json: serde_json::Value = response.into_json()?;
+    let json: serde_json::Value = response.body_mut().read_json()?;
     let version = json
         .get("version")
         .and_then(|v| v.as_str())

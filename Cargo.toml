@@ -269,7 +269,7 @@ syntect = { version = "5.3", default-features = false, features = [
     "default-themes",   # = dump-load           -> ThemeSet::load_defaults()
     "regex-onig",
 ] }
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 serde_json = "1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
