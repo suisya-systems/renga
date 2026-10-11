@@ -61,9 +61,8 @@ use crate::preview::Preview;
 // ─── IME composition overlay ──────────────────────────────
 //
 // `OverlayState` and its modal key handler (`handle_overlay_key`) live
-// in [`crate::input::overlay`] — first slice of Issue #66. Re-exported
-// here so downstream code can keep referring to `crate::app::OverlayState`
-// during the rest of the #66 rollout.
+// in [`crate::input::overlay`] (Issue #66). Re-exported here so the
+// `src/app/` submodules can refer to it as `crate::app::OverlayState`.
 pub use crate::input::overlay::OverlayState;
 #[cfg(test)]
 mod tests;
