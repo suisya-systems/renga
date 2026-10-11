@@ -525,6 +525,8 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
             cwd,
             from_pane,
             tab,
+            min_pane_width,
+            min_pane_height,
         } => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if command_tx
@@ -537,6 +539,8 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
                     cwd,
                     from_pane,
                     tab,
+                    min_pane_width,
+                    min_pane_height,
                     reply: reply_tx,
                 })
                 .is_err()
@@ -973,6 +977,8 @@ mod tests {
                 cwd: None,
                 from_pane: None,
                 tab: None,
+                min_pane_width: None,
+                min_pane_height: None,
             },
             &tx,
         );
@@ -1175,6 +1181,8 @@ mod tests {
                 cwd: None,
                 from_pane: None,
                 tab: None,
+                min_pane_width: None,
+                min_pane_height: None,
             },
             &tx,
         );
@@ -1201,6 +1209,8 @@ mod tests {
                 cwd: None,
                 from_pane: Some(1),
                 tab: Some(super::super::TabSelector::Name("workers".into())),
+                min_pane_width: None,
+                min_pane_height: None,
             },
             &tx,
         );

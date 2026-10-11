@@ -235,6 +235,7 @@ IPC 応答のエラーは `[<code>] <message>` 形式で stderr に出る (renga
 | `pane_vanished` | resolve 成功後に消えたレース (実質 `pane_not_found` と同扱い) |
 | `target_too_small` | **target pane** が小さすぎて分割不可 (二等分すると `min_pane_width` / `min_pane_height` を下回る)。target ローカルな拒否で、メッセージに target の geometry・必要な最小値・タブの pane 数が載る。別の (より大きい) target や逆方向なら成功しうる |
 | `pane_limit_reached` | **タブ**が MAX_PANES (16) に達しているため分割不可。タブ全体の条件なのでどの target でも失敗する。pane を閉じるか別タブへ |
+| `min_pane_size_invalid` | 呼び出し単位の `min_pane_width` / `min_pane_height` 上書き (`renga split --min-pane-width`、`spawn_*`) が下限 (5 列 / 2 行) を下回っている。レイアウト変更前に拒否する (#206) |
 | `split_refused` | 上記 2 つのいずれでもない分割拒否 (3.0 以降はレイアウト閾値未満の端末サイズのみ)。2.x のサーバは上記 2 原因もこのコードで返すため、`split_refusal_causes` capability を確認できていない場合は従来どおり「原因不明」として読むこと (#335) |
 | `io_error` | PTY write / spawn / OS レベル失敗 |
 

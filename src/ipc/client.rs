@@ -852,6 +852,11 @@ mod tests {
     /// no way to notice, since `split_refused` is a valid answer on
     /// either server with two different meanings. Hence gated, not
     /// advertise-only.
+    ///
+    /// `split_min_pane_size` is #206's, and belongs to the first kind:
+    /// an older server drops the unknown `min_pane_width` /
+    /// `min_pane_height` on a `Split` and judges it against its global
+    /// minimum, so a call carrying an override is gated on it.
     #[test]
     fn capability_exposure_mints_no_new_token() {
         assert_eq!(
@@ -865,6 +870,7 @@ mod tests {
                 super::super::CAP_SUBSCRIBE_PANE_SCOPE,
                 super::super::CAP_CROSS_TAB_LIST,
                 super::super::CAP_SPLIT_REFUSAL_CAUSES,
+                super::super::CAP_SPLIT_MIN_PANE_SIZE,
             ],
             "#304 is introspection only and adds no capability token"
         );
@@ -1098,6 +1104,8 @@ mod tests {
             cwd: None,
             from_pane: None,
             tab: None,
+            min_pane_width: None,
+            min_pane_height: None,
         };
         let mut out: Vec<u8> = Vec::new();
         write_request_line(&mut out, &req).unwrap();

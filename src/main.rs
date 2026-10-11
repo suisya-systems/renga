@@ -274,7 +274,19 @@ fn run_ipc_client(cmd: &cli::IpcCommand) -> Result<()> {
     }
 
     let request = cmd.to_request()?;
-    let response = ipc::client::send_request(&endpoint, &request)?;
+    // A per-call min-size override must not reach a server that would
+    // silently drop it (Issue #206); everything else keeps the
+    // ungated legacy path.
+    let response = match &request {
+        ipc::Request::Split {
+            min_pane_width,
+            min_pane_height,
+            ..
+        } if min_pane_width.is_some() || min_pane_height.is_some() => {
+            ipc::client::send_request_requiring(&endpoint, &request, ipc::CAP_SPLIT_MIN_PANE_SIZE)?
+        }
+        _ => ipc::client::send_request(&endpoint, &request)?,
+    };
     match response {
         ipc::Response::Ok { data } => {
             // `null` → nothing to print; anything else goes out as

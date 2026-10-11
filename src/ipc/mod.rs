@@ -261,6 +261,28 @@ pub const CAP_CROSS_TAB_LIST: &str = "cross_tab_list";
 /// rather than a minor one.
 pub const CAP_SPLIT_REFUSAL_CAUSES: &str = "split_refusal_causes";
 
+/// Capability token advertised by servers that honor the per-call
+/// `min_pane_width` / `min_pane_height` overrides on
+/// [`Request::Split`] (Issue #206).
+///
+/// `Request` tolerates unknown fields, so an older server would drop
+/// the override and judge the split against its process-global
+/// minimum — a silent wrong answer. Clients that send an override
+/// gate on this token; requests without one keep their prior gate.
+/// `SERVER_CAPABILITIES` is append-only, so this token implies
+/// [`CAP_SPLIT_REFUSAL_CAUSES`].
+pub const CAP_SPLIT_MIN_PANE_SIZE: &str = "split_min_pane_size";
+
+/// Hard floor for a per-call `min_pane_width` override (Issue #206).
+/// Below this a pane cannot show anything useful, so the override is
+/// refused with [`err_code::MIN_PANE_SIZE_INVALID`] instead of being
+/// clamped. The process-global `--min-pane-width` is not subject to
+/// it (that flag predates #206 and keeps its `0 → 1` clamp).
+pub const MIN_PANE_WIDTH_FLOOR: u16 = 5;
+/// Hard floor for a per-call `min_pane_height` override. See
+/// [`MIN_PANE_WIDTH_FLOOR`].
+pub const MIN_PANE_HEIGHT_FLOOR: u16 = 2;
+
 /// Every capability token this build's server advertises. Additive by
 /// construction — clients match on tokens they know and ignore the
 /// rest.
@@ -273,6 +295,7 @@ pub const SERVER_CAPABILITIES: &[&str] = &[
     CAP_SUBSCRIBE_PANE_SCOPE,
     CAP_CROSS_TAB_LIST,
     CAP_SPLIT_REFUSAL_CAUSES,
+    CAP_SPLIT_MIN_PANE_SIZE,
 ];
 
 /// One IPC call from a client to the running renga instance.
@@ -390,6 +413,22 @@ pub enum Request {
         /// tab.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tab: Option<TabSelector>,
+        /// Per-call override of the minimum width (columns) each half
+        /// of a vertical split must keep (Issue #206). `None` keeps
+        /// the process-global `--min-pane-width`. Values below
+        /// [`MIN_PANE_WIDTH_FLOOR`] are refused with
+        /// `min_pane_size_invalid` before any layout mutation.
+        ///
+        /// Only send this through [`client::send_request_requiring`]
+        /// with [`CAP_SPLIT_MIN_PANE_SIZE`]: an older server would
+        /// silently ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_pane_width: Option<u16>,
+        /// Per-call override of the minimum height (rows) for a
+        /// horizontal split. Same rules as `min_pane_width`, with
+        /// [`MIN_PANE_HEIGHT_FLOOR`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_pane_height: Option<u16>,
     },
     /// Move keyboard focus to the target pane. When the resolved pane
     /// lives in a different tab than the one on screen, the server also
@@ -1285,6 +1324,11 @@ pub mod err_code {
     /// Deliberately distinct from [`PANE_LIMIT_REACHED`], which is
     /// about pane capacity *inside* one tab.
     pub const TAB_LIMIT_REACHED: &str = "tab_limit_reached";
+    /// A `Split` carried a `min_pane_width` / `min_pane_height`
+    /// override below the hard floor ([`super::MIN_PANE_WIDTH_FLOOR`]
+    /// / [`super::MIN_PANE_HEIGHT_FLOOR`]). Emitted before any layout
+    /// mutation (Issue #206).
+    pub const MIN_PANE_SIZE_INVALID: &str = "min_pane_size_invalid";
 
     // ── user-turn delivery (Issue #323) ───────────────────────
     //
@@ -1707,6 +1751,8 @@ mod tests {
                     cwd: None,
                     from_pane: None,
                     tab: None,
+                    min_pane_width: None,
+                    min_pane_height: None,
                 },
             ),
         ];
@@ -2139,6 +2185,8 @@ mod tests {
                 cwd: None,
                 from_pane: Some(1),
                 tab: Some(tab),
+                min_pane_width: None,
+                min_pane_height: None,
             };
             assert_eq!(roundtrip(&r), r);
         }
@@ -2158,6 +2206,8 @@ mod tests {
             cwd: None,
             from_pane: None,
             tab: None,
+            min_pane_width: None,
+            min_pane_height: None,
         };
         let ser = serde_json::to_string(&r).unwrap();
         assert!(!ser.contains("tab"), "tab must stay off the wire: {ser}");
@@ -2229,6 +2279,8 @@ mod tests {
             cwd: None,
             from_pane: None,
             tab: None,
+            min_pane_width: None,
+            min_pane_height: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -2397,6 +2449,8 @@ mod tests {
             cwd: Some("/tmp/work".into()),
             from_pane: None,
             tab: None,
+            min_pane_width: None,
+            min_pane_height: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -2652,6 +2706,8 @@ mod tests {
             cwd: None,
             from_pane: None,
             tab: None,
+            min_pane_width: None,
+            min_pane_height: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
