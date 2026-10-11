@@ -191,7 +191,7 @@ unchanged by #329, since numeric ids already crossed tabs.
 | `name` | string | no | Stable pane name, must satisfy `[A-Za-z0-9_-]`, not all-digits. |
 | `role` | string | no | Free-form label. Non-unique. |
 | `cwd` | string | no | Absolute or relative-to-caller. Validated **before** layout mutation; failure is `cwd_invalid`. |
-| `min_pane_width` / `min_pane_height` | integer | no | Per-call override (#206) of the minimum columns / rows each half of the split must keep. Omitted → the process-global `--min-pane-width` / `--min-pane-height` (§2.1), i.e. unchanged behavior. May relax or tighten the global value. Hard floor **5 columns / 2 rows**: a smaller value is refused with `min_pane_size_invalid` before any layout mutation (never clamped). Values outside `u16` are rejected with JSON-RPC `-32602`. Forbidden with `tab: {new: …}` (nothing to split). Sending either requires the server to advertise `split_min_pane_size` (§3.4) — the MCP layer fails closed with `server_too_old` otherwise. |
+| `min_pane_width` / `min_pane_height` | integer | no | Per-call override (#206) of the minimum columns / rows each half of the split must keep. Omitted → the process-global `--min-pane-width` / `--min-pane-height` (§2.1), i.e. unchanged behavior. May relax or tighten the global value. Hard floor **5 columns / 2 rows**: a smaller value is refused with `min_pane_size_invalid` before any layout mutation (never clamped) — checked on both fields whatever the split direction. Values outside `u16` are rejected with JSON-RPC `-32602`. Forbidden with `tab: {new: …}` (nothing to split). Sending either requires the server to advertise `split_min_pane_size` (§3.4) — the MCP layer fails closed with `server_too_old` otherwise. |
 
 Returns: text containing the new pane's numeric id (and, for `tab: {new: …}`,
 the new tab's 0-based index).
@@ -486,7 +486,7 @@ command (clap `conflicts_with_all`). When no selector is given, the default is
 | `renga focus` | `--name\|--id` | `Request::Focus` |
 | `renga close` | `--name\|--id` | `Request::Close` |
 | `renga new-tab` | `--command`, `--id`, `--label`, `--role`, `--cwd` | `Request::NewTab` |
-| `renga split` | `--target-name\|--target-id\|--target-focused`, `--direction <vertical\|horizontal>`, `--command`, `--id`, `--role`, `--cwd`, `--min-pane-width <COLS>`, `--min-pane-height <ROWS>` | `Request::Split` (with either min-size flag, gated on `split_min_pane_size`, §3.4) |
+| `renga split` | `--target-name\|--target-id\|--target-focused`, `--direction <vertical\|horizontal>`, `--command`, `--id`, `--role`, `--cwd`, `--min-pane-width <COLS>`, `--min-pane-height <ROWS>` | `Request::Split` (with either min-size flag, gated on `split_min_pane_size`, §3.4 — an older running server fails with `server_too_old`) |
 | `renga inspect` | `--name\|--id\|--focused`, `--lines`, `--cursor` | `Request::Inspect` |
 | `renga events` | `--timeout <humantime::Duration>`, `--count <usize>` | `Request::Subscribe { from_pane: None }` + stream |
 | `renga rename` | `--name\|--id\|--focused`, `--to-name`/`--clear-name` (mutex), `--to-role`/`--clear-role` (mutex) | `Request::SetPaneIdentity` |

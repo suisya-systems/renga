@@ -1732,14 +1732,13 @@ fn parse_min_pane_size(
 ) -> std::result::Result<(Option<u16>, Option<u16>), String> {
     let mut out = [None, None];
     for (slot, key) in out.iter_mut().zip(["min_pane_width", "min_pane_height"]) {
-        *slot = match args.get(key) {
-            None | Some(Value::Null) => None,
-            Some(v) => Some(
-                v.as_u64()
-                    .and_then(|n| u16::try_from(n).ok())
-                    .ok_or_else(|| format!("{key} must be an integer in 0..=65535, got {v}"))?,
-            ),
-        };
+        *slot =
+            match args.get(key) {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_u64().and_then(|n| u16::try_from(n).ok()).ok_or_else(
+                    || format!("{key} must be an integer that fits in u16, got {v}"),
+                )?),
+            };
         if slot.is_some() && matches!(placement, SpawnPlacement::NewTab { .. }) {
             return Err(format!(
                 "{key} is not valid with tab: {{\"new\": …}} — a new tab has nothing to split"
