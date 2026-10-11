@@ -191,6 +191,7 @@ unchanged by #329, since numeric ids already crossed tabs.
 | `name` | string | no | Stable pane name, must satisfy `[A-Za-z0-9_-]`, not all-digits. |
 | `role` | string | no | Free-form label. Non-unique. |
 | `cwd` | string | no | Absolute or relative-to-caller. Validated **before** layout mutation; failure is `cwd_invalid`. |
+| `min_pane_width` / `min_pane_height` | integer | no | Per-call override (#206) of the minimum columns / rows each half of the split must keep. Omitted → the process-global `--min-pane-width` / `--min-pane-height` (§2.1), i.e. unchanged behavior. May relax or tighten the global value. Hard floor **5 columns / 2 rows**: a smaller value is refused with `min_pane_size_invalid` before any layout mutation (never clamped). Values outside `u16` are rejected with JSON-RPC `-32602`. Forbidden with `tab: {new: …}` (nothing to split). Sending either requires the server to advertise `split_min_pane_size` (§3.4) — the MCP layer fails closed with `server_too_old` otherwise. |
 
 Returns: text containing the new pane's numeric id (and, for `tab: {new: …}`,
 the new tab's 0-based index).
@@ -207,7 +208,8 @@ Errors: `target_too_small` (halving the target would fall below
 `min_pane_width` / `min_pane_height` — target-local, another target may
 still split), `pane_limit_reached` (MAX_PANES = 16 — tab-global),
 `split_refused` (neither of those; from 3.0 only a terminal below the
-layout threshold — see §5.1), `cwd_invalid`, `pane_not_found`, `name_in_use`,
+layout threshold — see §5.1), `min_pane_size_invalid` (a per-call override
+below the hard floor), `cwd_invalid`, `pane_not_found`, `name_in_use`,
 `name_invalid`, `io_error`; with a `tab` selector also `tab_not_found`,
 `tab_ambiguous`, `target_tab_mismatch`, and (for `tab: {new: …}`)
 `tab_limit_reached` (MAX_TABS = 16).
@@ -218,7 +220,7 @@ Same envelope as `spawn_pane` minus `command`, plus structured Claude fields:
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `direction`, `target`, `tab`, `name`, `role`, `cwd` | as in §1.6 | direction conditional | `tab` (#290) carries over unchanged, including the `{new: …}` background form. |
+| `direction`, `target`, `tab`, `name`, `role`, `cwd`, `min_pane_width`, `min_pane_height` | as in §1.6 | direction conditional | `tab` (#290) carries over unchanged, including the `{new: …}` background form. |
 | `permission_mode` | string | no | Rendered as `--permission-mode <v>`. Not enum-validated server-side, so new Claude permission modes work without a renga release. |
 | `model` | string | no | Rendered as `--model <v>`. |
 | `args` | string[] | no | Appended after structured fields. Must NOT contain `--dangerously-load-development-channels` / `--permission-mode` / `--model` — rejected with JSON-RPC `-32602` invalid-params. |
@@ -465,7 +467,7 @@ already-running renga server).
 | `--ime-overlay-catchup-ms <MS>` | u64 | Periodic repaint interval while frozen. Default 3000, clamped ≥ 100; `0` = pure freeze. |
 | `--lang <auto\|ja\|en>` | enum | UI language. |
 | `--fps <FPS>` | u16 | Main event-loop target rate. Overrides `[ui] fps`. Default 30; `0` is accepted and clamped to 1 at runtime to avoid a busy loop. Added in 1.1.0 (#213). |
-| `--min-pane-width <COLS>` | u16 | Default 20. `0` clamps to 1. Process-global; not exposed per-call (see §6 *Out of scope*). |
+| `--min-pane-width <COLS>` | u16 | Default 20. `0` clamps to 1. Process-global default; a single split can override it (`spawn_*` §1.6, `renga split` §2.2, #206). |
 | `--min-pane-height <ROWS>` | u16 | Default 5. `0` clamps to 1. Same scope as `--min-pane-width`. |
 | `--no-macos-tip` / `--show-macos-tip` | bool | macOS Option-as-Meta first-launch banner override. Mutually exclusive. |
 | `--version` / `-V` | bool | clap built-in. |
@@ -484,7 +486,7 @@ command (clap `conflicts_with_all`). When no selector is given, the default is
 | `renga focus` | `--name\|--id` | `Request::Focus` |
 | `renga close` | `--name\|--id` | `Request::Close` |
 | `renga new-tab` | `--command`, `--id`, `--label`, `--role`, `--cwd` | `Request::NewTab` |
-| `renga split` | `--target-name\|--target-id\|--target-focused`, `--direction <vertical\|horizontal>`, `--command`, `--id`, `--role`, `--cwd` | `Request::Split` |
+| `renga split` | `--target-name\|--target-id\|--target-focused`, `--direction <vertical\|horizontal>`, `--command`, `--id`, `--role`, `--cwd`, `--min-pane-width <COLS>`, `--min-pane-height <ROWS>` | `Request::Split` (with either min-size flag, gated on `split_min_pane_size`, §3.4) |
 | `renga inspect` | `--name\|--id\|--focused`, `--lines`, `--cursor` | `Request::Inspect` |
 | `renga events` | `--timeout <humantime::Duration>`, `--count <usize>` | `Request::Subscribe { from_pane: None }` + stream |
 | `renga rename` | `--name\|--id\|--focused`, `--to-name`/`--clear-name` (mutex), `--to-role`/`--clear-role` (mutex) | `Request::SetPaneIdentity` |
@@ -592,7 +594,7 @@ Server budgets: 5 s `APP_REPLY_TIMEOUT` (server → app event loop) +
 | `hello` | `client_pid: u32` | Required first message. |
 | `list` | `from_pane?: usize`, `tab?: ListTabSelector` | `from_pane` added in #288; optional, omitted on the wire when absent, so `{"cmd":"list"}` is unchanged. `tab` (#329) is likewise omitted on the wire when absent — with both fields absent the request is byte-identical to `{"cmd":"list"}` — and senders must gate it on `cross_tab_list` (§3.4). `{new: …}` is not valid here; `"all"` is. |
 | `send` | `target: PaneRef`, `data: string`, `append_enter: bool` (default false), `from_pane?: usize` | |
-| `split` | `target: PaneRef`, `direction: vertical\|horizontal`, `command?`, `id?`, `role?`, `cwd?`, `from_pane?: usize`, `tab?: TabSelector` | Relative `cwd` resolves against the **target** pane, not `from_pane`. `tab` (#290) is omitted on the wire when absent; senders must gate it on `spawn_tab` (§3.4). `{new: …}` is not valid here — that is `spawn_tab`'s job. |
+| `split` | `target: PaneRef`, `direction: vertical\|horizontal`, `command?`, `id?`, `role?`, `cwd?`, `from_pane?: usize`, `tab?: TabSelector`, `min_pane_width?: u16`, `min_pane_height?: u16` | Relative `cwd` resolves against the **target** pane, not `from_pane`. `tab` (#290) is omitted on the wire when absent; senders must gate it on `spawn_tab` (§3.4). `{new: …}` is not valid here — that is `spawn_tab`'s job. `min_pane_width` / `min_pane_height` (#206) are omitted on the wire when absent, so a request without them is byte-identical to before; senders must gate them on `split_min_pane_size` (§3.4). |
 | `focus` | `target: PaneRef`, `from_pane?: usize` | Resolving outside the visible tab switches the visible tab. |
 | `close` | `target: PaneRef`, `from_pane?: usize` | `from_pane` added in #296; optional and omitted on the wire when absent, so `{"cmd":"close","target":"focused"}` is unchanged. Unlike the #288 five, the **legacy** (`from_pane` absent) branch searches every workspace — `renga close --id/--name` has always been cross-tab. Senders must gate `from_pane` on `caller_scope_close_identity` (§3.4). |
 | `new_tab` | `command?`, `id?`, `label?`, `role?`, `cwd?` | Creates **and focuses** — unchanged by #290. |
@@ -752,6 +754,14 @@ they send `spawn_tab`, whose refusals #335 did not touch. Gating is directional
 (§7): an old client meeting a 3.0 server still receives the new codes, and that
 residual direction is why this is a major-release change.
 
+Servers that honor the per-call `min_pane_width` / `min_pane_height` on `split`
+advertise `split_min_pane_size` (#206), appended last to the capability list.
+A `split` carrying either field is sent with `split_min_pane_size` required:
+a pre-#206 server drops the unknown fields and judges the split against its
+process-global minimum, a silent wrong answer. Because the list is
+append-only, the token implies `split_refusal_causes`. A `split` without
+either field keeps its previous gate, so existing callers are untouched.
+
 ### 3.5 Event envelope — stable
 
 `#[serde(tag = "type", rename_all = "snake_case")]`.
@@ -862,6 +872,7 @@ these as `[<code>] <human message>` in JSON-RPC error message strings.
 | `split_refused` | `split`, `spawn_*` (and layout TOML apply); `spawn_tab` only for a terminal below the layout threshold | **Narrowed in 3.0 (#335)** — through 2.x it folded the two causes below into one code, so a caller could not tell a retryable target from a full tab. From 3.0 it means *neither* of them: a terminal below the layout threshold, or the workspace-vanished race. Read from a 2.x server it still means "one of the two, unspecified", so a client that has not confirmed `split_refusal_causes` (§3.4) must keep that weaker reading. Corrected in #290: `new_tab` never returned this — its capacity failure is `tab_limit_reached`. |
 | `target_too_small` | `split`, `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` (#335, 3.0) | Halving the **target pane** along the requested axis would fall below `min_pane_width` / `min_pane_height`. **Target-local**: the tab is not full, and the message carries the observed numbers (the target's extent on the split axis, the size each half would get, the minimum required, and the tab's pane count against MAX_PANES) so a caller can retry against a bigger target or the other direction. |
 | `pane_limit_reached` | `split`, `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` (#335, 3.0) | The **tab** already holds MAX_PANES = 16 panes. **Tab-global**: no target in it will split; close a pane or use `tab: {new: …}`. Checked before geometry, so it wins over `target_too_small`. Distinct from `tab_limit_reached`, which is about the number of tabs. |
+| `min_pane_size_invalid` | `split`, `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` (#206) | A per-call `min_pane_width` below 5 or `min_pane_height` below 2. Pre-mutation rejection. The process-global CLI flags are not subject to this floor. |
 | `io_error` | requests with PTY side-effects | OS-level write/spawn failure. |
 | `last_pane` | `close` | Refused to remove the only pane of the only tab. |
 | `cwd_invalid` | `split`, `new_tab`, `spawn_tab` | `cwd` missing or not a directory. Pre-mutation rejection — no half-mutated layout. |
@@ -974,8 +985,6 @@ minor release.
 - **`spawn_pane.command` opt-out flag** for the `claude → claude
   --dangerously-load-...` rewrite (Q3). Callers who need verbatim execution
   must use a non-`claude` leading token (e.g. `bash -c '…'`).
-- **Per-call `min_pane_width` / `min_pane_height`** on `spawn_pane` /
-  `spawn_claude_pane` / `spawn_codex_pane`. Process-global only.
 - **`peer_*` IPC variant naming as a stable surface**. The peer-routing
   subset of `Request` is reachable from downstream only via the MCP layer
   (§1) and the CLI (§2); the Rust-level variant names are not promised.
@@ -1001,6 +1010,6 @@ minor release.
 | IPC `Request` variants (§3.3) | 15 |
 | IPC `Response` variants (§3.4) | 4 |
 | IPC `Event` variants (§3.5) | 5 |
-| Error codes (§5.1) | 27 |
+| Error codes (§5.1) | 28 |
 | Config schema sections (§4.1) | 2 |
 | Layout TOML node types (§4.2) | 2 |

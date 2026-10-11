@@ -202,6 +202,16 @@ pub enum IpcCommand {
         /// pane inherits the target pane's cwd.
         #[arg(long)]
         cwd: Option<String>,
+        /// Minimum width (columns) each half of a vertical split must
+        /// keep, for this split only. Defaults to the server's
+        /// `--min-pane-width`; values below 5 are refused.
+        #[arg(long)]
+        min_pane_width: Option<u16>,
+        /// Minimum height (rows) each half of a horizontal split must
+        /// keep, for this split only. Defaults to the server's
+        /// `--min-pane-height`; values below 2 are refused.
+        #[arg(long)]
+        min_pane_height: Option<u16>,
     },
     /// Snapshot the visible screen of a pane. Returns JSON with one
     /// entry per screen row so callers can match against fixed
@@ -459,6 +469,8 @@ impl IpcCommand {
                 id,
                 role,
                 cwd,
+                min_pane_width,
+                min_pane_height,
             } => {
                 let dir = match direction.as_str() {
                     "vertical" => Direction::Vertical,
@@ -476,6 +488,8 @@ impl IpcCommand {
                     // The CLI has no tab-placement flag: `renga split`
                     // keeps splitting in the visible tab.
                     tab: None,
+                    min_pane_width: *min_pane_width,
+                    min_pane_height: *min_pane_height,
                 })
             }
             IpcCommand::Rename {
@@ -1167,6 +1181,40 @@ mod tests {
         let cli = Cli::try_parse_from(["renga"]).unwrap();
         assert!(!cli.no_macos_tip);
         assert!(!cli.show_macos_tip);
+    }
+
+    #[test]
+    fn split_min_pane_size_flags_reach_the_request() {
+        let cli = Cli::try_parse_from([
+            "renga",
+            "split",
+            "--direction",
+            "vertical",
+            "--min-pane-width",
+            "8",
+            "--min-pane-height",
+            "3",
+        ])
+        .unwrap();
+        let req = cli.command.unwrap().to_request().unwrap();
+        assert!(matches!(
+            req,
+            crate::ipc::Request::Split {
+                min_pane_width: Some(8),
+                min_pane_height: Some(3),
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from(["renga", "split", "--direction", "vertical"]).unwrap();
+        let req = cli.command.unwrap().to_request().unwrap();
+        assert!(matches!(
+            req,
+            crate::ipc::Request::Split {
+                min_pane_width: None,
+                min_pane_height: None,
+                ..
+            }
+        ));
     }
 
     #[test]

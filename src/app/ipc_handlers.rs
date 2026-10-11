@@ -39,10 +39,12 @@ impl App {
                 cwd,
                 from_pane,
                 tab,
+                min_pane_width,
+                min_pane_height,
                 reply,
             } => {
                 self.recompute_hidden_rects_for_ipc();
-                let result = self.handle_split(
+                let result = self.handle_split_sized(
                     &target,
                     direction,
                     command,
@@ -51,6 +53,7 @@ impl App {
                     cwd,
                     from_pane,
                     tab.as_ref(),
+                    (min_pane_width, min_pane_height),
                 );
                 let _ = reply.send(result);
             }
@@ -863,6 +866,9 @@ impl App {
         Ok(())
     }
 
+    /// [`Self::handle_split_sized`] without per-call min-size overrides,
+    /// the shape every pre-#206 test drives.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_split(
         &mut self,
@@ -875,9 +881,36 @@ impl App {
         from_pane: Option<usize>,
         tab: Option<&ipc::TabSelector>,
     ) -> std::result::Result<usize, ipc::CodedError> {
+        self.handle_split_sized(
+            target,
+            direction,
+            command,
+            name,
+            role,
+            cwd,
+            from_pane,
+            tab,
+            (None, None),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn handle_split_sized(
+        &mut self,
+        target: &PaneRef,
+        direction: ipc::Direction,
+        command: Option<String>,
+        name: Option<String>,
+        role: Option<String>,
+        cwd: Option<String>,
+        from_pane: Option<usize>,
+        tab: Option<&ipc::TabSelector>,
+        min_pane_size: (Option<u16>, Option<u16>),
+    ) -> std::result::Result<usize, ipc::CodedError> {
         // Before any placement work, so an invalid label cannot leave a
         // freshly split pane behind.
         let (name, role) = Self::validated_split_identity(name, role)?;
+        let min_pane_size = self.resolve_min_pane_size(min_pane_size)?;
         let (ws_idx, target_pane_id) = match tab {
             None => self.resolve_request_target(from_pane, target)?,
             Some(selector) => {
@@ -916,7 +949,14 @@ impl App {
         // `pane_limit_reached` is not. The legacy `split_refused` is
         // left only for the causes that are neither.
         let new_pane_id = self
-            .try_split_pane_in_workspace(ws_idx, target_pane_id, split_dir, false, cwd_override)
+            .try_split_pane_in_workspace(
+                ws_idx,
+                target_pane_id,
+                split_dir,
+                false,
+                cwd_override,
+                min_pane_size,
+            )
             .map_err(|e| ipc::CodedError::new(ipc::err_code::IO_ERROR, e.to_string()))?
             .map_err(SplitRefusal::into_coded_error)?;
         let effective_command = command.or_else(|| default_command_for_role(role.as_deref()));
@@ -938,6 +978,31 @@ impl App {
         // form would emit the event with a null name and role.
         self.emit_pane_started_in(ws_idx, new_pane_id);
         Ok(new_pane_id)
+    }
+
+    /// Resolve a `Split`'s per-call minimum-size overrides (Issue #206)
+    /// against the process-global values. An override below the hard
+    /// floor is refused outright rather than clamped, so a caller never
+    /// gets a split judged against a threshold it did not ask for.
+    fn resolve_min_pane_size(
+        &self,
+        (width, height): (Option<u16>, Option<u16>),
+    ) -> std::result::Result<(u16, u16), ipc::CodedError> {
+        for (value, floor, knob) in [
+            (width, ipc::MIN_PANE_WIDTH_FLOOR, "min_pane_width"),
+            (height, ipc::MIN_PANE_HEIGHT_FLOOR, "min_pane_height"),
+        ] {
+            if let Some(v) = value.filter(|&v| v < floor) {
+                return Err(ipc::CodedError::new(
+                    ipc::err_code::MIN_PANE_SIZE_INVALID,
+                    format!("{knob} {v} is below the hard floor of {floor}"),
+                ));
+            }
+        }
+        Ok((
+            width.unwrap_or(self.min_pane_width),
+            height.unwrap_or(self.min_pane_height),
+        ))
     }
 
     /// Validate the `name` / `role` a `split` or `new_tab` wants to

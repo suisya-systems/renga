@@ -656,6 +656,18 @@ fn tools_spec() -> Value {
                     "cwd": {
                         "type": "string",
                         "description": "Optional working directory for the new pane. Absolute paths are used as-is; relative paths are resolved against the caller pane's cwd. When omitted, the new pane inherits the target pane's cwd (prior behavior), or the caller pane's cwd with `tab: {\"new\": …}`. Use this instead of embedding `cd <path> && ...` in `command` — keeps the shell-quoting and the claude auto-upgrade intact."
+                    },
+                    "min_pane_width": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "maximum": 65535,
+                        "description": "Optional per-call minimum width (columns) each half of a vertical split must keep. Overrides renga's `--min-pane-width` for this call only; omitted = the process-global value. Values below 5 are refused with `min_pane_size_invalid`. Not valid with `tab: {\"new\": …}`."
+                    },
+                    "min_pane_height": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 65535,
+                        "description": "Optional per-call minimum height (rows) each half of a horizontal split must keep. Overrides renga's `--min-pane-height` for this call only; omitted = the process-global value. Values below 2 are refused with `min_pane_size_invalid`. Not valid with `tab: {\"new\": …}`."
                     }
                 }
             }
@@ -699,6 +711,18 @@ fn tools_spec() -> Value {
                     "cwd": {
                         "type": "string",
                         "description": "Optional working directory for the new pane. Absolute paths are used as-is; relative paths are resolved against the caller pane's cwd. Same semantics as `spawn_pane`'s cwd."
+                    },
+                    "min_pane_width": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "maximum": 65535,
+                        "description": "Optional per-call minimum width (columns) each half of a vertical split must keep. Overrides renga's `--min-pane-width` for this call only; omitted = the process-global value. Values below 5 are refused with `min_pane_size_invalid`. Not valid with `tab: {\"new\": …}`."
+                    },
+                    "min_pane_height": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 65535,
+                        "description": "Optional per-call minimum height (rows) each half of a horizontal split must keep. Overrides renga's `--min-pane-height` for this call only; omitted = the process-global value. Values below 2 are refused with `min_pane_size_invalid`. Not valid with `tab: {\"new\": …}`."
                     },
                     "permission_mode": {
                         "type": "string",
@@ -755,6 +779,18 @@ fn tools_spec() -> Value {
                     "cwd": {
                         "type": "string",
                         "description": "Optional working directory for the new pane. Absolute paths are used as-is; relative paths are resolved against the caller pane's cwd. Same semantics as `spawn_pane`'s cwd."
+                    },
+                    "min_pane_width": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "maximum": 65535,
+                        "description": "Optional per-call minimum width (columns) each half of a vertical split must keep. Overrides renga's `--min-pane-width` for this call only; omitted = the process-global value. Values below 5 are refused with `min_pane_size_invalid`. Not valid with `tab: {\"new\": …}`."
+                    },
+                    "min_pane_height": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 65535,
+                        "description": "Optional per-call minimum height (rows) each half of a horizontal split must keep. Overrides renga's `--min-pane-height` for this call only; omitted = the process-global value. Values below 2 are refused with `min_pane_size_invalid`. Not valid with `tab: {\"new\": …}`."
                     },
                     "args": {
                         "type": "array",
@@ -1683,6 +1719,51 @@ impl SpawnPlacement {
     }
 }
 
+/// Parse the optional `min_pane_width` / `min_pane_height` overrides
+/// shared by the three `spawn_*` tools (Issue #206). Only the type and
+/// `u16` range are checked here; the hard floor is the server's call
+/// (`min_pane_size_invalid`), so it lives in exactly one place.
+///
+/// Refused with `tab: {new: …}` for the same reason `direction` /
+/// `target` are: a brand-new tab has nothing to split.
+fn parse_min_pane_size(
+    args: &Value,
+    placement: &SpawnPlacement,
+) -> std::result::Result<(Option<u16>, Option<u16>), String> {
+    let mut out = [None, None];
+    for (slot, key) in out.iter_mut().zip(["min_pane_width", "min_pane_height"]) {
+        *slot = match args.get(key) {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .ok_or_else(|| format!("{key} must be an integer in 0..=65535, got {v}"))?,
+            ),
+        };
+        if slot.is_some() && matches!(placement, SpawnPlacement::NewTab { .. }) {
+            return Err(format!(
+                "{key} is not valid with tab: {{\"new\": …}} — a new tab has nothing to split"
+            ));
+        }
+    }
+    Ok((out[0], out[1]))
+}
+
+/// The capability a split must be gated on. An override needs
+/// [`crate::ipc::CAP_SPLIT_MIN_PANE_SIZE`] — an older server would drop
+/// it silently — which implies the placement's own token (capabilities
+/// are append-only). Without one, the gate is unchanged.
+fn split_required_cap(
+    placement: &SpawnPlacement,
+    min_pane_size: (Option<u16>, Option<u16>),
+) -> &'static str {
+    if min_pane_size == (None, None) {
+        placement.required_cap()
+    } else {
+        crate::ipc::CAP_SPLIT_MIN_PANE_SIZE
+    }
+}
+
 /// Parse the `tab` argument shared by the three `spawn_*` tools.
 ///
 /// Strict on purpose — every rejected shape here would otherwise be a
@@ -2183,6 +2264,10 @@ fn handle_spawn_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
         Ok(p) => p,
         Err(msg) => return err_response(id, -32602, &msg),
     };
+    let min_pane_size = match parse_min_pane_size(args, &placement) {
+        Ok(v) => v,
+        Err(msg) => return err_response(id, -32602, &msg),
+    };
     let split_params = match &placement {
         SpawnPlacement::NewTab { .. } => None,
         _ => {
@@ -2232,7 +2317,7 @@ fn handle_spawn_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
             None,
         );
     }
-    let required_cap = placement.required_cap();
+    let required_cap = split_required_cap(&placement, min_pane_size);
     let tab = match placement {
         SpawnPlacement::Tab(selector) => Some(selector),
         _ => None,
@@ -2249,6 +2334,8 @@ fn handle_spawn_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
             cwd,
             from_pane: Some(caller_pane),
             tab,
+            min_pane_width: min_pane_size.0,
+            min_pane_height: min_pane_size.1,
         },
         required_cap,
     ) {
@@ -2574,6 +2661,10 @@ fn handle_spawn_claude_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
         Ok(p) => p,
         Err(msg) => return err_response(id, -32602, &msg),
     };
+    let min_pane_size = match parse_min_pane_size(args, &placement) {
+        Ok(v) => v,
+        Err(msg) => return err_response(id, -32602, &msg),
+    };
     let split_params = match &placement {
         SpawnPlacement::NewTab { .. } => None,
         _ => {
@@ -2642,7 +2733,7 @@ fn handle_spawn_claude_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
             Some(&command),
         );
     }
-    let required_cap = placement.required_cap();
+    let required_cap = split_required_cap(&placement, min_pane_size);
     let tab = match placement {
         SpawnPlacement::Tab(selector) => Some(selector),
         _ => None,
@@ -2659,6 +2750,8 @@ fn handle_spawn_claude_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
             cwd,
             from_pane: Some(caller_pane),
             tab,
+            min_pane_width: min_pane_size.0,
+            min_pane_height: min_pane_size.1,
         },
         required_cap,
     ) {
@@ -2698,6 +2791,10 @@ fn handle_spawn_codex_pane_with(
 ) -> Value {
     let placement = match parse_spawn_placement(args) {
         Ok(p) => p,
+        Err(msg) => return err_response(id, -32602, &msg),
+    };
+    let min_pane_size = match parse_min_pane_size(args, &placement) {
+        Ok(v) => v,
         Err(msg) => return err_response(id, -32602, &msg),
     };
     let split_params = match &placement {
@@ -2770,7 +2867,7 @@ fn handle_spawn_codex_pane_with(
             Some(&command),
         );
     }
-    let required_cap = placement.required_cap();
+    let required_cap = split_required_cap(&placement, min_pane_size);
     let tab = match placement {
         SpawnPlacement::Tab(selector) => Some(selector),
         _ => None,
@@ -2787,6 +2884,8 @@ fn handle_spawn_codex_pane_with(
             cwd,
             from_pane: Some(caller_pane),
             tab,
+            min_pane_width: min_pane_size.0,
+            min_pane_height: min_pane_size.1,
         },
         required_cap,
     ) {
@@ -3908,6 +4007,46 @@ mod tests {
         ] {
             assert!(parse_spawn_placement(&args).is_err(), "must reject {args}");
         }
+    }
+
+    /// Issue #206: overrides parse as `u16`, are refused with
+    /// `tab.new`, and move the gate to `CAP_SPLIT_MIN_PANE_SIZE` only
+    /// when present — a call without one keeps its prior gate.
+    #[test]
+    fn min_pane_size_overrides_parse_and_gate() {
+        let here = SpawnPlacement::Here;
+        assert_eq!(parse_min_pane_size(&json!({}), &here), Ok((None, None)));
+        assert_eq!(
+            parse_min_pane_size(&json!({ "min_pane_width": null }), &here),
+            Ok((None, None))
+        );
+        assert_eq!(
+            parse_min_pane_size(&json!({ "min_pane_width": 8, "min_pane_height": 3 }), &here),
+            Ok((Some(8), Some(3)))
+        );
+        // The floor is the server's call; the client only checks type.
+        assert_eq!(
+            parse_min_pane_size(&json!({ "min_pane_width": 1 }), &here),
+            Ok((Some(1), None))
+        );
+        for bad in [json!(-1), json!(70000), json!("8"), json!(8.5)] {
+            assert!(
+                parse_min_pane_size(&json!({ "min_pane_height": bad }), &here).is_err(),
+                "must reject {bad}"
+            );
+        }
+        let new_tab = SpawnPlacement::NewTab { label: None };
+        assert_eq!(parse_min_pane_size(&json!({}), &new_tab), Ok((None, None)));
+        assert!(parse_min_pane_size(&json!({ "min_pane_width": 8 }), &new_tab).is_err());
+
+        assert_eq!(
+            split_required_cap(&here, (None, None)),
+            crate::ipc::CAP_SPLIT_REFUSAL_CAUSES
+        );
+        assert_eq!(
+            split_required_cap(&here, (None, Some(3))),
+            crate::ipc::CAP_SPLIT_MIN_PANE_SIZE
+        );
     }
 
     /// `tab.new` has nothing to split: `direction` / `target` in the

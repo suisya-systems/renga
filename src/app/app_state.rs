@@ -51,6 +51,10 @@ pub enum AppCommand {
         /// (the target resolves in the caller's tab). See
         /// [`ipc::Request::Split`].
         tab: Option<ipc::TabSelector>,
+        /// Per-call minimum-size overrides (Issue #206). `None` = the
+        /// process-global minimum.
+        min_pane_width: Option<u16>,
+        min_pane_height: Option<u16>,
         reply: oneshot::Sender<std::result::Result<usize, ipc::CodedError>>,
     },
     /// Open a new tab with a fresh single pane. Focus switches to the

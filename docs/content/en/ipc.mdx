@@ -245,6 +245,7 @@ IPC failures surface as `Error: [<code>] <message>` on stderr (renga 0.5.7+). Th
 | `pane_vanished` | Resolved on lookup but disappeared before the action — treat like `pane_not_found`. |
 | `target_too_small` | Split refused because the **target pane** is too small: halving it would fall below `min_pane_width` / `min_pane_height`. Target-local — the message reports the target's geometry, the minimum required and the tab's pane count, so retrying against a bigger target (or the other direction) can succeed. |
 | `pane_limit_reached` | Split refused because the **tab** already holds MAX_PANES (16) panes. Tab-global — no target will help; close a pane or spawn into another tab. |
+| `min_pane_size_invalid` | A per-call `min_pane_width` / `min_pane_height` override (`renga split --min-pane-width`, `spawn_*`) is below the hard floor of 5 columns / 2 rows. Refused before any layout change (#206). |
 | `split_refused` | Split refused for neither of the two causes above — from 3.0 only a terminal below the layout threshold. A 2.x server answers *both* causes above with this code, so unless you have confirmed the server advertises `split_refusal_causes`, read it the old way: cause unknown (#335). |
 | `io_error` | PTY write / spawn / OS-level failure. |
 
