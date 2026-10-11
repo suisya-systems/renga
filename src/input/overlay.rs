@@ -1,6 +1,6 @@
 //! IME composition overlay state and its modal key handler.
 //!
-//! Extracted from `src/app.rs` as the first slice of Issue #66. The
+//! Extracted from `src/app.rs` as part of Issue #66. The
 //! module owns [`OverlayState`] and [`handle_overlay_key`]; `App` still
 //! owns the `Option<OverlayState>` field and the open/close call sites.
 //!
