@@ -692,10 +692,6 @@ fn tools_spec() -> Value {
                         },
                         "description": "Optional tab placement — same selector and semantics as `spawn_pane`'s `tab`: exactly one of {\"name\"}, {\"index\"}, {\"pane_id\"}, or {\"new\": {…}} for a fresh single-pane background tab (visible tab unchanged; `direction`/`target` must be omitted). Requires the server's spawn_tab capability; older servers are refused instead of spawning into the wrong tab."
                     },
-                    "auto_upgrade_claude": {
-                        "type": "boolean",
-                        "description": "Default true. Set false to launch `command` verbatim: a bare `claude` is NOT rewritten to the peer-enabled form."
-                    },
                     "name": {
                         "type": "string",
                         "description": "Optional stable id for the new pane so it can be addressed by name later."
@@ -751,10 +747,6 @@ fn tools_spec() -> Value {
                             }
                         },
                         "description": "Optional tab placement — same selector and semantics as `spawn_pane`'s `tab`: exactly one of {\"name\"}, {\"index\"}, {\"pane_id\"}, or {\"new\": {…}} for a fresh single-pane background tab (visible tab unchanged; `direction`/`target` must be omitted). Requires the server's spawn_tab capability; older servers are refused instead of spawning into the wrong tab."
-                    },
-                    "auto_upgrade_claude": {
-                        "type": "boolean",
-                        "description": "Default true. Set false to launch `command` verbatim: a bare `claude` is NOT rewritten to the peer-enabled form."
                     },
                     "name": {
                         "type": "string",
