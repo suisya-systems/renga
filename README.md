@@ -8,7 +8,7 @@
 
 ## What renga is
 
-renga is a terminal where the panes know they are AI agents. Splits, tabs, and focus work like any TUI multiplexer, but the substrate underneath treats each pane as a first-class agent endpoint: it detects which panes are running Claude Code, lets Codex panes participate in the same peer network, and exposes pane-control MCP tools (`spawn_claude_pane`, `spawn_codex_pane`, `set_pane_identity`, `new_tab`, …). Peer scope is authoritative at the renga-tab level — panes the user literally put in the same tab — so cross-pane routing never collides across projects.
+renga is an independent project — originally forked from [`ccmux`](https://github.com/Shin-sibainu/ccmux), now developed on its own line (see [History](#history--acknowledgments)). It is a terminal where the panes know they are AI agents. Splits, tabs, and focus work like any TUI multiplexer, but the substrate underneath treats each pane as a first-class agent endpoint: it detects which panes are running Claude Code, lets Codex panes participate in the same peer network, and exposes pane-control MCP tools (`spawn_claude_pane`, `spawn_codex_pane`, `set_pane_identity`, `new_tab`, …). Peer scope is the renga session itself — the panes you literally opened in this renga instance, not a guess from `cwd` or PID — so cross-pane routing never collides across unrelated projects. Orchestrators can also enumerate, spawn into, and drive panes in other tabs (see [Peer messaging](#peer-messaging-between-claude-code-and-codex-panes)).
 
 The target use case is **agent orchestration**: a "secretary" pane dispatching tasks to "worker" panes, sub-agents comparing approaches in parallel, a long-running session reaching out to a sibling for a quick lookup, or a mixed Claude / Codex tab where each client is used for what it is best at. If you only ever run one agent at a time, renga's value over your current terminal is small. If you run several, the peer channel and the AI-aware pane model are the point.
 
@@ -29,9 +29,10 @@ The right mental model is: **renga is the execution fabric; claude-org is the re
 | Inter-pane messaging | Copy-paste, manual `send-keys`, or external glue | Built-in MCP `renga-peers` network; Claude receives channel pushes, Codex gets a pane-local nudge and reads the queued body via `check_messages` |
 | Spawning agent panes | User hand-wires shell commands and client flags | `spawn_claude_pane` / `spawn_codex_pane` MCP tools, plus `Alt+P` for Claude |
 | IME / CJK | Host terminal handles it; candidate windows often jump as Claude streams | Built-in IME composition overlay with freeze-on-overlay + periodic catch-up so candidates anchor to the caret |
-| Configuration surface | Shell glue, plugins, keytables | A small TUI binary; layout TOMLs declare panes/roles directly |
+| Scripting | Shell commands against a server (`tmux send-keys`, `zellij action`) | Same MCP tools for agents, plus `renga list` / `send` / `inspect` / `events` / `split` / `new-tab` CLI over a local IPC socket |
+| Configuration surface | Shell glue, plugins, keytables | A small TUI binary; layout TOMLs declare panes/roles directly, plus a short `config.toml` for IME and UI |
 
-**Non-goals.** renga is *not* a generic tmux replacement — it does not aim to match tmux's session persistence, nested-server model, plugin ecosystem, or scripted automation surface. It does not try to be a terminal emulator (no font/glyph rendering of its own; it runs inside your existing terminal). It is not an IDE plugin or chat UI. The bet is narrower: be the best substrate for **multiple Claude Code agents collaborating in one window**, and stay small enough to ship as a single ~10 MB binary.
+**Non-goals.** renga is *not* a generic tmux replacement — it does not aim to match tmux's session persistence, nested-server model, plugin ecosystem, or full scripted-automation surface (the CLI and MCP tools cover driving panes, not tmux-style scripting of every session feature). It does not try to be a terminal emulator (no font/glyph rendering of its own; it runs inside your existing terminal). It is not an IDE plugin or chat UI. The bet is narrower: be the best substrate for **multiple Claude Code and Codex agents collaborating in one window**, and stay small enough to ship as a single ~10 MB binary.
 
 ### Example: secretary + workers orchestration
 
@@ -58,7 +59,10 @@ The full peer-messaging workflow, two-pane example, troubleshooting, and pane-co
 ## Features
 
 - **Multi-pane terminal** — Split vertically/horizontally, run independent PTY shells
-- **Tab workspaces** — Multiple project tabs with click-to-switch
+- **Tab workspaces** — Multiple project tabs with click-to-switch; an orchestrator pane can list panes across all tabs and spawn workers into a named or background tab
+- **Org sidebar** — `Ctrl+B` shows every tab, pane, and Claude status in one panel
+- **Layout TOMLs** — `renga --layout <name>` opens a declared pane tree (ids, roles, commands, cwd), up to 16 panes
+- **Scriptable** — `renga list` / `send` / `inspect` / `events` / `split` / `new-tab` / `rename` talk to the running instance over a local socket; `renga capabilities` reports what the server supports
 - **Mixed-client peer messaging** — Same-tab Claude Code and Codex instances talk to each other via `renga-peers`; Claude receives channel pushes, Codex peers are driven through their pane by renga itself. See [`docs/peer-messaging.md`](./docs/peer-messaging.md).
 - **File tree sidebar** — Browse project files with icons, expand/collapse directories
 - **Syntax-highlighted preview** — View file contents with language-aware coloring
@@ -68,7 +72,7 @@ The full peer-messaging workflow, two-pane example, troubleshooting, and pane-co
 - **Mouse support** — Click to focus, double-click a pane's outer edge or a shared border to split, drag borders to resize, scroll history
 - **Scrollback** — 10,000 lines of terminal history per pane
 - **Dark theme** — Claude-inspired color scheme
-- **Cross-platform** — Windows, macOS, Linux
+- **Cross-platform** — Windows, macOS, Linux (WSL2 specific IME and key-chord notes are in [`docs/ime.md`](./docs/ime.md))
 - **Single binary** — ~8–10 MB depending on platform, no runtime dependencies
 
 ## Install
@@ -114,7 +118,7 @@ Launch from any directory. The file tree shows the current working directory. Th
 
 ## Peer messaging between Claude Code and Codex panes
 
-Mixed-client peer messaging is renga's headline differentiator: Claude Code and Codex instances in the same tab call `list_peers` / `send_message` / `check_messages` to delegate research, hand off failures, or coordinate without the user relaying every message manually. Claude peers receive `<channel source="renga-peers">` pushes; Codex peers get a pane-local nudge from renga and read the actual queued body with `check_messages`. Peer scope is the renga tab (authoritative, no `cwd` / `PID` heuristics), and `renga-peers` coexists with [`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) in the same install — channel names don't collide.
+Mixed-client peer messaging is renga's headline differentiator: Claude Code and Codex instances in the same renga session call `list_peers` / `send_message` / `check_messages` to delegate research, hand off failures, or coordinate without the user relaying every message manually. Claude peers receive `<channel source="renga-peers">` pushes; Codex peers get a pane-local nudge from renga and read the actual queued body with `check_messages`. Peer scope is the renga session (authoritative, no `cwd` / `PID` heuristics): `send_message` reaches any tab by numeric pane id, while names and `focused` stay inside the caller's own tab. And `renga-peers` coexists with [`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) in the same install — channel names don't collide.
 
 The shortest path to try it:
 
@@ -154,7 +158,8 @@ The first keys to learn. Full tables (Pane / File tree / Preview / Org sidebar /
 - [`docs/configuration.md`](./docs/configuration.md) — Canonical TOML schema (`[ime]`, `[ui]`), CLI flags, precedence.
 - [`docs/keymap.md`](./docs/keymap.md) — Full keybindings (Pane / File tree / Preview / Org sidebar / Mouse) plus macOS Option as Meta.
 - [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) — Wire-frozen v1.0 contract: MCP tools, CLI, IPC, config/layout/env.
-- [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) — **Current** semver rules for breaking vs. additive changes (2.0 line onward).
+- [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) — **Current** semver rules for breaking vs. additive changes (2.0 line onward, still live for 3.x).
+- [`CHANGELOG.md`](./CHANGELOG.md) — Release notes, including breaking changes.
 - [`docs/semver-policy.md`](./docs/semver-policy.md) — Semver rules for breaking vs. additive changes around the v1.0 freeze. Superseded by the above; kept for the 1.0–1.4 line.
 - [`BRANCHING.md`](./BRANCHING.md) — renga / upstream-ccmux divergence and cherry-pick policy.
 
@@ -174,7 +179,7 @@ Key design decisions: `vt100` crate for terminal emulation (not ANSI stripping) 
 
 ## Stability
 
-renga's API freeze shipped in v1.0.0. The contract it keeps stable — across MCP tools, CLI, IPC, and config/layout/env — is defined in [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md), which tracks `main`; the `v1.0` in that filename records the freeze it began as, not the version it describes. The semver rules that govern breaking and additive changes are in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (the v1.0-line policy it supersedes is preserved at [`docs/semver-policy.md`](./docs/semver-policy.md)). Pre-1.0 releases (`0.y.z`) never made these promises. Downstream tooling should pin to a single major range rather than an open-ended `>= 1.0`, since a major bump is precisely where this contract is allowed to change.
+renga's API freeze shipped in v1.0.0, and the 2.x and 3.x lines have kept to it (3.0.0 carried one documented breaking change; see [`CHANGELOG.md`](./CHANGELOG.md)). The contract it keeps stable — across MCP tools, CLI, IPC, and config/layout/env — is defined in [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md), which tracks `main`; the `v1.0` in that filename records the freeze it began as, not the version it describes. The semver rules that govern breaking and additive changes are in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (the v1.0-line policy it supersedes is preserved at [`docs/semver-policy.md`](./docs/semver-policy.md)). Pre-1.0 releases (`0.y.z`) never made these promises. Downstream tooling should pin to a single major range rather than an open-ended `>= 1.0`, since a major bump is precisely where this contract is allowed to change.
 
 ## Tech Stack
 
