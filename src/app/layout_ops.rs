@@ -312,6 +312,7 @@ impl App {
         new_pane_first: bool,
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<usize>> {
+        let min_pane_size = (self.min_pane_width, self.min_pane_height);
         Ok(self
             .try_split_pane_in_workspace(
                 ws_index,
@@ -319,6 +320,7 @@ impl App {
                 direction,
                 new_pane_first,
                 cwd_override,
+                min_pane_size,
             )?
             .ok())
     }
@@ -339,6 +341,9 @@ impl App {
     /// one, which is why the relayout at the end is targeted too:
     /// `mark_layout_change` (with its repaint cooldown) is only right
     /// for the tab the user is actually watching.
+    ///
+    /// `min_pane_size` is the `(width, height)` each half must keep —
+    /// the process-global minimum, or a per-call override (Issue #206).
     pub(crate) fn try_split_pane_in_workspace(
         &mut self,
         ws_index: usize,
@@ -346,6 +351,7 @@ impl App {
         direction: SplitDirection,
         new_pane_first: bool,
         cwd_override: Option<PathBuf>,
+        (min_pane_width, min_pane_height): (u16, u16),
     ) -> Result<std::result::Result<usize, SplitRefusal>> {
         if self.workspaces.get(ws_index).is_none() {
             return Ok(Err(SplitRefusal::WorkspaceMissing { ws_index }));
@@ -377,8 +383,8 @@ impl App {
 
         if let Some(rect) = focused_rect {
             let (available, required) = match direction {
-                SplitDirection::Vertical => (rect.width, self.min_pane_width),
-                SplitDirection::Horizontal => (rect.height, self.min_pane_height),
+                SplitDirection::Vertical => (rect.width, min_pane_width),
+                SplitDirection::Horizontal => (rect.height, min_pane_height),
             };
             if available / 2 < required {
                 return Ok(Err(SplitRefusal::TargetTooSmall {

@@ -834,6 +834,98 @@ fn set_min_pane_size_lets_split_succeed_below_default_threshold() {
     app.shutdown();
 }
 
+/// Same setup as the `set_min_pane_size_*` tests: after one default
+/// split the focused pane is ~30 cols wide, so a second vertical split
+/// is refused under the default 20. (A fresh `App` has no cached rects
+/// yet, so the min-size guard needs this first split to have geometry.)
+fn app_after_one_vertical_split() -> App {
+    let mut app = App::new(40, 80).expect("App::new");
+    app.handle_split(
+        &ipc::PaneRef::Focused,
+        ipc::Direction::Vertical,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("first split should succeed");
+    app
+}
+
+fn split_sized(
+    app: &mut App,
+    direction: ipc::Direction,
+    w: Option<u16>,
+    h: Option<u16>,
+) -> Result<usize, ipc::CodedError> {
+    app.handle_split_sized(
+        &ipc::PaneRef::Focused,
+        direction,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        (w, h),
+    )
+}
+
+#[test]
+fn per_call_min_pane_width_relaxes_the_global_minimum() {
+    // Issue #206: same geometry as
+    // `set_min_pane_size_lets_split_succeed_below_default_threshold`,
+    // but the threshold is lowered for this one call only.
+    let mut app = app_after_one_vertical_split();
+    let v = ipc::Direction::Vertical;
+    split_sized(&mut app, v, None, None).expect_err("default 20 refuses ~15-col halves");
+    split_sized(&mut app, v, Some(10), None).expect("override 10 lets the split succeed");
+    assert_eq!(app.min_pane_width, 20, "global minimum is untouched");
+    app.shutdown();
+}
+
+#[test]
+fn per_call_min_pane_width_tightens_the_global_minimum() {
+    let mut app = app_after_one_vertical_split();
+    let panes = app.ws().panes.len();
+    // The ~38-row pane halves to ~19 rows: fine under the default 5,
+    // refused under 30 — and the refusal names the override.
+    let h = ipc::Direction::Horizontal;
+    let err = split_sized(&mut app, h, None, Some(30)).expect_err("override 30 must refuse");
+    assert_eq!(err.code, Some(ipc::err_code::TARGET_TOO_SMALL));
+    assert!(err.message.contains("30-row minimum"), "{}", err.message);
+    assert_eq!(app.ws().panes.len(), panes);
+    split_sized(&mut app, h, None, None).expect("default 5 still splits");
+    app.shutdown();
+}
+
+#[test]
+fn per_call_min_pane_size_below_hard_floor_is_refused_before_mutation() {
+    let mut app = app_after_one_vertical_split();
+    let panes = app.ws().panes.len();
+    let v = ipc::Direction::Vertical;
+    for (w, h) in [(Some(4), None), (None, Some(1)), (Some(0), Some(0))] {
+        let err = split_sized(&mut app, v, w, h).expect_err("below floor must fail");
+        assert_eq!(
+            err.code,
+            Some(ipc::err_code::MIN_PANE_SIZE_INVALID),
+            "{w:?}/{h:?}"
+        );
+    }
+    assert_eq!(app.ws().panes.len(), panes, "no pane created");
+    // Exactly at the floor is accepted.
+    split_sized(
+        &mut app,
+        v,
+        Some(ipc::MIN_PANE_WIDTH_FLOOR),
+        Some(ipc::MIN_PANE_HEIGHT_FLOOR),
+    )
+    .expect("floor values are legal");
+    app.shutdown();
+}
+
 #[test]
 fn set_min_pane_size_clamps_zero_to_one() {
     // `--min-pane-width 0` would make `rect.width / 2 < 0` always
