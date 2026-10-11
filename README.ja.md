@@ -6,9 +6,15 @@
 
 ![renga スクリーンショット](screenshot.png)
 
+## 30 秒で分かる renga
+
+- **課題:** AI コーディングエージェントを複数動かすと、ターミナルウィンドウも複数になり、間のコピペは人間の仕事になります。汎用の multiplexer はシェルしか認識しないため、どのペインがエージェントで、どう連絡すればよいかは誰にも分かりません。
+- **解決:** renga は、ペインをエージェントの宛先として扱う TUI multiplexer です。Claude Code と Codex のペイン同士が、組み込みの `renga-peers` MCP サーバー経由でメッセージをやり取りし、オーケストレーター役のエージェントは他のペインを自分で spawn・確認・操作できます。
+- **対象:** Claude Code / Codex を 2 つ以上同時に動かす人 (窓口がワーカーに振り分ける構成、並走するサブエージェント、Claude と Codex の混在タブ)。エージェントが常に 1 つなら、今のターミナルで足ります。
+
 ## renga とは何か
 
-renga は「ペイン自身が AI エージェントであることを知っている」ターミナルです。分割・タブ・フォーカスといった操作は他の TUI multiplexer と同じですが、内部ではそれぞれのペインを **第一級のエージェント・エンドポイント** として扱います。Claude Code が動いているペインは自動検出し、Codex ペインも同じ peer network に参加できるようにし、`spawn_claude_pane` / `spawn_codex_pane` / `set_pane_identity` / `new_tab` などのペイン制御 MCP ツールを提供します。peer のスコープは renga タブ単位 — ユーザーが文字通り同じタブに並べたペイン群 — で固定されており、cross-pane ルーティングがプロジェクトをまたいで衝突することはありません。
+renga は「ペイン自身が AI エージェントであることを知っている」ターミナルです。分割・タブ・フォーカスといった操作は他の TUI multiplexer と同じですが、内部ではそれぞれのペインを **第一級のエージェント・エンドポイント** として扱います。Claude Code が動いているペインは自動検出し、Codex ペインも同じ peer network に参加できるようにし、`spawn_claude_pane` / `spawn_codex_pane` / `set_pane_identity` / `new_tab` などのペイン制御 MCP ツールを提供します。peer のスコープは renga セッション自体 — ユーザーがこの renga インスタンスで文字通り開いたペイン群で、`cwd` や PID からの推測ではありません — なので、cross-pane ルーティングが無関係なプロジェクト間で衝突することはありません。オーケストレーター側は、他タブのペインの列挙・他タブへの spawn・操作もできます (詳細は「Claude Code と Codex ペイン間の peer メッセージング」節)。
 
 主なユースケースは **エージェントのオーケストレーション** — 「窓口（secretary）」ペインがタスクを「ワーカー」ペインに振り分ける構成、サブエージェントを別ペインで並走比較する構成、長時間セッションが軽い調べ物だけ別ペインに投げる構成、Claude と Codex を同じタブで役割分担させる構成、などです。エージェントを常に 1 つしか起動しないなら、renga が今のターミナルより優位な点は限られます。複数同時に動かすなら、peer チャネルと AI 認識ペインモデルがそのまま価値になります。
 
@@ -29,9 +35,10 @@ renga には 2 つの正しい使い方があります。
 | ペイン間メッセージング | コピペ、手動 `send-keys`、外部 glue | 組み込み MCP `renga-peers` network。Claude は channel push、Codex は pane nudge を受けて `check_messages` で本文を読む |
 | エージェントペイン起動 | ユーザーがクライアントごとの起動コマンドやフラグを手で管理 | `spawn_claude_pane` / `spawn_codex_pane` MCP ツール、Claude 用 `Alt+P` |
 | IME / 日本語入力 | ホストターミナル任せ。Claude のストリーミング出力で候補窓が踊りがち | 専用 IME 合成 overlay。freeze-on-overlay + 周期 catch-up でキャレット直下に候補窓を固定 |
+| スクリプト連携 | 稼働中サーバーへのシェルコマンド (`tmux send-keys`, `zellij action`) | エージェント向けの同じ MCP ツールに加え、`renga list` / `send` / `inspect` / `events` / `split` / `new-tab` CLI がローカル IPC ソケット経由で動く |
 | 設定の表面積 | シェル glue / プラグイン / keytable | 小さな TUI バイナリ 1 本。レイアウト TOML でペイン構成と role を直接宣言 |
 
-**やらないこと（non-goals）。** renga は **汎用 tmux 代替を目指していません**。tmux のセッション永続化、ネスト server モデル、プラグインエコシステム、スクリプタブルな自動化 API を網羅する意図はありません。ターミナルエミュレータでもありません（自前のフォント・グリフ描画は持たず、既存ターミナル上で動きます）。IDE プラグインでもチャット UI でもありません。狙いは狭く一点で、**「複数の Claude Code エージェントが 1 つのウィンドウで協調する」基盤として最良であること**、そして約 10 MB の単一バイナリで配布できるサイズに収めることです。
+**やらないこと（non-goals）。** renga は **汎用 tmux 代替を目指していません**。tmux のセッション永続化、ネスト server モデル、プラグインエコシステム、tmux 並みのスクリプタブルな自動化 API を網羅する意図はありません (CLI と MCP ツールが扱うのはペインの操作までです)。ターミナルエミュレータでもありません（自前のフォント・グリフ描画は持たず、既存ターミナル上で動きます）。IDE プラグインでもチャット UI でもありません。狙いは狭く一点で、**「複数の Claude Code / Codex エージェントが 1 つのウィンドウで協調する」基盤として最良であること**、そして約 10 MB の単一バイナリで配布できるサイズに収めることです。
 
 ### 例: 窓口（secretary）+ ワーカー型オーケストレーション
 
@@ -58,7 +65,10 @@ peer メッセージングの完全なワークフロー、2 ペイン例、ト�
 ## できること
 
 - **ペイン分割** — 縦横に分割、各ペインは独立したシェル (PTY)
-- **タブ** — プロジェクトごとに独立したワークスペースをタブで切替
+- **タブ** — プロジェクトごとに独立したワークスペースをタブで切替。オーケストレーターのペインは全タブのペインを列挙でき、名前指定やバックグラウンドのタブにワーカーを spawn できる
+- **org サイドバー** — `Ctrl+B` で全タブ / 全ペイン / Claude 稼働状態を 1 枚で表示
+- **layout TOML** — `renga --layout <name>` で、id・role・command・cwd を宣言したペインツリーを開く (最大 16 ペイン)
+- **スクリプタブル** — `renga list` / `send` / `inspect` / `events` / `split` / `new-tab` / `rename` が、起動中の renga とローカルソケットで通信する。`renga capabilities` でサーバーの対応機能を確認できる
 - **mixed-client peer メッセージング** — 同じタブの Claude Code と Codex が `renga-peers` で協調。Claude は channel push、Codex は renga がペイン経由で配送。[`docs/peer-messaging.ja.md`](./docs/peer-messaging.ja.md) 参照
 - **ファイルツリー** — アイコン付きサイドバー、展開/折りたたみ可能
 - **プレビュー** — シンタックスハイライト付き、画像ファイルも表示
@@ -113,7 +123,7 @@ renga
 
 ## Claude Code と Codex ペイン間のメッセージング
 
-mixed-client peer メッセージングは renga の中心的な差別化ポイントです: 同じタブの Claude Code / Codex が `list_peers` / `send_message` / `check_messages` を呼び合って、調査の委譲、失敗の引き継ぎ、協調作業を、ユーザーが手で中継せずに進められます。Claude は `<channel source="renga-peers">` タグで push 受信、Codex は renga からペイン nudge を受けて `check_messages` で実本文を読みます。peer スコープは renga タブ単位 (権威的に、`cwd` / `PID` ヒューリスティックは無し) で、同じ Claude install 内で [`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) と共存できます — チャンネル名が衝突しません。
+mixed-client peer メッセージングは renga の中心的な差別化ポイントです: 同じ renga セッションの Claude Code / Codex が `list_peers` / `send_message` / `check_messages` を呼び合って、調査の委譲、失敗の引き継ぎ、協調作業を、ユーザーが手で中継せずに進められます。Claude は `<channel source="renga-peers">` タグで push 受信、Codex は renga からペイン nudge を受けて `check_messages` で実本文を読みます。peer スコープは renga セッション単位 (権威的に、`cwd` / `PID` ヒューリスティックは無し) です。`send_message` は数値のペイン id で任意のタブに届き、名前と `focused` は呼び出し側のタブ内に限られます。同じ Claude install 内で [`claude-peers-mcp`](https://github.com/happy-ryo/claude-peers-mcp) と共存できます — チャンネル名が衝突しません。
 
 最短で試す手順:
 
@@ -153,7 +163,7 @@ Claude のペインにフォーカスした状態で `Ctrl+;` を押すと、画
 - [`docs/configuration.ja.md`](./docs/configuration.ja.md) — canonical な TOML スキーマ (`[ime]`, `[ui]`)、CLI フラグ、優先順位
 - [`docs/keymap.ja.md`](./docs/keymap.ja.md) — フルキーバインド (ペイン / ファイルツリー / プレビュー / org サイドバー / マウス) と macOS Option as Meta
 - [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) — v1.0 wire-frozen コントラクト: MCP ツール / CLI / IPC / 設定・レイアウト・環境変数 (英語のみ)
-- [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) — **現行**の breaking / additive 変更ルール (2.0 系以降、英語のみ)
+- [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) — **現行**の breaking / additive 変更ルール (2.0 系以降、3.x でも現行、英語のみ)
 - [`docs/semver-policy.md`](./docs/semver-policy.md) — v1.0 freeze 前後の breaking / additive 変更ルール (英語のみ)。上記に置き換えられたが 1.0〜1.4 系の記録として保持
 - [`BRANCHING.md`](./BRANCHING.md) — renga / 上流 ccmux の divergence と cherry-pick ポリシー (英語のみ)
 
@@ -173,7 +183,7 @@ src/
 
 ## 安定性
 
-renga の API freeze は v1.0.0 で完了済みです。安定維持を約束するコントラクト (MCP ツール / CLI / IPC / 設定・レイアウト・環境変数) は [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) に定義しています (このファイルは `main` に追随します。ファイル名の `v1.0` は「どの freeze として始まったか」の記録であって、記述対象のバージョンではありません)。breaking / additive 変更を支配する現行の semver ルールは [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (置き換えられた v1.0 系ポリシーは [`docs/semver-policy.md`](./docs/semver-policy.md) に保存)。pre-1.0 (`0.y.z`) リリースは約束の対象外でした。下流ツールは `>= 1.0` のような開いた指定ではなく、単一のメジャー範囲に pin してください。コントラクトの変更が許されるのはまさにメジャー bump のタイミングだからです。
+renga の API freeze は v1.0.0 で完了済みで、2.x / 3.x もこのコントラクトを守っています (3.0.0 で記録付きの breaking change が 1 件ありました。[`CHANGELOG.md`](./CHANGELOG.md) 参照)。安定維持を約束するコントラクト (MCP ツール / CLI / IPC / 設定・レイアウト・環境変数) は [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) に定義しています (このファイルは `main` に追随します。ファイル名の `v1.0` は「どの freeze として始まったか」の記録であって、記述対象のバージョンではありません)。breaking / additive 変更を支配する現行の semver ルールは [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md) (置き換えられた v1.0 系ポリシーは [`docs/semver-policy.md`](./docs/semver-policy.md) に保存)。pre-1.0 (`0.y.z`) リリースは約束の対象外でした。下流ツールは `>= 1.0` のような開いた指定ではなく、単一のメジャー範囲に pin してください。コントラクトの変更が許されるのはまさにメジャー bump のタイミングだからです。
 
 ## 技術スタック
 
