@@ -259,9 +259,14 @@ remaining tab — surfaced as an error, not silenced), `io_error`.
 
 ### 1.10 `focus_pane` — stable
 
-Input: `{ target: string }` (required). `"focused"` is a no-op (kept for
-symmetry). Yanking focus is user-disruptive; doc explicitly tells callers to
-use sparingly.
+Input: `{ target: string }` (required). `"focused"` resolves to the calling
+pane's own tab (#288); it is a no-op when that tab is already visible, and
+brings it forward otherwise. Yanking focus is user-disruptive; doc explicitly
+tells callers to use sparingly.
+
+**Tab scoping (#288)**: `"focused"` and stable names resolve inside the
+*calling pane's* tab; a numeric id may address any tab, and focusing a pane
+outside the visible tab also switches the visible tab to it.
 
 ### 1.11 `new_tab` — stable
 
@@ -959,13 +964,13 @@ The following are **not** part of the v1.0 frozen surface. They may exist in
 the codebase but downstream must not depend on them; they may change in any
 minor release.
 
-- **Cross-tab selectors** for `focus_pane` etc. (Q4 → v1.1+).
-  `send_message` gained cross-tab delivery by numeric id in #289, and
-  `list_panes` gained a `tab` selector — including `{"all": true}` — in #329
-  (§1.5), so both are now delivered rather than deferred; a `renga list`
-  equivalent on the CLI is still deferred (§2.2). For the remaining tab-scoped
-  tools, workers needing cross-tab coordination continue to use numeric-id
-  escape hatches or the "all workers in one tab" pattern.
+- **A `renga` CLI selector for cross-tab scope.** The MCP surface is cross-tab
+  by contract: numeric ids reach any tab for `send_message`, `focus_pane`,
+  `inspect_pane`, `send_keys`, `close_pane`, `set_pane_identity` (§1.2, §1.9,
+  §1.10), and `list_panes` takes a `tab` selector (§1.5). Names and `focused`
+  stay inside the caller's tab. `renga list` / `send` / `focus` / `inspect`
+  (no caller pane) keep their active-tab scope for `--id` (`close` and
+  `rename` search every tab); a CLI `tab` flag is deferred.
 - **`spawn_pane.command` opt-out flag** for the `claude → claude
   --dangerously-load-...` rewrite (Q3). Callers who need verbatim execution
   must use a non-`claude` leading token (e.g. `bash -c '…'`).
