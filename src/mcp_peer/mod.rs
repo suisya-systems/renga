@@ -645,6 +645,10 @@ fn tools_spec() -> Value {
                         "type": "string",
                         "description": "Optional shell command to run in the new pane once the shell is ready (e.g. 'claude', 'cargo test'). A bare `claude` (or `claude <args>`) is auto-upgraded to the Alt+P form so the new instance joins the renga-peers network — you don't need to pass the --dangerously-load-development-channels flag yourself. If you pass that flag explicitly, it is left alone."
                     },
+                    "auto_upgrade_claude": {
+                        "type": "boolean",
+                        "description": "Default true. Set false to launch `command` verbatim: a bare `claude` is NOT rewritten to the peer-enabled form."
+                    },
                     "name": {
                         "type": "string",
                         "description": "Optional stable id for the new pane so it can be addressed by name later."
@@ -837,6 +841,10 @@ fn tools_spec() -> Value {
                     "command": {
                         "type": "string",
                         "description": "Optional shell command to run in the new pane once the shell is ready. A bare `claude` (or `claude <args>`) is auto-upgraded to the Alt+P peer-enabled form so the new instance joins the renga-peers network. If you pass --dangerously-load-development-channels explicitly, it is left alone."
+                    },
+                    "auto_upgrade_claude": {
+                        "type": "boolean",
+                        "description": "Default true. Set false to launch `command` verbatim: a bare `claude` is NOT rewritten to the peer-enabled form."
                     },
                     "name": {
                         "type": "string",
@@ -2009,6 +2017,18 @@ fn dispatch_spawn_tab(
 /// Optional string-valued argument extractor. Empty strings map to None
 /// so Claude can send `{"command": ""}` without accidentally shoving an
 /// empty command line into the new pane.
+/// `command` arg, auto-upgraded unless the caller passed `auto_upgrade_claude: false`.
+fn command_arg(args: &Value) -> Option<String> {
+    let optout = args.get("auto_upgrade_claude").and_then(|v| v.as_bool()) == Some(false);
+    opt_string(args, "command").map(|c| {
+        if optout {
+            c
+        } else {
+            upgrade_claude_command(&c)
+        }
+    })
+}
+
 fn opt_string(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -2280,7 +2300,7 @@ fn handle_spawn_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
             ))
         }
     };
-    let command = opt_string(args, "command").map(|c| upgrade_claude_command(&c));
+    let command = command_arg(args);
     let name = opt_string(args, "name");
     let role = opt_string(args, "role");
     let cwd = opt_string(args, "cwd");
@@ -2994,7 +3014,7 @@ fn handle_focus_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
 }
 
 fn handle_new_tab(id: &Value, args: &Value, ctx: &PeerCtx) -> Value {
-    let command = opt_string(args, "command").map(|c| upgrade_claude_command(&c));
+    let command = command_arg(args);
     let name = opt_string(args, "name");
     let label = opt_string(args, "label");
     let role = opt_string(args, "role");
@@ -4334,6 +4354,14 @@ mod tests {
                 .and_then(|c| c.as_i64());
             assert_eq!(err_code, Some(-32602), "resp={resp}");
         }
+    }
+
+    #[test]
+    fn command_arg_honors_auto_upgrade_optout() {
+        let on = serde_json::json!({"command": "claude"});
+        assert_eq!(command_arg(&on).unwrap(), upgrade_claude_command("claude"));
+        let off = serde_json::json!({"command": "claude", "auto_upgrade_claude": false});
+        assert_eq!(command_arg(&off).unwrap(), "claude");
     }
 
     #[test]
