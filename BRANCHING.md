@@ -1,7 +1,7 @@
 # Branching & Divergence Policy
 
-renga (`suisya-systems/renga`) は [`Shin-sibainu/ccmux`](https://github.com/Shin-sibainu/ccmux) から派生したプロジェクトですが、現在は **独立した本流として開発しています**。
-バージョン同期や定期的な上流取り込みは行っておらず、上流から有用な変更があれば必要に応じて cherry-pick する程度です。
+renga (`suisya-systems/renga`) は [`Shin-sibainu/ccmux`](https://github.com/Shin-sibainu/ccmux) をもとに始まりましたが、現在は **独立した本流 (`main`) として開発しています**。
+ミラーブランチの定期同期 (毎週の upstream sync など) は行いません。バージョン番号も上流と揃えません。上流に有用なバグ修正や小さな改善があるときだけ、その commit を個別に `main` へ cherry-pick します。上流の MIT 著作権表示は `LICENSE` に残しています。
 
 ## ブランチ構成
 

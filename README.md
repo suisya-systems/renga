@@ -6,9 +6,15 @@
 
 ![renga screenshot](screenshot.png)
 
+## 30-second pitch
+
+- **Problem:** Running several AI coding agents means several terminal windows, with you copy-pasting between them. Generic multiplexers see only shells, so nothing knows which pane is an agent or how to reach it.
+- **Solution:** renga is a TUI multiplexer whose panes are agent endpoints. Claude Code and Codex panes message each other through the built-in `renga-peers` MCP server, and an orchestrator agent can spawn, inspect, and drive other panes itself.
+- **Who it's for:** people who run two or more Claude Code / Codex agents at once (a secretary dispatching workers, parallel sub-agents, mixed-client tabs). With a single agent at a time, your current terminal is enough.
+
 ## What renga is
 
-renga is an independent project — originally forked from [`ccmux`](https://github.com/Shin-sibainu/ccmux), now developed on its own line (see [History](#history--acknowledgments)). It is a terminal where the panes know they are AI agents. Splits, tabs, and focus work like any TUI multiplexer, but the substrate underneath treats each pane as a first-class agent endpoint: it detects which panes are running Claude Code, lets Codex panes participate in the same peer network, and exposes pane-control MCP tools (`spawn_claude_pane`, `spawn_codex_pane`, `set_pane_identity`, `new_tab`, …). Peer scope is the renga session itself — the panes you literally opened in this renga instance, not a guess from `cwd` or PID — so cross-pane routing never collides across unrelated projects. Orchestrators can also enumerate, spawn into, and drive panes in other tabs (see [Peer messaging](#peer-messaging-between-claude-code-and-codex-panes)).
+renga is a terminal where the panes know they are AI agents. Splits, tabs, and focus work like any TUI multiplexer, but the substrate underneath treats each pane as a first-class agent endpoint: it detects which panes are running Claude Code, lets Codex panes participate in the same peer network, and exposes pane-control MCP tools (`spawn_claude_pane`, `spawn_codex_pane`, `set_pane_identity`, `new_tab`, …). Peer scope is the renga session itself — the panes you literally opened in this renga instance, not a guess from `cwd` or PID — so cross-pane routing never collides across unrelated projects. Orchestrators can also enumerate, spawn into, and drive panes in other tabs (see [Peer messaging](#peer-messaging-between-claude-code-and-codex-panes)).
 
 The target use case is **agent orchestration**: a "secretary" pane dispatching tasks to "worker" panes, sub-agents comparing approaches in parallel, a long-running session reaching out to a sibling for a quick lookup, or a mixed Claude / Codex tab where each client is used for what it is best at. If you only ever run one agent at a time, renga's value over your current terminal is small. If you run several, the peer channel and the AI-aware pane model are the point.
 
