@@ -669,52 +669,10 @@ fn seed_claude_dialog_pane(app: &mut App) {
     seed_focused_pane_screen(app, bytes.as_bytes());
 }
 
-/// Wait for the pane's real login shell to stop painting.
-///
-/// `App::new` spawns `$SHELL --login` on a genuine PTY whose reader
-/// thread writes into the same parser these tests seed — and for
-/// bash/zsh renga also injects a setup line ending in `clear`. A seed
-/// laid down while that is still arriving gets overwritten between the
-/// seed and the assertion, which is a flake with a ~1-in-4 rate under
-/// a parallel `cargo test`. Waiting for two identical screen reads
-/// costs a few tens of milliseconds once per test and removes the race
-/// rather than narrowing it.
-fn wait_for_pane_quiet(app: &App, pane_id: usize) {
-    let read = || {
-        let pane = app.ws().panes.get(&pane_id).expect("pane");
-        let parser = pane.parser.lock().unwrap_or_else(|e| e.into_inner());
-        let screen = parser.screen();
-        let (rows, cols) = screen.size();
-        let mut out = String::with_capacity((rows as usize) * (cols as usize));
-        for row in 0..rows {
-            for col in 0..cols {
-                out.push_str(
-                    &screen
-                        .cell(row, col)
-                        .map(|c| c.contents().to_string())
-                        .unwrap_or_default(),
-                );
-            }
-        }
-        out
-    };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut previous = read();
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(40));
-        let current = read();
-        if current == previous {
-            return;
-        }
-        previous = current;
-    }
-}
-
 /// Stand up a pane that the predicate will accept: registered as
 /// Claude, painting an idle composer.
 fn app_with_ready_claude_pane() -> (App, usize) {
     let mut app = inert_app(40, 120);
-    wait_for_pane_quiet(&app, app.ws().focused_pane_id);
     let pane_id = seed_claude_idle_pane(&mut app, b"");
     app.peer_client_kinds
         .insert(pane_id, PeerClientKind::Claude);
