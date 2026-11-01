@@ -41,6 +41,7 @@ impl App {
                 tab,
                 min_pane_width,
                 min_pane_height,
+                namespace,
                 reply,
             } => {
                 self.recompute_hidden_rects_for_ipc();
@@ -54,6 +55,7 @@ impl App {
                     from_pane,
                     tab.as_ref(),
                     (min_pane_width, min_pane_height),
+                    namespace,
                 );
                 let _ = reply.send(result);
             }
@@ -75,9 +77,11 @@ impl App {
                 role,
                 cwd,
                 from_pane,
+                namespace,
                 reply,
             } => {
-                let result = self.handle_spawn_tab(command, name, label, role, cwd, from_pane);
+                let result =
+                    self.handle_spawn_tab_ns(command, name, label, role, cwd, from_pane, namespace);
                 let _ = reply.send(result);
             }
             AppCommand::Inspect {
@@ -148,9 +152,11 @@ impl App {
                 name,
                 role,
                 from_pane,
+                namespace,
                 reply,
             } => {
-                let result = self.handle_set_pane_identity(&target, name, role, from_pane);
+                let result =
+                    self.handle_set_pane_identity_ns(&target, name, role, namespace, from_pane);
                 let _ = reply.send(result);
             }
             AppCommand::SetSummary {
@@ -299,6 +305,7 @@ impl App {
                 receive_mode: kind.map(|k| k.receive_mode()),
                 summary,
                 peer_delivery: pane.and_then(|p| p.peer_delivery),
+                namespace: pane.and_then(|p| p.namespace.clone()),
             });
         }
         infos
@@ -356,6 +363,7 @@ impl App {
                             unread: self
                                 .pane_expects_codex_peer_delivery(ws_idx, id)
                                 .then(|| self.peer_unread_count(id)),
+                            namespace: pane.and_then(|p| p.namespace.clone()),
                         }
                     }),
             );
@@ -369,6 +377,7 @@ impl App {
     /// Numeric ids stay cross-tab, and the `name_in_use` check below
     /// keeps running against the *resolved* pane's workspace, so
     /// per-tab name uniqueness is unchanged.
+    #[cfg(test)]
     pub(crate) fn handle_set_pane_identity(
         &mut self,
         target: &PaneRef,
@@ -376,7 +385,45 @@ impl App {
         role: Option<Option<String>>,
         from_pane: Option<usize>,
     ) -> std::result::Result<PaneInfo, ipc::CodedError> {
+        self.handle_set_pane_identity_ns(target, name, role, None, from_pane)
+    }
+
+    /// `namespace` follows the same three-state shape as `name` /
+    /// `role` (Issue #390); `Some(Some(""))` clears like `Some(None)`.
+    /// The cross-tab namespace collision check runs on the pane's
+    /// post-change (name, namespace) pair, before any mutation.
+    pub(crate) fn handle_set_pane_identity_ns(
+        &mut self,
+        target: &PaneRef,
+        name: Option<Option<String>>,
+        role: Option<Option<String>>,
+        namespace: Option<Option<String>>,
+        from_pane: Option<usize>,
+    ) -> std::result::Result<PaneInfo, ipc::CodedError> {
         let (ws_idx, pane_id) = self.resolve_target_with_global_fallback(from_pane, target)?;
+
+        let namespace: Option<Option<String>> = match namespace {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(raw)) => Some(self.spawn_namespace(Some(raw), None)?),
+        };
+        {
+            let ws = &self.workspaces[ws_idx];
+            let current_name = ws
+                .pane_names
+                .iter()
+                .find(|(_, &id)| id == pane_id)
+                .map(|(n, _)| n.clone());
+            let next_name = match &name {
+                None => current_name,
+                Some(n) => n.as_deref().map(|n| n.trim().to_string()),
+            };
+            let next_ns = match &namespace {
+                None => ws.panes.get(&pane_id).and_then(|p| p.namespace.clone()),
+                Some(ns) => ns.clone(),
+            };
+            self.check_namespace_name_free(ws_idx, next_ns.as_deref(), next_name.as_deref())?;
+        }
 
         if let Some(Some(new_name)) = &name {
             let trimmed = validate_pane_name(new_name)?;
@@ -416,6 +463,11 @@ impl App {
                 pane.role = role_change
                     .map(|r| r.trim().to_string())
                     .filter(|r| !r.is_empty());
+            }
+        }
+        if let Some(ns_change) = namespace {
+            if let Some(pane) = ws.panes.get_mut(&pane_id) {
+                pane.namespace = ns_change;
             }
         }
         self.dirty = true;
@@ -458,6 +510,7 @@ impl App {
                 .map(|k| k.receive_mode()),
             summary: pane.summary.clone(),
             peer_delivery: pane.peer_delivery,
+            namespace: pane.namespace.clone(),
         })
     }
 
@@ -541,6 +594,7 @@ impl App {
                 .map(|k| k.receive_mode()),
             summary: pane.summary.clone(),
             peer_delivery: pane.peer_delivery,
+            namespace: pane.namespace.clone(),
         })
     }
 
@@ -750,6 +804,7 @@ impl App {
     /// orchestrator that asked.
     ///
     /// Returns `(new_pane_id, ws_idx)`.
+    #[cfg(test)]
     pub(crate) fn handle_spawn_tab(
         &mut self,
         command: Option<String>,
@@ -758,6 +813,22 @@ impl App {
         role: Option<String>,
         cwd: Option<String>,
         from_pane: Option<usize>,
+    ) -> std::result::Result<(usize, usize), ipc::CodedError> {
+        self.handle_spawn_tab_ns(command, name, label, role, cwd, from_pane, None)
+    }
+
+    /// [`Self::handle_spawn_tab`] plus the Issue #390 `namespace` (see
+    /// [`Self::spawn_namespace`] for the inherit / join / opt-out rule).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn handle_spawn_tab_ns(
+        &mut self,
+        command: Option<String>,
+        name: Option<String>,
+        label: Option<String>,
+        role: Option<String>,
+        cwd: Option<String>,
+        from_pane: Option<usize>,
+        namespace: Option<String>,
     ) -> std::result::Result<(usize, usize), ipc::CodedError> {
         let caller_ws = self.resolve_caller_workspace(from_pane)?;
         // Validate the pane name *before* creating anything: an
@@ -781,6 +852,10 @@ impl App {
             None => None,
             Some(raw) => Some(validate_display_label(raw, "label")?.to_string()),
         };
+        let namespace = self.spawn_namespace(namespace, from_pane)?;
+        // `usize::MAX`: the tab does not exist yet, so every existing
+        // tab counts as "another" one.
+        self.check_namespace_name_free(usize::MAX, namespace.as_deref(), name.as_deref())?;
         let base = from_pane
             .and_then(|id| self.workspaces[caller_ws].panes.get(&id))
             .map(|p| p.cwd.clone())
@@ -799,6 +874,7 @@ impl App {
             if let Some(r) = role {
                 pane.role = Some(r);
             }
+            pane.namespace = namespace;
         }
         if let Some(name) = name {
             if !name.is_empty() {
@@ -891,6 +967,7 @@ impl App {
             from_pane,
             tab,
             (None, None),
+            None,
         )
     }
 
@@ -906,10 +983,12 @@ impl App {
         from_pane: Option<usize>,
         tab: Option<&ipc::TabSelector>,
         min_pane_size: (Option<u16>, Option<u16>),
+        namespace: Option<String>,
     ) -> std::result::Result<usize, ipc::CodedError> {
         // Before any placement work, so an invalid label cannot leave a
         // freshly split pane behind.
         let (name, role) = Self::validated_split_identity(name, role)?;
+        let namespace = self.spawn_namespace(namespace, from_pane)?;
         let min_pane_size = self.resolve_min_pane_size(min_pane_size)?;
         let (ws_idx, target_pane_id) = match tab {
             None => self.resolve_request_target(from_pane, target)?,
@@ -926,6 +1005,7 @@ impl App {
                 (ws_idx, pane_id)
             }
         };
+        self.check_namespace_name_free(ws_idx, namespace.as_deref(), name.as_deref())?;
         // A relative `cwd` is resolved against the *target* pane, not
         // the caller: that is the pre-#288 contract for this request and
         // `from_pane` only narrows which panes `target` may name. MCP
@@ -967,6 +1047,7 @@ impl App {
             if let Some(r) = role {
                 pane.role = Some(r);
             }
+            pane.namespace = namespace;
         }
         if let Some(name) = name {
             if !name.is_empty() {
@@ -1064,7 +1145,7 @@ fn validate_display_label<'a>(
 /// types it into another pane's PTY and presses Enter, and into the
 /// channel banner a receiving agent reads. Closing it is a breaking
 /// change to the frozen v1.0 surface, hence the major.
-fn validate_pane_name(name: &str) -> std::result::Result<&str, ipc::CodedError> {
+pub(super) fn validate_pane_name(name: &str) -> std::result::Result<&str, ipc::CodedError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(ipc::CodedError::new(

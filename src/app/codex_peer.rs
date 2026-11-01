@@ -284,13 +284,15 @@ impl App {
                     format!("sender pane {from_pane} not found"),
                 )
             })?;
-        let (target_ws, target_id) =
-            self.resolve_target_from(sender_ws, target).ok_or_else(|| {
+        let (target_ws, target_id) = self
+            .resolve_target_from(from_pane, sender_ws, target)
+            .ok_or_else(|| {
                 ipc::CodedError::new(
                     ipc::err_code::PANE_NOT_FOUND,
                     format!(
-                        "peer target not found: {target:?} (names only resolve inside the \
-                         sender's tab; use the numeric pane id from list_peers for other tabs)"
+                        "peer target not found: {target:?} (names resolve inside the sender's \
+                         tab, or its namespace's tabs; use the numeric pane id from list_peers \
+                         otherwise)"
                     ),
                 )
             })?;

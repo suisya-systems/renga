@@ -571,6 +571,7 @@ fn bare_pane_info(id: usize) -> PaneInfo {
         receive_mode: None,
         summary: None,
         peer_delivery: None,
+        namespace: None,
     }
 }
 
@@ -595,6 +596,7 @@ fn bare_peer_info(id: usize) -> PeerInfo {
         receive_mode: None,
         summary: None,
         unread: None,
+        namespace: None,
     }
 }
 
@@ -631,7 +633,8 @@ fn format_peer_list_annotates_tab_membership() {
     assert!(text.contains("id=7 kind=codex [tab 1 \"kura\"]"), "{text}");
     // The addressing rule ships with the list so agents don't
     // have to remember it from the tool description alone.
-    assert!(text.contains("ONLY by numeric id"), "{text}");
+    assert!(text.contains("peers in other tabs by numeric id"), "{text}");
+    assert!(text.contains("share a namespace"), "{text}");
 }
 
 #[test]

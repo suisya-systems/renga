@@ -527,6 +527,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
             tab,
             min_pane_width,
             min_pane_height,
+            namespace,
         } => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if command_tx
@@ -541,6 +542,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
                     tab,
                     min_pane_width,
                     min_pane_height,
+                    namespace,
                     reply: reply_tx,
                 })
                 .is_err()
@@ -562,6 +564,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
             role,
             cwd,
             from_pane,
+            namespace,
         } => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if command_tx
@@ -572,6 +575,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
                     role,
                     cwd,
                     from_pane,
+                    namespace,
                     reply: reply_tx,
                 })
                 .is_err()
@@ -769,6 +773,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
             name,
             role,
             from_pane,
+            namespace,
         } => {
             let (reply_tx, reply_rx) = oneshot::channel();
             if command_tx
@@ -777,6 +782,7 @@ fn dispatch_request(req: Request, command_tx: &Sender<AppCommand>) -> Response {
                     name,
                     role,
                     from_pane,
+                    namespace,
                     reply: reply_tx,
                 })
                 .is_err()
@@ -979,6 +985,7 @@ mod tests {
                 tab: None,
                 min_pane_width: None,
                 min_pane_height: None,
+                namespace: None,
             },
             &tx,
         );
@@ -1183,6 +1190,7 @@ mod tests {
                 tab: None,
                 min_pane_width: None,
                 min_pane_height: None,
+                namespace: None,
             },
             &tx,
         );
@@ -1211,6 +1219,7 @@ mod tests {
                 tab: Some(super::super::TabSelector::Name("workers".into())),
                 min_pane_width: None,
                 min_pane_height: None,
+                namespace: None,
             },
             &tx,
         );
@@ -1230,6 +1239,7 @@ mod tests {
                 cwd,
                 from_pane,
                 reply,
+                namespace: None,
             }) = rx.recv()
             {
                 assert_eq!(command.as_deref(), Some("claude"));
@@ -1249,6 +1259,7 @@ mod tests {
                 role: Some("worker".into()),
                 cwd: Some("/tmp/work".into()),
                 from_pane: Some(2),
+                namespace: None,
             },
             &tx,
         );

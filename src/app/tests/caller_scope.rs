@@ -1067,6 +1067,7 @@ fn set_identity_through_the_app_command_boundary_is_caller_scoped() {
         role: None,
         from_pane: Some(caller),
         reply: reply_tx,
+        namespace: None,
     });
     let info = reply_rx.recv().expect("identity reply").expect("ok");
 

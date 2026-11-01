@@ -153,8 +153,8 @@ pub enum IpcCommand {
         id: Option<usize>,
     },
     /// Open a new tab with a fresh single pane. Focus switches to the
-    /// new tab. Optionally pre-assigns a stable pane name and tab
-    /// label.
+    /// new tab unless `--background` is given. Optionally pre-assigns a
+    /// stable pane name and tab label.
     NewTab {
         /// Command to run in the new pane.
         #[arg(long)]
@@ -173,6 +173,14 @@ pub enum IpcCommand {
         /// absolute path to the renga server.
         #[arg(long)]
         cwd: Option<String>,
+        /// Create the tab in the background: the visible tab does not
+        /// change. Prints the new pane id and tab index.
+        #[arg(long)]
+        background: bool,
+        /// Namespace the new pane joins (see `renga rename
+        /// --to-namespace`). Requires `--background`.
+        #[arg(long, requires = "background")]
+        namespace: Option<String>,
     },
     /// Split a pane and optionally run a command in the new side.
     Split {
@@ -212,6 +220,15 @@ pub enum IpcCommand {
         /// `--min-pane-height`; values below 2 are refused.
         #[arg(long)]
         min_pane_height: Option<u16>,
+        /// Split inside the tab with this label instead of the visible
+        /// tab, without switching to it. `--target-*` then resolves
+        /// inside that tab (default: its focused pane).
+        #[arg(long)]
+        tab: Option<String>,
+        /// Namespace the new pane joins (see `renga rename
+        /// --to-namespace`).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Snapshot the visible screen of a pane. Returns JSON with one
     /// entry per screen row so callers can match against fixed
@@ -291,6 +308,14 @@ pub enum IpcCommand {
         /// Remove the pane's role label.
         #[arg(long, conflicts_with = "to_role")]
         clear_role: bool,
+        /// Join the pane to a namespace: a namespaced pane's name
+        /// lookups that miss its own tab fall back to the namespace's
+        /// panes in other tabs, and panes it spawns inherit it.
+        #[arg(long, conflicts_with = "clear_namespace")]
+        to_namespace: Option<String>,
+        /// Remove the pane from its namespace.
+        #[arg(long, conflicts_with = "to_namespace")]
+        clear_namespace: bool,
     },
     /// Run as a stdio MCP server for Claude Code (see issue #97). Not
     /// a true IPC subcommand — it doesn't dispatch a request and
@@ -427,6 +452,24 @@ impl IpcCommand {
                 label,
                 role,
                 cwd,
+                background: true,
+                namespace,
+            } => Ok(Request::SpawnTab {
+                command: command.clone(),
+                id: id.clone(),
+                label: label.clone(),
+                role: role.clone(),
+                cwd: resolve_cli_cwd(cwd.as_deref())?,
+                from_pane: None,
+                namespace: namespace.clone(),
+            }),
+            IpcCommand::NewTab {
+                command,
+                id,
+                label,
+                role,
+                cwd,
+                ..
             } => Ok(Request::NewTab {
                 command: command.clone(),
                 id: id.clone(),
@@ -471,6 +514,8 @@ impl IpcCommand {
                 cwd,
                 min_pane_width,
                 min_pane_height,
+                tab,
+                namespace,
             } => {
                 let dir = match direction.as_str() {
                     "vertical" => Direction::Vertical,
@@ -485,11 +530,12 @@ impl IpcCommand {
                     role: role.clone(),
                     cwd: resolve_cli_cwd(cwd.as_deref())?,
                     from_pane: None,
-                    // The CLI has no tab-placement flag: `renga split`
-                    // keeps splitting in the visible tab.
-                    tab: None,
+                    // Without `--tab`, `renga split` keeps splitting in
+                    // the visible tab.
+                    tab: tab.clone().map(crate::ipc::TabSelector::Name),
                     min_pane_width: *min_pane_width,
                     min_pane_height: *min_pane_height,
+                    namespace: namespace.clone(),
                 })
             }
             IpcCommand::Rename {
@@ -500,12 +546,26 @@ impl IpcCommand {
                 clear_name,
                 to_role,
                 clear_role,
+                to_namespace,
+                clear_namespace,
             } => {
-                if to_name.is_none() && !clear_name && to_role.is_none() && !clear_role {
+                if to_name.is_none()
+                    && !clear_name
+                    && to_role.is_none()
+                    && !clear_role
+                    && to_namespace.is_none()
+                    && !clear_namespace
+                {
                     anyhow::bail!(
-                        "rename requires at least one of --to-name / --clear-name / --to-role / --clear-role"
+                        "rename requires at least one of --to-name / --clear-name / --to-role / \
+                         --clear-role / --to-namespace / --clear-namespace"
                     );
                 }
+                let namespace_change: Option<Option<String>> = if *clear_namespace {
+                    Some(None)
+                } else {
+                    to_namespace.as_ref().map(|s| Some(s.clone()))
+                };
                 let name_change: Option<Option<String>> = if *clear_name {
                     Some(None)
                 } else {
@@ -522,6 +582,7 @@ impl IpcCommand {
                     role: role_change,
                     // Same reasoning as `Close` (Issue #296).
                     from_pane: None,
+                    namespace: namespace_change,
                 })
             }
             // `renga events` subscribes unscoped: it is a generic tap
@@ -803,6 +864,7 @@ mod tests {
                 label,
                 role,
                 cwd,
+                ..
             }) => {
                 assert_eq!(command.as_deref(), Some("cce"));
                 assert_eq!(id.as_deref(), Some("engineering"));
@@ -1323,5 +1385,78 @@ mod tests {
             }
             other => panic!("expected Events, got {other:?}"),
         }
+    }
+
+    fn ipc_request(args: &[&str]) -> crate::ipc::Request {
+        let cli = Cli::try_parse_from(args).unwrap();
+        cli.command.unwrap().to_request().unwrap()
+    }
+
+    /// Issue #390: `new-tab --background` is the CLI form of the MCP
+    /// `tab: {new: …}` spawn — a `SpawnTab`, never a focus-switching
+    /// `NewTab`.
+    #[test]
+    fn new_tab_background_sends_spawn_tab() {
+        let req = ipc_request(&[
+            "renga",
+            "new-tab",
+            "--background",
+            "--label",
+            "watchers",
+            "--namespace",
+            "org",
+        ]);
+        match req {
+            crate::ipc::Request::SpawnTab {
+                label,
+                from_pane,
+                namespace,
+                ..
+            } => {
+                assert_eq!(label.as_deref(), Some("watchers"));
+                assert_eq!(from_pane, None);
+                assert_eq!(namespace.as_deref(), Some("org"));
+            }
+            other => panic!("expected SpawnTab, got {other:?}"),
+        }
+        assert!(matches!(
+            ipc_request(&["renga", "new-tab"]),
+            crate::ipc::Request::NewTab { .. }
+        ));
+        // A namespace without --background has nowhere to go.
+        assert!(Cli::try_parse_from(["renga", "new-tab", "--namespace", "org"]).is_err());
+    }
+
+    #[test]
+    fn split_tab_selects_a_tab_by_label() {
+        let req = ipc_request(&[
+            "renga",
+            "split",
+            "--direction",
+            "vertical",
+            "--tab",
+            "watchers",
+        ]);
+        match req {
+            crate::ipc::Request::Split { tab, namespace, .. } => {
+                assert_eq!(tab, Some(crate::ipc::TabSelector::Name("watchers".into())));
+                assert_eq!(namespace, None);
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_namespace_flags_map_to_the_three_states() {
+        let ns = |args: &[&str]| match ipc_request(args) {
+            crate::ipc::Request::SetPaneIdentity { namespace, .. } => namespace,
+            other => panic!("expected SetPaneIdentity, got {other:?}"),
+        };
+        assert_eq!(
+            ns(&["renga", "rename", "--to-namespace", "org"]),
+            Some(Some("org".into()))
+        );
+        assert_eq!(ns(&["renga", "rename", "--clear-namespace"]), Some(None));
+        assert_eq!(ns(&["renga", "rename", "--to-role", "x"]), None);
     }
 }

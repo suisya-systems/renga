@@ -837,19 +837,29 @@ impl App {
         }
     }
 
-    /// Resolve `target` for a caller sitting in workspace `ws_idx`.
+    /// Resolve `target` for caller pane `caller`, sitting in workspace
+    /// `ws_idx`.
     ///
     /// - `Focused` / `Name` stay inside `ws_idx`. Both are *relative*
     ///   addresses — "the focused pane", "the pane called worker" — and
     ///   a relative address that silently crosses into another tab is
     ///   the #288 bug in miniature. `Name` in particular is only unique
     ///   per tab, so a global search would be ambiguous by design.
+    /// - Exception (Issue #390): when a `Name` misses the caller's own
+    ///   tab **and** the caller pane belongs to a namespace, the name
+    ///   is looked up among that namespace's panes in the other tabs.
+    ///   The own tab still wins, and a caller without a namespace never
+    ///   leaves its tab, so pre-#390 behavior is unchanged for it.
+    ///   Name assignment keeps a name unique across a namespace's tabs
+    ///   (see [`Self::check_namespace_name_free`]); should two matches
+    ///   exist anyway, the lookup refuses rather than pick one.
     /// - `Id` searches every workspace. Numeric ids are globally unique
     ///   and unambiguous, so naming one is an explicit cross-tab
     ///   request — the same escape hatch [`Self::handle_close`] has
     ///   offered since it moved to `resolve_pane_across_workspaces`.
     pub(crate) fn resolve_target_from(
         &self,
+        caller: usize,
         ws_idx: usize,
         target: &PaneRef,
     ) -> Option<(usize, usize)> {
@@ -862,8 +872,81 @@ impl App {
                 .map(|(i, _)| (i, *id)),
             PaneRef::Focused | PaneRef::Name(_) => {
                 let ws = self.workspaces.get(ws_idx)?;
-                ws.resolve_pane_ref(target).map(|id| (ws_idx, id))
+                if let Some(id) = ws.resolve_pane_ref(target) {
+                    return Some((ws_idx, id));
+                }
+                let PaneRef::Name(name) = target else {
+                    return None;
+                };
+                let ns = ws.panes.get(&caller)?.namespace.as_deref()?;
+                match self.namespace_name_holders(ns, name, ws_idx).as_slice() {
+                    [only] => Some(*only),
+                    _ => None,
+                }
             }
+        }
+    }
+
+    /// Live panes named `name` in namespace `ns`, outside tab
+    /// `skip_ws` (Issue #390).
+    fn namespace_name_holders(&self, ns: &str, name: &str, skip_ws: usize) -> Vec<(usize, usize)> {
+        self.workspaces
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != skip_ws)
+            .filter_map(|(i, ws)| {
+                let id = *ws.pane_names.get(name)?;
+                let pane = ws.panes.get(&id)?;
+                (pane.namespace.as_deref() == Some(ns)).then_some((i, id))
+            })
+            .collect()
+    }
+
+    /// Refuse with `name_in_use` when a pane in tab `ws_idx` about to
+    /// carry `name` in namespace `ns` would collide with a namespace
+    /// member in another tab (Issue #390). Same-tab collisions are not
+    /// judged here; they keep their pre-#390 rules.
+    pub(crate) fn check_namespace_name_free(
+        &self,
+        ws_idx: usize,
+        ns: Option<&str>,
+        name: Option<&str>,
+    ) -> std::result::Result<(), ipc::CodedError> {
+        let (Some(ns), Some(name)) = (ns, name) else {
+            return Ok(());
+        };
+        match self.namespace_name_holders(ns, name, ws_idx).first() {
+            None => Ok(()),
+            Some((tab, holder)) => Err(ipc::CodedError::new(
+                ipc::err_code::NAME_IN_USE,
+                format!(
+                    "name {name:?} is already held by pane {holder} in tab {tab}, \
+                     which shares namespace {ns:?}"
+                ),
+            )),
+        }
+    }
+
+    /// The namespace a newly spawned pane joins (Issue #390):
+    /// `Some("")` opts out, `Some(x)` joins `x` (validated like a pane
+    /// name), `None` inherits the caller pane's namespace — and there
+    /// is nothing to inherit without a caller.
+    pub(crate) fn spawn_namespace(
+        &self,
+        explicit: Option<String>,
+        from_pane: Option<usize>,
+    ) -> std::result::Result<Option<String>, ipc::CodedError> {
+        match explicit {
+            Some(raw) if raw.trim().is_empty() => Ok(None),
+            Some(raw) => Ok(Some(
+                super::ipc_handlers::validate_pane_name(&raw)?.to_string(),
+            )),
+            None => Ok(from_pane.and_then(|id| {
+                self.workspaces
+                    .iter()
+                    .find_map(|ws| ws.panes.get(&id))
+                    .and_then(|p| p.namespace.clone())
+            })),
         }
     }
 
@@ -896,8 +979,8 @@ impl App {
                 .resolve_pane_ref(target)
                 .map(|id| (ws_idx, id))
                 .ok_or_else(not_found),
-            Some(_) => self
-                .resolve_target_from(ws_idx, target)
+            Some(caller) => self
+                .resolve_target_from(caller, ws_idx, target)
                 .ok_or_else(not_found),
         }
     }
@@ -938,9 +1021,9 @@ impl App {
             // Caller first, and its failure is fatal even for an `Id`
             // target — same ordering rationale as
             // `resolve_request_target`.
-            Some(_) => {
+            Some(caller) => {
                 let ws_idx = self.resolve_caller_workspace(from_pane)?;
-                self.resolve_target_from(ws_idx, target)
+                self.resolve_target_from(caller, ws_idx, target)
                     .ok_or_else(not_found)
             }
         }

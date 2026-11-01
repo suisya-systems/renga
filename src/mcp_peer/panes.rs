@@ -521,6 +521,9 @@ pub(super) fn format_pane_list(panes: &[PaneInfo], scope: &ListScope) -> String 
         if let Some(role) = &p.role {
             out.push_str(&format!(" role={}", ipc::sanitized_label(role)));
         }
+        if let Some(ns) = &p.namespace {
+            out.push_str(&format!(" namespace={}", ipc::sanitized_label(ns)));
+        }
         if p.focused {
             out.push_str(" (focused)");
         }
@@ -691,6 +694,7 @@ pub(super) fn handle_spawn_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Valu
                 role,
                 cwd,
                 from_pane: Some(caller_pane),
+                namespace: None,
             },
             None,
         );
@@ -714,6 +718,7 @@ pub(super) fn handle_spawn_pane(id: &Value, args: &Value, ctx: &PeerCtx) -> Valu
             tab,
             min_pane_width: min_pane_size.0,
             min_pane_height: min_pane_size.1,
+            namespace: None,
         },
         required_cap,
     ) {
@@ -900,7 +905,11 @@ pub(super) fn handle_set_pane_identity(id: &Value, args: &Value, ctx: &PeerCtx) 
         Ok(v) => v,
         Err(msg) => return err_response(id, -32602, &msg),
     };
-    if name.is_none() && role.is_none() {
+    let namespace = match parse_identity_field(args, "namespace") {
+        Ok(v) => v,
+        Err(msg) => return err_response(id, -32602, &msg),
+    };
+    if name.is_none() && role.is_none() && namespace.is_none() {
         // Nothing to do — return an explicit error so Claude doesn't
         // silently succeed on a typo'd payload (`nmae` instead of
         // `name`, etc.). The server would otherwise treat it as a
@@ -908,7 +917,7 @@ pub(super) fn handle_set_pane_identity(id: &Value, args: &Value, ctx: &PeerCtx) 
         return err_response(
             id,
             -32602,
-            "set_pane_identity requires at least one of `name` / `role`",
+            "set_pane_identity requires at least one of `name` / `role` / `namespace`",
         );
     }
 
@@ -916,7 +925,15 @@ pub(super) fn handle_set_pane_identity(id: &Value, args: &Value, ctx: &PeerCtx) 
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    // Issue #296 — see `handle_close_pane` for why this is gated.
+    // Issue #296 — see `handle_close_pane` for why this is gated. A
+    // namespace change needs the newer #390 token instead: an older
+    // server would drop the field and answer Ok. The token list is
+    // append-only, so it implies the #296 one.
+    let cap = if namespace.is_some() {
+        crate::ipc::CAP_PANE_NAMESPACE
+    } else {
+        crate::ipc::CAP_CALLER_SCOPE_CLOSE_IDENTITY
+    };
     match client::send_request_requiring(
         endpoint,
         &Request::SetPaneIdentity {
@@ -924,8 +941,9 @@ pub(super) fn handle_set_pane_identity(id: &Value, args: &Value, ctx: &PeerCtx) 
             name,
             role,
             from_pane: Some(caller_pane),
+            namespace,
         },
-        crate::ipc::CAP_CALLER_SCOPE_CLOSE_IDENTITY,
+        cap,
     ) {
         Ok(Response::Ok { data }) => {
             // Surface the updated pane record as a human-readable
@@ -947,6 +965,9 @@ pub(super) fn handle_set_pane_identity(id: &Value, args: &Value, ctx: &PeerCtx) 
             }
             parts.push(format!("name={}", pane_name.as_deref().unwrap_or("(none)")));
             parts.push(format!("role={}", pane_role.as_deref().unwrap_or("(none)")));
+            if let Some(ns) = pane.get("namespace").and_then(|v| v.as_str()) {
+                parts.push(format!("namespace={ns}"));
+            }
             let msg = format!("Updated pane: {}.", parts.join(" "));
             ok_response(id, tool_text_result(&msg))
         }
