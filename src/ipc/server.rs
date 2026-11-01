@@ -207,7 +207,7 @@ fn accept_loop(
                 if stop.load(Ordering::Acquire) {
                     return;
                 }
-                eprintln!("renga IPC: accept failed on {endpoint_for_log}: {e}");
+                log_ipc(&format!("accept failed on {endpoint_for_log}: {e}"));
                 continue;
             }
         };
@@ -219,7 +219,9 @@ fn accept_loop(
             .name("renga-ipc-worker".into())
             .spawn(move || {
                 if let Err(e) = handle_connection(conn, tx, &token, bus, heartbeat_interval) {
-                    eprintln!("renga IPC: connection error: {e}");
+                    if !is_disconnect(&e) {
+                        log_ipc(&format!("connection error: {e}"));
+                    }
                 }
             })
         {
@@ -228,8 +230,33 @@ fn accept_loop(
             // client sees EOF and can retry. We deliberately don't fall
             // back to inline handling because that would block the
             // accept loop behind a slow request.
-            eprintln!("renga IPC: worker spawn failed, dropping connection: {e}");
+            log_ipc(&format!("worker spawn failed, dropping connection: {e}"));
         }
+    }
+}
+
+/// A client that vanishes before the reply is written (e.g. a pane
+/// closing itself via `renga close`) is a normal disconnect, not an error.
+fn is_disconnect(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            )
+        })
+    })
+}
+
+/// The TUI owns the terminal (raw mode + alternate screen), so anything
+/// written to stderr lands on top of a pane. Append to a log file instead.
+fn log_ipc(msg: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("renga-ipc.log"))
+    {
+        let _ = writeln!(f, "renga IPC: {msg}");
     }
 }
 
@@ -825,6 +852,17 @@ mod tests {
     use super::*;
     use crate::ipc::{Direction, PaneRef, PeerDelivery, Request};
     use std::sync::mpsc;
+
+    #[test]
+    fn broken_pipe_is_a_normal_disconnect() {
+        let bp = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            .context("write response");
+        let rst = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        let other = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        assert!(is_disconnect(&bp));
+        assert!(is_disconnect(&rst));
+        assert!(!is_disconnect(&other));
+    }
 
     #[test]
     fn dispatch_list_ok_when_app_replies() {
