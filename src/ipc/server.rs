@@ -251,10 +251,23 @@ fn is_disconnect(e: &anyhow::Error) -> bool {
 /// The TUI owns the terminal (raw mode + alternate screen), so anything
 /// written to stderr lands on top of a pane. Append to a log file instead.
 fn log_ipc(msg: &str) {
+    // Reuse the endpoint's owner-only (0o700) directory on Unix so the log
+    // is per-user; on Windows temp_dir() is already per-user.
+    #[cfg(unix)]
+    let dir = super::endpoint::endpoint_for_pid(std::process::id())
+        .ok()
+        .and_then(|e| {
+            std::path::Path::new(e.as_str())
+                .parent()
+                .map(|p| p.to_path_buf())
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    #[cfg(not(unix))]
+    let dir = std::env::temp_dir();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(std::env::temp_dir().join("renga-ipc.log"))
+        .open(dir.join("renga-ipc.log"))
     {
         let _ = writeln!(f, "renga IPC: {msg}");
     }
