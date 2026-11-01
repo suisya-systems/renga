@@ -867,6 +867,110 @@ impl App {
         }
     }
 
+    /// [`Self::resolve_target_from`] for **peer messaging** only
+    /// (`send_message`, both deliveries). Issue #390: when a `Name`
+    /// misses the sender's own tab **and** the sender pane belongs to
+    /// a namespace, the name is looked up among that namespace's panes
+    /// in the other tabs. The own tab still wins, and a sender without
+    /// a namespace never leaves its tab, so pre-#390 behavior is
+    /// unchanged for it. Name assignment keeps a name unique across a
+    /// namespace's tabs (see [`Self::check_namespace_name_free`]);
+    /// should two matches exist anyway, the lookup refuses rather than
+    /// pick one.
+    ///
+    /// Deliberately not used by the pane-control requests (close,
+    /// focus, send_keys, inspect, identity, spawn targets): those keep
+    /// the strict #288 rule that a relative address never leaves the
+    /// caller's tab, so a destructive call cannot reach a namespace
+    /// member elsewhere by name.
+    pub(crate) fn resolve_peer_target(
+        &self,
+        sender: usize,
+        ws_idx: usize,
+        target: &PaneRef,
+    ) -> Option<(usize, usize)> {
+        if let Some(hit) = self.resolve_target_from(ws_idx, target) {
+            return Some(hit);
+        }
+        let PaneRef::Name(name) = target else {
+            return None;
+        };
+        let ns = self
+            .workspaces
+            .get(ws_idx)?
+            .panes
+            .get(&sender)?
+            .namespace
+            .as_deref()?;
+        match self.namespace_name_holders(ns, name, ws_idx).as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
+
+    /// Live panes named `name` in namespace `ns`, outside tab
+    /// `skip_ws` (Issue #390).
+    fn namespace_name_holders(&self, ns: &str, name: &str, skip_ws: usize) -> Vec<(usize, usize)> {
+        self.workspaces
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != skip_ws)
+            .filter_map(|(i, ws)| {
+                let id = *ws.pane_names.get(name)?;
+                let pane = ws.panes.get(&id)?;
+                (pane.namespace.as_deref() == Some(ns)).then_some((i, id))
+            })
+            .collect()
+    }
+
+    /// Refuse with `name_in_use` when a pane in tab `ws_idx` about to
+    /// carry `name` in namespace `ns` would collide with a namespace
+    /// member in another tab (Issue #390). Same-tab collisions are not
+    /// judged here; they keep their pre-#390 rules.
+    pub(crate) fn check_namespace_name_free(
+        &self,
+        ws_idx: usize,
+        ns: Option<&str>,
+        name: Option<&str>,
+    ) -> std::result::Result<(), ipc::CodedError> {
+        let (Some(ns), Some(name)) = (ns, name) else {
+            return Ok(());
+        };
+        match self.namespace_name_holders(ns, name, ws_idx).first() {
+            None => Ok(()),
+            Some((tab, holder)) => Err(ipc::CodedError::new(
+                ipc::err_code::NAME_IN_USE,
+                format!(
+                    "name {name:?} is already held by pane {holder} in tab {tab}, \
+                     which shares namespace {ns:?}"
+                ),
+            )),
+        }
+    }
+
+    /// The namespace a newly spawned pane joins (Issue #390):
+    /// `Some("")` opts out, `Some(x)` joins `x` (validated like a pane
+    /// name), `None` inherits the caller pane's namespace — and there
+    /// is nothing to inherit without a caller.
+    pub(crate) fn spawn_namespace(
+        &self,
+        explicit: Option<String>,
+        from_pane: Option<usize>,
+    ) -> std::result::Result<Option<String>, ipc::CodedError> {
+        match explicit {
+            Some(raw) if raw.trim().is_empty() => Ok(None),
+            Some(raw) => Ok(Some(
+                super::ipc_handlers::validate_pane_name(&raw)?.to_string(),
+            )),
+            None => Ok(from_pane.and_then(|id| {
+                self.workspaces
+                    .iter()
+                    .find_map(|ws| ws.panes.get(&id))
+                    .and_then(|p| p.namespace.clone())
+            })),
+        }
+    }
+
     /// The one entry point every pane-targeting IPC handler uses, so
     /// the caller-scope rules cannot drift apart between `send_keys`,
     /// `inspect_pane`, `focus_pane` and the three `spawn_*` tools.

@@ -4,6 +4,7 @@ mod codex_peer;
 mod cross_tab_list;
 mod ipc_state;
 mod layout_tree;
+mod namespace;
 mod org_sidebar;
 mod overlay;
 mod pointer_input;

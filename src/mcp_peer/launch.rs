@@ -375,6 +375,7 @@ pub(super) fn handle_spawn_claude_pane(id: &Value, args: &Value, ctx: &PeerCtx) 
                 role,
                 cwd,
                 from_pane: Some(caller_pane),
+                namespace: None,
             },
             Some(&command),
         );
@@ -398,6 +399,7 @@ pub(super) fn handle_spawn_claude_pane(id: &Value, args: &Value, ctx: &PeerCtx) 
             tab,
             min_pane_width: min_pane_size.0,
             min_pane_height: min_pane_size.1,
+            namespace: None,
         },
         required_cap,
     ) {
@@ -509,6 +511,7 @@ pub(super) fn handle_spawn_codex_pane_with(
                 role,
                 cwd,
                 from_pane: Some(caller_pane),
+                namespace: None,
             },
             Some(&command),
         );
@@ -532,6 +535,7 @@ pub(super) fn handle_spawn_codex_pane_with(
             tab,
             min_pane_width: min_pane_size.0,
             min_pane_height: min_pane_size.1,
+            namespace: None,
         },
         required_cap,
     ) {
