@@ -285,7 +285,7 @@ impl App {
                 )
             })?;
         let (target_ws, target_id) = self
-            .resolve_target_from(from_pane, sender_ws, target)
+            .resolve_peer_target(from_pane, sender_ws, target)
             .ok_or_else(|| {
                 ipc::CodedError::new(
                     ipc::err_code::PANE_NOT_FOUND,

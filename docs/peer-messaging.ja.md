@@ -92,7 +92,7 @@ Claude B の次のターンのコンテキストに `<channel source="renga-peer
 
 > **ネームスペース (Issue #390)。** ペインはタブより広い名前スコープである**ネームスペース**に任意で参加できます。これにより、オーケストレーターは補助ペイン (CI ウォッチャー、アプリサーバー、ワーカー) をバックグラウンドタブに置いたまま、そこから `secretary` を名前で呼べるようになります。規則:
 > - **参加。** `set_pane_identity(target=<自分の id>, name="secretary", namespace="org")` (CLI: `renga rename --to-namespace org`、抜けるときは `--clear-namespace`)。ネームスペースに属するペインが `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` (`tab: {"new": …}` を含む) で作ったペインは、そのネームスペースを**引き継ぎます**。CLI では `renga split` と `renga new-tab --background` に `--namespace` を明示します。MCP の `new_tab` は引き継ぎません。
-> - **解決。** 名前は**これまでどおりまず自分のタブ内**で探します。見つからず、かつ自分のペインがネームスペースに属しているときに限り、他のタブにある**同じネームスペース**のペインから探します。この探索は相対ターゲットを取るすべてのツール (`send_message`、`send_keys`、`inspect_pane`、`focus_pane`、`close_pane`、`set_pane_identity`、`spawn_*` の `target`) に適用されます。そのため、自分のタブに同名のペインがあれば、ネームスペースの有無に関わらずそちらが優先されます。
+> - **解決。** 名前は**これまでどおりまず自分のタブ内**で探します。見つからず、かつ自分のペインがネームスペースに属しているときに限り、他のタブにある**同じネームスペース**のペインから探します。この探索は **peer メッセージングだけ** (`send_message` の `channel` / `user_turn` 両配送) に適用されます。ペイン操作ツール (`send_keys`、`inspect_pane`、`focus_pane`、`close_pane`、`set_pane_identity`、`spawn_*` の `target`) は従来どおり自分のタブ内で名前を解決するため、破壊的な操作が名前経由で別タブのネームスペースメンバーに届くことはありません (その場合は数値 id を使います)。自分のタブに同名のペインがあれば、ネームスペースの有無に関わらずそちらが優先されます。
 > - **衝突。** ネームスペース内では名前はタブをまたいで一意です。別タブにある同じネームスペースのペインがすでにその名前を持っているとき、spawn・名前変更・参加は `name_in_use` で拒否されます。異なるネームスペースどうしは衝突せず、タブ内の一意性も従来どおりです。
 > - **ネームスペースなしなら従来どおり。** ネームスペースに属さないペインは自分のタブ内でしか名前を解決せず、他のタブから名前で呼ばれることもありません。
 > - `list_panes` / `list_peers` は各ペインの `namespace=…` を表示します。使える文字は名前と同じ (`[A-Za-z0-9_-]`) です。`namespace` を送るには `pane_namespace` capability が必要で、古い renga プロセスに対しては `[server_too_old]` で安全側に失敗します。

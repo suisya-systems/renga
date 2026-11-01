@@ -308,9 +308,10 @@ pub enum IpcCommand {
         /// Remove the pane's role label.
         #[arg(long, conflicts_with = "to_role")]
         clear_role: bool,
-        /// Join the pane to a namespace: a namespaced pane's name
-        /// lookups that miss its own tab fall back to the namespace's
-        /// panes in other tabs, and panes it spawns inherit it.
+        /// Join the pane to a namespace: a namespaced pane's peer
+        /// messages to a name its own tab lacks fall back to the
+        /// namespace's panes in other tabs, and panes it spawns via
+        /// the MCP spawn tools inherit it.
         #[arg(long, conflicts_with = "clear_namespace")]
         to_namespace: Option<String>,
         /// Remove the pane from its namespace.

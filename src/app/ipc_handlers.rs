@@ -407,24 +407,6 @@ impl App {
             Some(None) => Some(None),
             Some(Some(raw)) => Some(self.spawn_namespace(Some(raw), None)?),
         };
-        {
-            let ws = &self.workspaces[ws_idx];
-            let current_name = ws
-                .pane_names
-                .iter()
-                .find(|(_, &id)| id == pane_id)
-                .map(|(n, _)| n.clone());
-            let next_name = match &name {
-                None => current_name,
-                Some(n) => n.as_deref().map(|n| n.trim().to_string()),
-            };
-            let next_ns = match &namespace {
-                None => ws.panes.get(&pane_id).and_then(|p| p.namespace.clone()),
-                Some(ns) => ns.clone(),
-            };
-            self.check_namespace_name_free(ws_idx, next_ns.as_deref(), next_name.as_deref())?;
-        }
-
         if let Some(Some(new_name)) = &name {
             let trimmed = validate_pane_name(new_name)?;
             let ws = &self.workspaces[ws_idx];
@@ -442,6 +424,25 @@ impl App {
         // a half-applied identity change behind.
         if let Some(Some(new_role)) = &role {
             validate_display_label(new_role, "role")?;
+        }
+        // Issue #390: judged last among the checks (so pre-#390 error
+        // precedence is unchanged) and still before any mutation.
+        {
+            let ws = &self.workspaces[ws_idx];
+            let current_name = ws
+                .pane_names
+                .iter()
+                .find(|(_, &id)| id == pane_id)
+                .map(|(n, _)| n.clone());
+            let next_name = match &name {
+                None => current_name,
+                Some(n) => n.as_deref().map(|n| n.trim().to_string()),
+            };
+            let next_ns = match &namespace {
+                None => ws.panes.get(&pane_id).and_then(|p| p.namespace.clone()),
+                Some(ns) => ns.clone(),
+            };
+            self.check_namespace_name_free(ws_idx, next_ns.as_deref(), next_name.as_deref())?;
         }
 
         let ws = &mut self.workspaces[ws_idx];

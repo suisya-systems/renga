@@ -1128,7 +1128,7 @@ impl App {
             )));
             return;
         };
-        let Some((target_ws, target_id)) = self.resolve_target_from(from_pane, sender_ws, target)
+        let Some((target_ws, target_id)) = self.resolve_peer_target(from_pane, sender_ws, target)
         else {
             answer(Err(ipc::CodedError::new(
                 ipc::err_code::PANE_NOT_FOUND,

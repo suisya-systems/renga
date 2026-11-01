@@ -42,6 +42,12 @@ fn spawn_bg(
     )
 }
 
+/// What `send_message` resolves for `sender` (Issue #390 fallback).
+fn peer(app: &App, sender: usize, target: &ipc::PaneRef) -> Result<(usize, usize), ()> {
+    let ws = app.workspace_index_of_pane(sender).ok_or(())?;
+    app.resolve_peer_target(sender, ws, target).ok_or(())
+}
+
 fn pane_ns(app: &App, id: usize) -> Option<String> {
     app.workspaces
         .iter()
@@ -57,16 +63,20 @@ fn background_pane_spawned_by_a_namespaced_caller_reaches_it_by_name() {
     assert_eq!(pane_ns(&app, watcher).as_deref(), Some("org"), "inherited");
 
     let target = ipc::PaneRef::Name("secretary".into());
-    assert_eq!(
-        app.resolve_request_target(Some(watcher), &target).unwrap(),
-        (0, secretary)
-    );
+    assert_eq!(peer(&app, watcher, &target).unwrap(), (0, secretary));
     app.handle_peer_send(watcher, &target, "hello".into())
         .expect("send by name across tabs");
+    // Pane-control tools keep the strict #288 rule: a name never leaves
+    // the caller's tab, namespace or not.
+    let err = app
+        .resolve_request_target(Some(watcher), &target)
+        .unwrap_err();
+    assert_eq!(err.code, Some(ipc::err_code::PANE_NOT_FOUND));
+    let err = app.handle_close(&target, Some(watcher)).unwrap_err();
+    assert_eq!(err.code, Some(ipc::err_code::PANE_NOT_FOUND));
     // And the other way round.
     assert_eq!(
-        app.resolve_request_target(Some(secretary), &ipc::PaneRef::Name("ci-watch".into()))
-            .unwrap(),
+        peer(&app, secretary, &ipc::PaneRef::Name("ci-watch".into())).unwrap(),
         (ws, watcher)
     );
     app.shutdown();
@@ -84,12 +94,10 @@ fn panes_without_a_namespace_keep_per_tab_names() {
     // An opted-out spawn from the secretary is plain too.
     let (plain, _) = spawn_bg(&mut app, "plain", Some(secretary), Some("")).expect("spawn");
     assert_eq!(pane_ns(&app, plain), None);
-    assert!(app.resolve_request_target(Some(plain), &target).is_err());
+    assert!(peer(&app, plain, &target).is_err());
     // And a namespaced caller cannot reach an un-namespaced pane in
     // another tab by name.
-    assert!(app
-        .resolve_request_target(Some(secretary), &ipc::PaneRef::Name("plain".into()))
-        .is_err());
+    assert!(peer(&app, secretary, &ipc::PaneRef::Name("plain".into())).is_err());
     app.shutdown();
 }
 
@@ -97,9 +105,7 @@ fn panes_without_a_namespace_keep_per_tab_names() {
 fn another_namespace_does_not_resolve() {
     let (mut app, _secretary, _human) = org_with_secretary();
     let (other, _) = spawn_bg(&mut app, "w", None, Some("other-org")).expect("spawn");
-    assert!(app
-        .resolve_request_target(Some(other), &ipc::PaneRef::Name("secretary".into()))
-        .is_err());
+    assert!(peer(&app, other, &ipc::PaneRef::Name("secretary".into())).is_err());
     // The same name in another namespace is not a collision.
     spawn_bg(&mut app, "secretary", None, Some("other-org")).expect("same name, other ns");
     app.shutdown();
@@ -134,8 +140,7 @@ fn own_tab_name_wins_over_the_namespace() {
         .expect("split into tab 1");
     assert_eq!(pane_ns(&app, split).as_deref(), Some("org"));
     assert_eq!(
-        app.resolve_request_target(Some(split), &ipc::PaneRef::Name("secretary".into()))
-            .unwrap(),
+        peer(&app, split, &ipc::PaneRef::Name("secretary".into())).unwrap(),
         (1, human)
     );
     app.shutdown();
@@ -226,7 +231,7 @@ fn cli_can_build_a_labelled_background_tab_without_switching() {
     assert!(app.workspaces[ws].panes.contains_key(&first));
     assert!(app.workspaces[ws].panes.contains_key(&second));
     assert_eq!(
-        app.resolve_request_target(Some(second), &ipc::PaneRef::Name("secretary".into()))
+        peer(&app, second, &ipc::PaneRef::Name("secretary".into()))
             .unwrap()
             .1,
         secretary

@@ -277,8 +277,8 @@ pub const CAP_SPLIT_MIN_PANE_SIZE: &str = "split_min_pane_size";
 /// namespaces (Issue #390): the `namespace` field on
 /// [`Request::Split`], [`Request::SpawnTab`] and
 /// [`Request::SetPaneIdentity`], the `namespace` field on
-/// [`PaneInfo`] / [`PeerInfo`], and caller-scoped name resolution that
-/// falls back to the caller's namespace across tabs.
+/// [`PaneInfo`] / [`PeerInfo`], and peer-message name resolution that
+/// falls back to the sender's namespace across tabs.
 ///
 /// An older server drops the unknown `namespace` field and answers
 /// `Ok`, so a client sending it must gate on this token. Inheritance
@@ -1094,8 +1094,8 @@ pub struct PeerInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread: Option<usize>,
     /// Namespace the pane belongs to (Issue #390). Within a namespace,
-    /// a caller's name lookup that misses its own tab falls back to the
-    /// namespace's panes in other tabs. Absent for panes outside any
+    /// a peer message to a name the sender's tab lacks falls back to
+    /// the namespace's panes in other tabs. Absent for panes outside any
     /// namespace and from servers that predate #390.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
@@ -1180,8 +1180,8 @@ pub struct PaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_delivery: Option<PeerDeliveryStatus>,
     /// Namespace the pane belongs to (Issue #390). Within a namespace,
-    /// a caller's name lookup that misses its own tab falls back to the
-    /// namespace's panes in other tabs. Absent for panes outside any
+    /// a peer message to a name the sender's tab lacks falls back to
+    /// the namespace's panes in other tabs. Absent for panes outside any
     /// namespace and from servers that predate #390.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,

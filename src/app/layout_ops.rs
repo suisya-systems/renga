@@ -837,29 +837,19 @@ impl App {
         }
     }
 
-    /// Resolve `target` for caller pane `caller`, sitting in workspace
-    /// `ws_idx`.
+    /// Resolve `target` for a caller sitting in workspace `ws_idx`.
     ///
     /// - `Focused` / `Name` stay inside `ws_idx`. Both are *relative*
     ///   addresses — "the focused pane", "the pane called worker" — and
     ///   a relative address that silently crosses into another tab is
     ///   the #288 bug in miniature. `Name` in particular is only unique
     ///   per tab, so a global search would be ambiguous by design.
-    /// - Exception (Issue #390): when a `Name` misses the caller's own
-    ///   tab **and** the caller pane belongs to a namespace, the name
-    ///   is looked up among that namespace's panes in the other tabs.
-    ///   The own tab still wins, and a caller without a namespace never
-    ///   leaves its tab, so pre-#390 behavior is unchanged for it.
-    ///   Name assignment keeps a name unique across a namespace's tabs
-    ///   (see [`Self::check_namespace_name_free`]); should two matches
-    ///   exist anyway, the lookup refuses rather than pick one.
     /// - `Id` searches every workspace. Numeric ids are globally unique
     ///   and unambiguous, so naming one is an explicit cross-tab
     ///   request — the same escape hatch [`Self::handle_close`] has
     ///   offered since it moved to `resolve_pane_across_workspaces`.
     pub(crate) fn resolve_target_from(
         &self,
-        caller: usize,
         ws_idx: usize,
         target: &PaneRef,
     ) -> Option<(usize, usize)> {
@@ -872,18 +862,49 @@ impl App {
                 .map(|(i, _)| (i, *id)),
             PaneRef::Focused | PaneRef::Name(_) => {
                 let ws = self.workspaces.get(ws_idx)?;
-                if let Some(id) = ws.resolve_pane_ref(target) {
-                    return Some((ws_idx, id));
-                }
-                let PaneRef::Name(name) = target else {
-                    return None;
-                };
-                let ns = ws.panes.get(&caller)?.namespace.as_deref()?;
-                match self.namespace_name_holders(ns, name, ws_idx).as_slice() {
-                    [only] => Some(*only),
-                    _ => None,
-                }
+                ws.resolve_pane_ref(target).map(|id| (ws_idx, id))
             }
+        }
+    }
+
+    /// [`Self::resolve_target_from`] for **peer messaging** only
+    /// (`send_message`, both deliveries). Issue #390: when a `Name`
+    /// misses the sender's own tab **and** the sender pane belongs to
+    /// a namespace, the name is looked up among that namespace's panes
+    /// in the other tabs. The own tab still wins, and a sender without
+    /// a namespace never leaves its tab, so pre-#390 behavior is
+    /// unchanged for it. Name assignment keeps a name unique across a
+    /// namespace's tabs (see [`Self::check_namespace_name_free`]);
+    /// should two matches exist anyway, the lookup refuses rather than
+    /// pick one.
+    ///
+    /// Deliberately not used by the pane-control requests (close,
+    /// focus, send_keys, inspect, identity, spawn targets): those keep
+    /// the strict #288 rule that a relative address never leaves the
+    /// caller's tab, so a destructive call cannot reach a namespace
+    /// member elsewhere by name.
+    pub(crate) fn resolve_peer_target(
+        &self,
+        sender: usize,
+        ws_idx: usize,
+        target: &PaneRef,
+    ) -> Option<(usize, usize)> {
+        if let Some(hit) = self.resolve_target_from(ws_idx, target) {
+            return Some(hit);
+        }
+        let PaneRef::Name(name) = target else {
+            return None;
+        };
+        let ns = self
+            .workspaces
+            .get(ws_idx)?
+            .panes
+            .get(&sender)?
+            .namespace
+            .as_deref()?;
+        match self.namespace_name_holders(ns, name, ws_idx).as_slice() {
+            [only] => Some(*only),
+            _ => None,
         }
     }
 
@@ -979,8 +1000,8 @@ impl App {
                 .resolve_pane_ref(target)
                 .map(|id| (ws_idx, id))
                 .ok_or_else(not_found),
-            Some(caller) => self
-                .resolve_target_from(caller, ws_idx, target)
+            Some(_) => self
+                .resolve_target_from(ws_idx, target)
                 .ok_or_else(not_found),
         }
     }
@@ -1021,9 +1042,9 @@ impl App {
             // Caller first, and its failure is fatal even for an `Id`
             // target — same ordering rationale as
             // `resolve_request_target`.
-            Some(caller) => {
+            Some(_) => {
                 let ws_idx = self.resolve_caller_workspace(from_pane)?;
-                self.resolve_target_from(caller, ws_idx, target)
+                self.resolve_target_from(ws_idx, target)
                     .ok_or_else(not_found)
             }
         }
