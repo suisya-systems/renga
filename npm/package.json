@@ -36,7 +36,7 @@
   "bugs": {
     "url": "https://github.com/suisya-systems/renga/issues"
   },
-  "homepage": "https://suisya-systems.github.io/renga/",
+  "homepage": "https://github.com/suisya-systems/renga#readme",
   "os": [
     "win32",
     "darwin",

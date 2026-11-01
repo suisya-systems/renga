@@ -65,7 +65,7 @@ Key points:
 ## Intentional `ccmux` References (post-rename)
 Issue #102 renamed the project from `ccmux` to `renga`. The following residual references to `ccmux` are intentional and should NOT be swept:
 
-- **Upstream attribution** — the project is a fork of upstream `Shin-sibainu/ccmux`. Mentions of upstream by its name in `BRANCHING.md`, `README*`, `lp/*.html`, and `docs/content/` are preserved.
+- **Upstream attribution** — the project is a fork of upstream `Shin-sibainu/ccmux`. Mentions of upstream by its name in `BRANCHING.md` and `README*` are preserved.
 - **Version-history comments in `Cargo.toml`** — pre-rename release notes describe past versions accurately; rewriting them would falsify history.
 - **`.claude/` agent and skill files** — worker tooling, not user-facing product surface; outside the rename scope.
 - **`.github/workflows/release.yml` historical mention** — none deliberately retained; if any remain they should be flagged.

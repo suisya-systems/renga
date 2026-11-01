@@ -376,7 +376,7 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   in its `subscribe`, so naming a pane is not authentication — the
   trust boundary is still OS-level user isolation, exactly as the IPC
   security model says
-  ([`docs/content/en/ipc.mdx`](./docs/content/en/ipc.mdx) → Security
+  (`docs/content/en/ipc.mdx`, since removed → Security
   model). What a scope removes is narrower and real: peer messages
   addressed elsewhere are no longer copied into a subscription that
   declared which pane it cares about, which cuts both unintended

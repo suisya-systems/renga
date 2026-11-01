@@ -42,8 +42,7 @@ renga /path/to/project   # Launch in specified directory
 
 ## Links
 
-- [Landing Page](https://suisya-systems.github.io/renga/)
-- [Docs](https://suisya-systems.github.io/renga/docs)
+- [Docs](https://github.com/suisya-systems/renga/tree/main/docs)
 - [GitHub](https://github.com/suisya-systems/renga)
 - [Full README (with peer messaging, IME overlay, keybindings, configuration)](https://github.com/suisya-systems/renga#readme)
 - [claude-org reference stack built on renga](https://github.com/suisya-systems/claude-org)
