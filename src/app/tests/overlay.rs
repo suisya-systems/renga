@@ -212,6 +212,13 @@ fn freeze_panes_suppresses_pty_output_repaint_when_overlay_open() {
     let pane_a = app.ws().focused_pane_id;
     app.ime_freeze_panes_on_overlay = true;
     app.overlay = Some(crate::input::overlay::OverlayState::new(pane_a));
+    // Swap in a private channel so the live shell pane spawned by
+    // App::new (its reader threads hold the old sender) cannot inject
+    // state-changing events (CwdChanged / PtyEof) that legitimately
+    // dirty the app and race with the assertion below (#397).
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.event_tx = tx;
+    app.event_rx = rx;
     app.dirty = false;
 
     // Push a PtyOutput directly through the event channel —
