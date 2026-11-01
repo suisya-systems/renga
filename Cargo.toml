@@ -248,7 +248,9 @@ portable-pty = "0.9"
 vt100 = "0.16"
 anyhow = "1.0"
 unicode-width = "0.2.1"
-arboard = "3.6"
+# Text-only clipboard (`set_text`). Default `image-data` pulls arboard's
+# `image` + `tiff` (-> half/fax/crunchy) for image copy that renga never uses.
+arboard = { version = "3.6", default-features = false }
 # Default features drag in `plist-load` (-> plist -> quick-xml) and
 # `yaml-load` (-> yaml-rust) for parsing `.tmTheme` / `.sublime-syntax`
 # source files. renga never parses either: `Preview` only calls
@@ -274,7 +276,8 @@ serde_json = "1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-toml = "1"
+# Parse-only (`toml::from_str`); `display` (serializer) is never used.
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 # 2.4.2 removes the `CannotUnwind` guard from `exsync_op`. On 2.4.0 a
 # Win32 write failure during IPC — normal when a `renga events` client
 # disconnects ahead of the 30 s heartbeat — propagated via `?` before
