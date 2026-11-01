@@ -274,18 +274,9 @@ fn run_ipc_client(cmd: &cli::IpcCommand) -> Result<()> {
     }
 
     let request = cmd.to_request()?;
-    // A per-call min-size override must not reach a server that would
-    // silently drop it (Issue #206); everything else keeps the
-    // ungated legacy path.
-    let response = match &request {
-        ipc::Request::Split {
-            min_pane_width,
-            min_pane_height,
-            ..
-        } if min_pane_width.is_some() || min_pane_height.is_some() => {
-            ipc::client::send_request_requiring(&endpoint, &request, ipc::CAP_SPLIT_MIN_PANE_SIZE)?
-        }
-        _ => ipc::client::send_request(&endpoint, &request)?,
+    let response = match cli_required_cap(&request) {
+        Some(cap) => ipc::client::send_request_requiring(&endpoint, &request, cap)?,
+        None => ipc::client::send_request(&endpoint, &request)?,
     };
     match response {
         ipc::Response::Ok { data } => {
@@ -311,6 +302,38 @@ fn run_ipc_client(cmd: &cli::IpcCommand) -> Result<()> {
                 Err(anyhow::anyhow!("{message}"))
             }
         }
+    }
+}
+
+/// The capability a CLI request must see advertised before it is sent,
+/// because an older server would silently drop one of its fields and
+/// answer `Ok`. One token per request, so the newest field wins:
+/// `SERVER_CAPABILITIES` is append-only, so a newer token implies the
+/// older ones (`pane_namespace` ⊃ `split_min_pane_size` ⊃ `spawn_tab`).
+fn cli_required_cap(request: &ipc::Request) -> Option<&'static str> {
+    match request {
+        ipc::Request::Split { namespace, .. } | ipc::Request::SpawnTab { namespace, .. }
+            if namespace.is_some() =>
+        {
+            Some(ipc::CAP_PANE_NAMESPACE)
+        }
+        ipc::Request::SetPaneIdentity { namespace, .. } if namespace.is_some() => {
+            Some(ipc::CAP_PANE_NAMESPACE)
+        }
+        // A per-call min-size override (Issue #206).
+        ipc::Request::Split {
+            min_pane_width,
+            min_pane_height,
+            ..
+        } if min_pane_width.is_some() || min_pane_height.is_some() => {
+            Some(ipc::CAP_SPLIT_MIN_PANE_SIZE)
+        }
+        // `split --tab` / `new-tab --background` (Issue #390): an older
+        // server would split in the visible tab, or not know the cmd.
+        ipc::Request::Split { tab: Some(_), .. } | ipc::Request::SpawnTab { .. } => {
+            Some(ipc::CAP_SPAWN_TAB)
+        }
+        _ => None,
     }
 }
 
@@ -636,6 +659,42 @@ fn is_wsl() -> bool {
 mod tests {
     use super::flush_paste_buffer;
     use crate::app::App;
+
+    /// Issue #390: the newest field on a CLI request picks the gate, so
+    /// an older server can never silently drop it.
+    #[test]
+    fn cli_required_cap_prefers_the_newest_field() {
+        use crate::{cli::Cli, ipc};
+        use clap::Parser;
+        let cap = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).unwrap();
+            super::cli_required_cap(&cli.command.unwrap().to_request().unwrap())
+        };
+        let split = ["renga", "split", "--direction", "vertical"];
+        assert_eq!(cap(&split), None);
+        assert_eq!(
+            cap(&[&split[..], &["--tab", "w"]].concat()),
+            Some(ipc::CAP_SPAWN_TAB)
+        );
+        assert_eq!(
+            cap(&[&split[..], &["--tab", "w", "--min-pane-width", "9"]].concat()),
+            Some(ipc::CAP_SPLIT_MIN_PANE_SIZE)
+        );
+        assert_eq!(
+            cap(&[&split[..], &["--min-pane-width", "9", "--namespace", "o"]].concat()),
+            Some(ipc::CAP_PANE_NAMESPACE)
+        );
+        assert_eq!(cap(&["renga", "new-tab"]), None);
+        assert_eq!(
+            cap(&["renga", "new-tab", "--background"]),
+            Some(ipc::CAP_SPAWN_TAB)
+        );
+        assert_eq!(
+            cap(&["renga", "rename", "--clear-namespace"]),
+            Some(ipc::CAP_PANE_NAMESPACE)
+        );
+        assert_eq!(cap(&["renga", "rename", "--to-role", "r"]), None);
+    }
 
     #[test]
     fn flush_paste_buffer_clears_codex_transcript_overlay_hint() {

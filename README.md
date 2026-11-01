@@ -65,7 +65,7 @@ The full peer-messaging workflow, two-pane example, troubleshooting, and pane-co
 ## Features
 
 - **Multi-pane terminal** — Split vertically/horizontally, run independent PTY shells
-- **Tab workspaces** — Multiple project tabs with click-to-switch; an orchestrator pane can list panes across all tabs and spawn workers into a named or background tab
+- **Tab workspaces** — Multiple project tabs with click-to-switch; an orchestrator pane can list panes across all tabs and spawn workers into a named or background tab (`renga new-tab --background` / `renga split --tab <label>` from scripts). Pane names resolve per tab, or across tabs within an opt-in pane namespace — see [peer messaging](docs/peer-messaging.md)
 - **Org sidebar** — `Ctrl+B` shows every tab, pane, and Claude status in one panel
 - **Layout TOMLs** — `renga --layout <name>` opens a declared pane tree (ids, roles, commands, cwd), up to 16 panes
 - **Scriptable** — `renga list` / `send` / `inspect` / `events` / `split` / `new-tab` / `rename` talk to the running instance over a local socket; `renga capabilities` reports what the server supports

@@ -55,6 +55,8 @@ pub enum AppCommand {
         /// process-global minimum.
         min_pane_width: Option<u16>,
         min_pane_height: Option<u16>,
+        /// See [`ipc::Request::Split`]'s `namespace` (Issue #390).
+        namespace: Option<String>,
         reply: oneshot::Sender<std::result::Result<usize, ipc::CodedError>>,
     },
     /// Open a new tab with a fresh single pane. Focus switches to the
@@ -80,6 +82,7 @@ pub enum AppCommand {
         role: Option<String>,
         cwd: Option<String>,
         from_pane: Option<usize>,
+        namespace: Option<String>,
         reply: oneshot::Sender<std::result::Result<(usize, usize), ipc::CodedError>>,
     },
     /// Snapshot the visible screen of the target pane. See
@@ -164,6 +167,7 @@ pub enum AppCommand {
         name: Option<Option<String>>,
         role: Option<Option<String>>,
         from_pane: Option<usize>,
+        namespace: Option<Option<String>>,
         reply: oneshot::Sender<std::result::Result<PaneInfo, ipc::CodedError>>,
     },
     /// Set or clear the summary string of a specific pane. Used by the

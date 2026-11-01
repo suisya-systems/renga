@@ -42,8 +42,9 @@ pub(super) fn format_peer_list(peers: &[PeerInfo]) -> String {
     }
     let mut out = String::from(
         "Peers across all renga tabs (your tab first). Address same-tab peers by id or \
-name; peers in other tabs ONLY by numeric id — names never resolve across tabs, and the \
-tab index shown is display metadata that shifts when tabs close:\n\n",
+name; peers in other tabs by numeric id — a name crosses tabs only between panes that \
+share a namespace (and never when your own tab has a pane of that name), and the tab index \
+shown is display metadata that shifts when tabs close:\n\n",
     );
     for p in peers {
         // Every caller-supplied string here lands in the asking agent's
@@ -66,6 +67,9 @@ tab index shown is display metadata that shifts when tabs close:\n\n",
         }
         if let Some(unread) = p.unread {
             out.push_str(&format!(" unread={unread}"));
+        }
+        if let Some(ns) = &p.namespace {
+            out.push_str(&format!(" namespace={}", ipc::sanitized_label(ns)));
         }
         match (p.same_tab, p.tab) {
             (Some(true), _) => out.push_str(" [your tab]"),

@@ -61,7 +61,7 @@ Claude A の会話で:
 > send_message を to_id=2, message="src/app.rs の handle_split を読んで要約して" で呼んで
 ```
 
-Issue #289 以降、`list_peers` は全タブを列挙し (自分のタブが先頭)、`send_message` は宛先が**数値 pane id** ならタブをまたいで配送します。**名前**は今も自分のタブ内でしか解決されません (pane 名はタブ内でのみ一意) 。解決できない宛先は偽の `Delivered` を返さず `pane_not_found` エラーになります。
+Issue #289 以降、`list_peers` は全タブを列挙し (自分のタブが先頭)、`send_message` は宛先が**数値 pane id** ならタブをまたいで配送します。**名前**は今も自分のタブ内で解決されます (pane 名はタブ内でのみ一意) 。例外は自分のペインがネームスペースに参加している場合です (Issue #390、後述) 。解決できない宛先は偽の `Delivered` を返さず `pane_not_found` エラーになります。
 
 Claude B の次のターンのコンテキストに `<channel source="renga-peers">src/app.rs の handle_split を読んで…</channel>` タグで届き、Claude B は「ユーザーではなく相方からの依頼」と判別 (タグの `source` 属性が決め手) して要件を処理 → 同じ `send_message` で返信します。
 
@@ -89,6 +89,20 @@ Claude B の次のターンのコンテキストに `<channel source="renga-peer
 > **タブ配置 (`tab`、Issue #290)。** 3 つの `spawn_*` ツールはオプションの `tab` セレクタを受け付け、新ペインを**どのタブに**作るかを明示できます (上記の数値 id による暗黙の cross-tab とは別の、明示的な機構です)。キーはちょうど 1 つ: `{"name": "workers"}` (表示名の完全一致。0 件は `tab_not_found`、複数件は `tab_ambiguous` — タブ名は一意ではないため renga は推測しません)、`{"index": 2}` (0 始まり。`list_peers` が報告する index と同じ)、`{"pane_id": 17}` (そのペインが属するタブ。id はタブの close や rename でずれない安定アンカー)、`{"new": {}}` / `{"new": {"name": "workers"}}` (単一ペインの**バックグラウンド**新規タブを作成。ユーザーが見ているタブは切り替わらず、新規タブには split 対象が無いため `direction` / `target` の指定は拒否されます)。既存タブのセレクタでは `target` は選択したタブの**内側で**解決され、別タブの数値 target は `target_tab_mismatch` で失敗します。`tab.new` で `cwd` を省略すると呼び出し元ペインの cwd を継承します。`tab` を使うにはサーバが `spawn_tab` capability を広告している必要があり、古い renga プロセスに対しては呼び出し元のタブへ黙って spawn する代わりに `[server_too_old]` で fail closed します。`new_tab` は従来どおり「作成してフォーカス」のままです。またタブ数は MAX_TABS = 16 で上限され、超過は `tab_limit_reached` になります。
 
 > **タブ横断の列挙 (`tab`、Issue #329)。** `list_panes` は読み取り側で同じ `tab` セレクタを受け付けます — `{"name": "workers"}` / `{"index": 2}` / `{"pane_id": 17}` (サーバ側の解決処理は spawn 側と共通で、`tab_not_found` / `tab_ambiguous` / `pane_not_found` の意味も同じ) に加えて、全タブを返す `{"all": true}` (自分のタブが先頭、以降は index 順)。`{"new": …}` は読み取りには意味がないため存在しません。`tab` を省略した場合は #329 以前の挙動がバイト単位でそのまま残り、自分のタブだけを返します。全タブ形は、オーケストレータが **id を保持していない**ペイン — バックグラウンドタブに置いた worker を含む — を列挙するための経路です。#329 以前はそうしたペインが監視母集団からも容量会計からも落ち、生存している worker が退役され、spawn が過剰方向にずれていました。レコードには `tab` (0 始まりの index) と `tab_name` (表示ラベル) が加わりますが、どちらも**表示用メタデータのみ**です (index はタブを閉じるとずれ、ラベルは一意ではありません)。さらに `same_tab` が付きますが、これは複数タブにまたがりうる応答 (ペインから `tab` セレクタ付きで呼んだ場合) にだけ含まれます。タブを跨いで安定するアドレスは今も数値 `id` だけです。独立した 2 つの orchestration が別タブで動くと、どちらにも `dispatcher` と `worker-<task_id>` が実在するため `name` では判別できません — 判別材料は `cwd` です。`tab` を使うにはサーバが `cross_tab_list` capability を広告している必要があります。#329 以前のプロセスは未知のフィールドを捨てて自分のタブだけを返し、それは正しい答えと見分けのつかない well-formed な `Ok` になってしまうため、黙って狭い集合を返す代わりに `[server_too_old]` で fail closed します。CLI の `renga list` には新しいレコードのフィールドが出ますが、CLI 側のタブセレクタは見送りです。
+
+> **ネームスペース (Issue #390)。** ペインはタブより広い名前スコープである**ネームスペース**に任意で参加できます。これにより、オーケストレーターは補助ペイン (CI ウォッチャー、アプリサーバー、ワーカー) をバックグラウンドタブに置いたまま、そこから `secretary` を名前で呼べるようになります。規則:
+> - **参加。** `set_pane_identity(target=<自分の id>, name="secretary", namespace="org")` (CLI: `renga rename --to-namespace org`、抜けるときは `--clear-namespace`)。ネームスペースに属するペインが `spawn_pane` / `spawn_claude_pane` / `spawn_codex_pane` (`tab: {"new": …}` を含む) で作ったペインは、そのネームスペースを**引き継ぎます**。CLI では `renga split` と `renga new-tab --background` に `--namespace` を明示します。MCP の `new_tab` は引き継ぎません。
+> - **解決。** 名前は**これまでどおりまず自分のタブ内**で探します。見つからず、かつ自分のペインがネームスペースに属しているときに限り、他のタブにある**同じネームスペース**のペインから探します。この探索は **peer メッセージングだけ** (`send_message` の `channel` / `user_turn` 両配送) に適用されます。ペイン操作ツール (`send_keys`、`inspect_pane`、`focus_pane`、`close_pane`、`set_pane_identity`、`spawn_*` の `target`) は従来どおり自分のタブ内で名前を解決するため、破壊的な操作が名前経由で別タブのネームスペースメンバーに届くことはありません (その場合は数値 id を使います)。自分のタブに同名のペインがあれば、ネームスペースの有無に関わらずそちらが優先されます。
+> - **衝突。** ネームスペース内では名前はタブをまたいで一意です。別タブにある同じネームスペースのペインがすでにその名前を持っているとき、spawn・名前変更・参加は `name_in_use` で拒否されます。異なるネームスペースどうしは衝突せず、タブ内の一意性も従来どおりです。
+> - **ネームスペースなしなら従来どおり。** ネームスペースに属さないペインは自分のタブ内でしか名前を解決せず、他のタブから名前で呼ばれることもありません。
+> - `list_panes` / `list_peers` は各ペインの `namespace=…` を表示します。使える文字は名前と同じ (`[A-Za-z0-9_-]`) です。`namespace` を送るには `pane_namespace` capability が必要で、古い renga プロセスに対しては `[server_too_old]` で安全側に失敗します。
+
+> **CLI からのバックグラウンドタブ (Issue #390)。** `renga new-tab --background [--label watchers] [--id NAME] [--namespace NS]` は表示タブを切り替えずにタブを作ります (`tab: {"new": …}` の CLI 版)。出力は `{"id": <pane>, "tab": <index>}` です。`renga split --tab <label> --direction …` はそのラベルのタブ内でペインを分割します (既定のターゲットはそのタブのフォーカスペイン)。こちらも表示タブは変わりません。ラベルは一意である必要があります (重複時は `tab_ambiguous`)。どちらも `spawn_tab` capability が必要です。"watchers" タブを決定的に組む例:
+>
+> ```bash
+> renga new-tab --background --label watchers --id ci-watch --namespace org --command "./watch-ci.sh"
+> renga split --tab watchers --direction horizontal --id app-server --namespace org --command "npm run dev"
+> ```
 
 ## 新しい Codex worker のウォームアップ
 

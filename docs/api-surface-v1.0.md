@@ -93,7 +93,10 @@ reachable: <reason>)"`.
 **Cross-tab delivery (#289, supersedes the v1.0 Q5 silent no-op)**: a numeric
 `to_id` reaches a pane in any tab and delivers normally. A *name* resolves
 only inside the sender's own tab — pane names are unique per tab, not
-globally, so an unqualified name can never address another tab. An
+globally, so an unqualified name can never address another tab. (Since
+#390, a sender that joined a pane namespace falls back to the same
+namespace's panes in other tabs when its own tab has no pane of that name;
+see `peer-messaging.md`.) An
 unresolvable target now fails with `pane_not_found` instead of silently
 succeeding. This is a deliberate breaking semantic change (see
 `semver-policy.md` §3) shipped without the §4 opt-in-flag window per the
