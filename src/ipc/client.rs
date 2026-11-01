@@ -857,6 +857,11 @@ mod tests {
     /// an older server drops the unknown `min_pane_width` /
     /// `min_pane_height` on a `Split` and judges it against its global
     /// minimum, so a call carrying an override is gated on it.
+    ///
+    /// `pane_namespace` is #390's, and belongs to the first kind: an
+    /// older server drops the unknown `namespace` on a `Split` /
+    /// `SpawnTab` / `SetPaneIdentity` and answers `Ok`, so a call
+    /// carrying one is gated on it.
     #[test]
     fn capability_exposure_mints_no_new_token() {
         assert_eq!(
@@ -871,6 +876,7 @@ mod tests {
                 super::super::CAP_CROSS_TAB_LIST,
                 super::super::CAP_SPLIT_REFUSAL_CAUSES,
                 super::super::CAP_SPLIT_MIN_PANE_SIZE,
+                super::super::CAP_PANE_NAMESPACE,
             ],
             "#304 is introspection only and adds no capability token"
         );
@@ -1106,6 +1112,7 @@ mod tests {
             tab: None,
             min_pane_width: None,
             min_pane_height: None,
+            namespace: None,
         };
         let mut out: Vec<u8> = Vec::new();
         write_request_line(&mut out, &req).unwrap();

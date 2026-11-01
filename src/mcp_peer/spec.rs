@@ -49,8 +49,10 @@ Peer messaging tools:\n\
 The tab index shown per peer is display metadata — it shifts when tabs close, so address \
 peers by their numeric pane id.\n\
 - send_message: Send a message to another instance. A numeric peer ID reaches any tab; a \
-name only resolves within your own tab (names are unique per tab, not globally), so use \
-the numeric id from list_peers for peers in other tabs.\n\
+name resolves within your own tab (names are unique per tab, not globally), so use \
+the numeric id from list_peers for peers in other tabs. Exception: if your pane joined a \
+namespace (set_pane_identity), a name your tab does not hold falls back to the panes of \
+that namespace in other tabs.\n\
 - set_summary: Set a 1-2 sentence summary of what you're working on; surfaced on list_panes / list_peers for other peers.\n\
 - check_messages: Drain any queued peer messages still waiting for this client.\n\n\
 Pane control tools. For list_panes, spawn_pane, spawn_claude_pane, spawn_codex_pane, \
@@ -138,11 +140,11 @@ pub(super) fn tools_spec() -> Value {
         },
         {
             "name": "send_message",
-            "description": "Send a message to another pane in any renga tab. A numeric to_id reaches every tab; a name resolves ONLY within your own tab — pane names are unique per tab, not globally, so a pane in another tab cannot be addressed by an unqualified name even if the name is unique right now. Use the numeric id from list_peers for cross-tab sends. `deliver` picks between two semantically different deliveries: the default channel tag, which never submits your text as the recipient's user turn and does NOT arm slash commands (the recipient still spends a turn on every channel message, so do not send pure acknowledgements), and `user_turn`, which types the message into the recipient's composer and submits it as a real user turn (so `/loop`, `/clear` and friends actually run). Neither one is send_keys: send_keys writes raw bytes for dialogs and key chords, with no input-box precondition.",
+            "description": "Send a message to another pane in any renga tab. A numeric to_id reaches every tab; a name resolves within your own tab — pane names are unique per tab, not globally, so a pane in another tab cannot be addressed by an unqualified name even if the name is unique right now. Use the numeric id from list_peers for cross-tab sends. The one exception is a namespace (set_pane_identity `namespace`): when YOUR pane belongs to one and your own tab has no pane of that name, the name is looked up among the same namespace's panes in other tabs. `deliver` picks between two semantically different deliveries: the default channel tag, which never submits your text as the recipient's user turn and does NOT arm slash commands (the recipient still spends a turn on every channel message, so do not send pure acknowledgements), and `user_turn`, which types the message into the recipient's composer and submits it as a real user turn (so `/loop`, `/clear` and friends actually run). Neither one is send_keys: send_keys writes raw bytes for dialogs and key chords, with no input-box precondition.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to_id":   { "type": "string", "description": "Recipient pane id (from list_peers; works across tabs) or stable name (own tab only)." },
+                    "to_id":   { "type": "string", "description": "Recipient pane id (from list_peers; works across tabs) or stable name (own tab, or your namespace's tabs)." },
                     "message": { "type": "string", "description": "Text to deliver." },
                     "deliver": {
                         "type": "string",
@@ -500,7 +502,7 @@ pub(super) fn tools_spec() -> Value {
         },
         {
             "name": "set_pane_identity",
-            "description": "Rename or (re)assign the stable `name` and/or `role` of an existing pane. Relative targets ('focused', a name) resolve inside your own tab; a numeric id may name a pane in any tab. Needs a renga server advertising the caller_scope_close_identity capability; older servers are refused (server_too_old) rather than renaming a pane in whatever tab the user is viewing. Use this to recover from sessions launched without the intended layout (e.g. when the secretary pane was spawned without an `id`, so peers can't address it as `to_id=\"secretary\"`). Both fields use three-state semantics: omit the key to keep the current value, pass `null` to clear it, or pass a string to set it. Validation: name cannot be empty, all-digits, or collide with another pane in the target pane's tab (uniqueness is per tab, not global); allowed characters are [A-Za-z0-9_-]. Role has no uniqueness constraint. Returns the updated pane record so callers can confirm without a separate list round-trip.",
+            "description": "Rename or (re)assign the stable `name` and/or `role` of an existing pane. Relative targets ('focused', a name) resolve inside your own tab; a numeric id may name a pane in any tab. Needs a renga server advertising the caller_scope_close_identity capability; older servers are refused (server_too_old) rather than renaming a pane in whatever tab the user is viewing. Use this to recover from sessions launched without the intended layout (e.g. when the secretary pane was spawned without an `id`, so peers can't address it as `to_id=\"secretary\"`). Both fields use three-state semantics: omit the key to keep the current value, pass `null` to clear it, or pass a string to set it. Validation: name cannot be empty, all-digits, or collide with another pane in the target pane's tab (uniqueness is per tab, not global); allowed characters are [A-Za-z0-9_-]. Role has no uniqueness constraint. `namespace` (Issue #390, needs the pane_namespace capability) joins the pane to a name scope wider than a tab for peer messaging: a namespaced pane's send_message to a name its own tab does not hold falls back to the same namespace's panes in other tabs (pane-control tools such as close_pane / focus_pane still resolve names in your own tab only), and panes it spawns with spawn_pane / spawn_claude_pane / spawn_codex_pane inherit the namespace (new_tab does not). Joining refuses (name_in_use) when another pane of that namespace in a different tab already holds the pane's name. Returns the updated pane record so callers can confirm without a separate list round-trip.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -515,6 +517,10 @@ pub(super) fn tools_spec() -> Value {
                     "role": {
                         "type": ["string", "null"],
                         "description": "New role label, or null to clear. Omit to leave unchanged."
+                    },
+                    "namespace": {
+                        "type": ["string", "null"],
+                        "description": "Namespace to join (same charset as name), or null / \"\" to leave. Omit to leave unchanged."
                     }
                 }
             }

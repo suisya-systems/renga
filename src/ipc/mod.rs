@@ -273,6 +273,20 @@ pub const CAP_SPLIT_REFUSAL_CAUSES: &str = "split_refusal_causes";
 /// [`CAP_SPLIT_REFUSAL_CAUSES`].
 pub const CAP_SPLIT_MIN_PANE_SIZE: &str = "split_min_pane_size";
 
+/// Capability token advertised by servers that understand pane
+/// namespaces (Issue #390): the `namespace` field on
+/// [`Request::Split`], [`Request::SpawnTab`] and
+/// [`Request::SetPaneIdentity`], the `namespace` field on
+/// [`PaneInfo`] / [`PeerInfo`], and peer-message name resolution that
+/// falls back to the sender's namespace across tabs.
+///
+/// An older server drops the unknown `namespace` field and answers
+/// `Ok`, so a client sending it must gate on this token. Inheritance
+/// (a namespaced caller's spawns join its namespace) is server-side and
+/// needs no client opt-in. `SERVER_CAPABILITIES` is append-only, so
+/// this token implies [`CAP_SPAWN_TAB`] and [`CAP_SPLIT_MIN_PANE_SIZE`].
+pub const CAP_PANE_NAMESPACE: &str = "pane_namespace";
+
 /// Hard floor for a per-call `min_pane_width` override (Issue #206).
 /// Below this a pane cannot show anything useful, so the override is
 /// refused with [`err_code::MIN_PANE_SIZE_INVALID`] instead of being
@@ -296,6 +310,7 @@ pub const SERVER_CAPABILITIES: &[&str] = &[
     CAP_CROSS_TAB_LIST,
     CAP_SPLIT_REFUSAL_CAUSES,
     CAP_SPLIT_MIN_PANE_SIZE,
+    CAP_PANE_NAMESPACE,
 ];
 
 /// One IPC call from a client to the running renga instance.
@@ -429,6 +444,13 @@ pub enum Request {
         /// [`MIN_PANE_HEIGHT_FLOOR`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min_pane_height: Option<u16>,
+        /// Namespace for the new pane (Issue #390). `Some("x")` joins
+        /// `x`, `Some("")` opts out, `None` inherits the `from_pane`
+        /// caller's namespace (no namespace without a caller). Send it
+        /// only through [`client::send_request_requiring`] with
+        /// [`CAP_PANE_NAMESPACE`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     /// Move keyboard focus to the target pane. When the resolved pane
     /// lives in a different tab than the one on screen, the server also
@@ -531,6 +553,11 @@ pub enum Request {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_pane: Option<usize>,
+        /// Namespace for the new pane; same three-way contract as
+        /// [`Request::Split`]'s `namespace` (Issue #390). Gate on
+        /// [`CAP_PANE_NAMESPACE`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     /// Switch the connection to live event stream mode. After the
     /// server acknowledges with [`Response::Subscribed`], it emits
@@ -717,6 +744,17 @@ pub enum Request {
         role: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_pane: Option<usize>,
+        /// Join (`"x"`), leave (`null` or `""`) or keep (missing) the
+        /// pane's namespace (Issue #390). Same three-state shape as
+        /// `name` / `role`. A join refuses with `name_in_use` when
+        /// another pane of that namespace in a different tab already
+        /// holds the pane's (new) name. Gate on [`CAP_PANE_NAMESPACE`].
+        #[serde(
+            default,
+            with = "double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        namespace: Option<Option<String>>,
     },
     /// Set or clear the per-pane summary string. The summary is
     /// surfaced on `PaneInfo.summary` / `PeerInfo.summary` so other
@@ -1055,6 +1093,12 @@ pub struct PeerInfo {
     /// that predate #353.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread: Option<usize>,
+    /// Namespace the pane belongs to (Issue #390). Within a namespace,
+    /// a peer message to a name the sender's tab lacks falls back to
+    /// the namespace's panes in other tabs. Absent for panes outside any
+    /// namespace and from servers that predate #390.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// One entry in the `List` response payload.
@@ -1135,6 +1179,12 @@ pub struct PaneInfo {
     /// from servers that predate #352.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_delivery: Option<PeerDeliveryStatus>,
+    /// Namespace the pane belongs to (Issue #390). Within a namespace,
+    /// a peer message to a name the sender's tab lacks falls back to
+    /// the namespace's panes in other tabs. Absent for panes outside any
+    /// namespace and from servers that predate #390.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// Server reply to one [`Request`].
@@ -1753,6 +1803,7 @@ mod tests {
                     tab: None,
                     min_pane_width: None,
                     min_pane_height: None,
+                    namespace: None,
                 },
             ),
         ];
@@ -1901,6 +1952,7 @@ mod tests {
             name: None,
             role: None,
             from_pane: None,
+            namespace: None,
         })
         .unwrap();
         assert!(!identity.contains("from_pane"), "{identity}");
@@ -1920,6 +1972,7 @@ mod tests {
             name: Some(Some("worker".into())),
             role: None,
             from_pane: Some(7),
+            namespace: None,
         })
         .unwrap();
         assert!(identity.contains(r#""from_pane":7"#), "{identity}");
@@ -1949,6 +2002,7 @@ mod tests {
                 name: None,
                 role: Some(Some("lead".into())),
                 from_pane: None,
+                namespace: None,
             }
         );
     }
@@ -2122,6 +2176,7 @@ mod tests {
             receive_mode: None,
             summary: None,
             peer_delivery: None,
+            namespace: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         // Match on the quoted key forms: `"tab"` is a substring of
@@ -2151,6 +2206,7 @@ mod tests {
             receive_mode: None,
             summary: None,
             peer_delivery: None,
+            namespace: None,
         };
         let parsed: PaneInfo =
             serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
@@ -2187,6 +2243,7 @@ mod tests {
                 tab: Some(tab),
                 min_pane_width: None,
                 min_pane_height: None,
+                namespace: None,
             };
             assert_eq!(roundtrip(&r), r);
         }
@@ -2208,6 +2265,7 @@ mod tests {
             tab: None,
             min_pane_width: None,
             min_pane_height: None,
+            namespace: None,
         };
         let ser = serde_json::to_string(&r).unwrap();
         assert!(!ser.contains("tab"), "tab must stay off the wire: {ser}");
@@ -2223,6 +2281,7 @@ mod tests {
             role: Some("worker".into()),
             cwd: Some("/tmp/work".into()),
             from_pane: Some(2),
+            namespace: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -2239,6 +2298,7 @@ mod tests {
                 role: None,
                 cwd: None,
                 from_pane: None,
+                namespace: None,
             }
         );
     }
@@ -2281,6 +2341,7 @@ mod tests {
             tab: None,
             min_pane_width: None,
             min_pane_height: None,
+            namespace: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -2369,6 +2430,7 @@ mod tests {
                 name: None,
                 role: None,
                 from_pane: None,
+                namespace: None,
             } => {
                 assert!(matches!(target, PaneRef::Focused));
             }
@@ -2421,6 +2483,7 @@ mod tests {
             name: None,
             role: None,
             from_pane: None,
+            namespace: None,
         };
         let s = serde_json::to_string(&r).unwrap();
         assert!(!s.contains("\"name\""), "name key leaked: {s}");
@@ -2434,6 +2497,7 @@ mod tests {
             name: Some(Some("renamed".into())),
             role: Some(None),
             from_pane: Some(4),
+            namespace: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -2451,6 +2515,7 @@ mod tests {
             tab: None,
             min_pane_width: None,
             min_pane_height: None,
+            namespace: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -2621,6 +2686,7 @@ mod tests {
             receive_mode: None,
             summary: None,
             peer_delivery: None,
+            namespace: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(!s.contains("role"), "unexpected role field: {s}");
@@ -2645,6 +2711,7 @@ mod tests {
             receive_mode: Some(PeerReceiveMode::Push),
             summary: None,
             peer_delivery: None,
+            namespace: None,
         };
         let parsed: PaneInfo =
             serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
@@ -2670,6 +2737,7 @@ mod tests {
             receive_mode: None,
             summary: None,
             peer_delivery: None,
+            namespace: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(s.contains("\"x\":3"), "missing x: {s}");
@@ -2708,6 +2776,7 @@ mod tests {
             tab: None,
             min_pane_width: None,
             min_pane_height: None,
+            namespace: None,
         };
         assert_eq!(roundtrip(&r), r);
     }
@@ -3074,6 +3143,7 @@ mod tests {
             receive_mode: None,
             summary: None,
             unread: None,
+            namespace: None,
         }
     }
 
@@ -3181,6 +3251,7 @@ mod tests {
             receive_mode: None,
             summary: None,
             peer_delivery: None,
+            namespace: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(!s.contains("summary"), "must omit summary key: {s}");
@@ -3205,6 +3276,7 @@ mod tests {
             receive_mode: None,
             summary: Some("hello".into()),
             peer_delivery: None,
+            namespace: None,
         };
         let s = serde_json::to_string(&info).unwrap();
         assert!(s.contains("\"summary\":\"hello\""), "{s}");

@@ -91,6 +91,9 @@ pub struct Pane {
     /// Surfaced via `list_panes` / `list_peers` so peer agents can see
     /// what other panes are working on.
     pub summary: Option<String>,
+    /// Name-scope namespace this pane joined (Issue #390). `None` keeps
+    /// pre-#390 per-tab name resolution for anything this pane asks.
+    pub namespace: Option<String>,
     /// Set once the App has published a `PaneExited` event for this
     /// pane. Guards the multiple exit pathways (explicit close, tab
     /// close, natural shell exit) so subscribers see exactly one event.
@@ -273,6 +276,7 @@ impl Pane {
             codex_transcript_overlay_hint,
             role: None,
             summary: None,
+            namespace: None,
             exit_event_emitted: false,
             last_output_at: Instant::now(),
             output_seen: false,
