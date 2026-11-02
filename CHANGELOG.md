@@ -7,7 +7,20 @@ and from v1.0 onward this project adheres to
 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html) under the
 rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
 
-## [Unreleased]
+## [3.0.0] — 2026-11-02
+
+> **Major release.** Governed by
+> [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md), which stays the
+> live policy for the 3.0 line: nothing here changes the policy's substance,
+> so it gains no successor doc (§10). The frozen surface as of this tag is
+> [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) (§1.1 — the
+> filename is historical, the contents are live).
+>
+> One breaking change ships in it, under the §3 **semantic change**
+> predicate, with its §4 window waived on the record below (§8).
+>
+> The 3.0.0 section of an earlier release PR (#337) was never tagged, so this
+> is the first published 3.0.0 and covers everything since 2.2.0.
 
 ### Added
 
@@ -62,56 +75,43 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   to the pane). New `Event` variants are minor under the forward-compat
   rule.
 
-### Changed
-
-- **A `poll_events` call with a `types` filter no longer wakes on
-  non-matching events.** (#72) It keeps waiting until a matching event
-  or the timeout, and still advances `next_since` past what it skipped.
-  Without this, the new per-pane `pane_waiting_input` traffic would
-  wake every `types=["pane_exited"]` long-poll with `events: []`. The
-  frozen contract only said a non-matching arrival *can* early-return,
-  so this is within it.
-
-### Fixed
-
-- **Two inbox subscribers on one Codex pane no longer under-count
-  unread.** (#369) Each `peer_inbox` now carries a server-assigned
-  `msg_id`, and `renga mcp-peer` reports drains by those ids, so the
-  same message drained from two inboxes is cleared once and the nudge
-  for a later, still-unread message is kept. A drain report without
-  ids (an older client) still clears `count` messages, oldest first.
-- **Typing into a focused Codex pane no longer drops its peer
-  notification.** (#197) Any key other than `Esc` / `Ctrl+C` /
-  `Alt+Enter` used to discard the "pending Codex messages" overlay, and
-  the queued request was then never nudged. The overlay is now hidden
-  but kept: a newer message shows it again, and leaving the pane hands
-  it to the usual deferred `check_messages` nudge.
-- **Focused Codex peer notification edge cases.** (#355) Moving focus to
-  the file tree or preview of the same tab now counts as leaving the
-  pane, so the deferred nudge goes out instead of waiting for focus to
-  return. A notification parked in the queue keeps its pending count
-  when it comes back. When the terminal is too small to draw the
-  overlay, it no longer captures `Esc` / `Alt+Enter`; the status bar
-  shows the pending count instead.
-- **The Codex nudge fallback no longer types into a user draft.** (#354)
-  On screens without Codex's `›` composer, the `enter to send` /
-  `ready for input` banner alone used to make the pane "ready". It now
-  also needs a visible cursor at the start of an otherwise blank row.
-  The readiness heuristic is pinned by tests against real captured
-  Codex v0.153.4 screens (idle, draft, busy, queued draft, approval and
-  model menus, update dialog, tall screen).
-
-## [3.0.0] — 2026-08-29
-
-> **Major release.** Governed by
-> [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md), which stays the
-> live policy for the 3.0 line: nothing here changes the policy's substance,
-> so it gains no successor doc (§10). The frozen surface as of this tag is
-> [`docs/api-surface-v1.0.md`](./docs/api-surface-v1.0.md) (§1.1 — the
-> filename is historical, the contents are live).
->
-> One breaking change ships in it, under the §3 **semantic change**
-> predicate, with its §4 window waived on the record below (§8).
+- **Pane namespaces for cross-tab name resolution, and background tabs
+  from the CLI.** (#399, #390) A pane can join an optional namespace
+  (`set_pane_identity` `namespace`, `renga rename --to-namespace`); panes
+  spawned by a namespaced pane through the MCP spawn tools inherit it,
+  and `renga split` / `renga new-tab --background` take an explicit
+  `--namespace`. `send_message` resolves a name in the caller's own tab
+  first and, only on a miss and only for a namespaced caller, falls back
+  to the same namespace's panes in other tabs; names are kept unique
+  across a namespace's tabs (`name_in_use`). Pane-control tools
+  (`close_pane`, `focus_pane`, `send_keys`, `inspect_pane`) keep the
+  own-tab-only name rule. Panes without a namespace resolve exactly as
+  before. `list_panes` / `list_peers` records carry `namespace`; the new
+  `pane_namespace` capability gates every request that sends one.
+  `renga new-tab --background` opens a tab without switching to it, and
+  `renga split --tab <label>` splits inside a labelled tab.
+- **Per-call `min_pane_width` / `min_pane_height` on split and spawn.**
+  (#385, #206) Optional overrides on `spawn_pane` / `spawn_claude_pane` /
+  `spawn_codex_pane`, the `split` IPC request and `renga split`.
+  Omitted, the split is judged against the global `--min-pane-width` /
+  `--min-pane-height` as before. Values below 5 columns / 2 rows are
+  refused with the new `min_pane_size_invalid` code; overrides are
+  rejected with `tab: {new: ...}`. Gated on the new `split_min_pane_size`
+  capability.
+- **`auto_upgrade_claude` opt-out on `spawn_pane` / `new_tab`.** (#386,
+  #205) Lets a caller keep a literal `claude` command from being
+  rewritten to the peer-enabled launch.
+- **`renga capabilities`.** (#374, #313) Prints the same payload as
+  `server_info` (JSON by default, `--text` for the text block) for
+  consumers that are not MCP clients. Exits 0 in every state; detached
+  and unreachable are reported in `status`.
+- **`server_version` on the IPC `Hello` response and `server_info`.**
+  (#373, #312)
+- **The UI respects the host terminal palette.** (#270) Chrome, accents
+  and the file-preview syntax ramp use the terminal's own ANSI colors
+  instead of fixed RGB values, so custom themes carry through.
+- **`list_peers` / `list_panes` show each peer's `set_summary` string.**
+  (#376, #105)
 
 ### Changed
 
@@ -182,6 +182,79 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   does not know the token exists and receives the new codes — the
   residual direction the major-release requirement exists to cover.
 
+- **A `poll_events` call with a `types` filter no longer wakes on
+  non-matching events.** (#72) It keeps waiting until a matching event
+  or the timeout, and still advances `next_since` past what it skipped.
+  Without this, the new per-pane `pane_waiting_input` traffic would
+  wake every `types=["pane_exited"]` long-poll with `events: []`. The
+  frozen contract only said a non-matching arrival *can* early-return,
+  so this is within it.
+
+- **Peer-message guidance no longer calls a channel send free.** (#376,
+  #105) `send_message` / `deliver` descriptions claimed a channel send
+  "does NOT take the recipient's turn" and is "good for acks", which is
+  false for Claude recipients and invited ack-of-ack ping-pong. The
+  wording is corrected across tool descriptions and docs, and the
+  receive guidance gains a stopping rule: no ack-only or thanks-only
+  replies, and never answer one.
+- **Dependency upgrades** (#68): `portable-pty` 0.9 (#366), `ureq` 3
+  (#379), `dirs` 6 (#378), `oneshot` 0.2 (#377), `toml` 1.x (#372). No
+  behavior change intended. `arboard` loses its unused `image-data`
+  default feature and `toml` its `display` feature (#402), shrinking the
+  dependency tree (`tiff`, `fax`, `half`, `crunchy` are gone).
+- **The docs site and landing page are retired.** (#401) The Nextra site
+  under `docs/`, the `lp/` landing page and the Deploy Docs workflow are
+  removed; the npm README / homepage now point at the Markdown docs on
+  GitHub. The Markdown docs under `docs/` are unchanged.
+- **README overhaul for the independent project framing.** (#387)
+
+### Fixed
+
+- **Two inbox subscribers on one Codex pane no longer under-count
+  unread.** (#369) Each `peer_inbox` now carries a server-assigned
+  `msg_id`, and `renga mcp-peer` reports drains by those ids, so the
+  same message drained from two inboxes is cleared once and the nudge
+  for a later, still-unread message is kept. A drain report without
+  ids (an older client) still clears `count` messages, oldest first.
+- **Typing into a focused Codex pane no longer drops its peer
+  notification.** (#197) Any key other than `Esc` / `Ctrl+C` /
+  `Alt+Enter` used to discard the "pending Codex messages" overlay, and
+  the queued request was then never nudged. The overlay is now hidden
+  but kept: a newer message shows it again, and leaving the pane hands
+  it to the usual deferred `check_messages` nudge.
+- **Focused Codex peer notification edge cases.** (#355) Moving focus to
+  the file tree or preview of the same tab now counts as leaving the
+  pane, so the deferred nudge goes out instead of waiting for focus to
+  return. A notification parked in the queue keeps its pending count
+  when it comes back. When the terminal is too small to draw the
+  overlay, it no longer captures `Esc` / `Alt+Enter`; the status bar
+  shows the pending count instead.
+- **The Codex nudge fallback no longer types into a user draft.** (#354)
+  On screens without Codex's `›` composer, the `enter to send` /
+  `ready for input` banner alone used to make the pane "ready". It now
+  also needs a visible cursor at the start of an otherwise blank row.
+  The readiness heuristic is pinned by tests against real captured
+  Codex v0.153.4 screens (idle, draft, busy, queued draft, approval and
+  model menus, update dialog, tall screen).
+
+- **A client disconnecting no longer writes IPC errors over the TUI.**
+  (#394, #391) A pane closing itself with `renga close` killed its client
+  before the response was written, and the server's `EPIPE` was printed
+  on the TUI's stderr. `BrokenPipe` / `ConnectionReset` are now treated
+  as a normal disconnect, and remaining IPC diagnostics go to
+  `renga-ipc.log` in the per-user endpoint directory.
+- **rustls advisories cleared.** (#395, #344) `rustls`, `rustls-webpki`
+  and `webpki-roots` are bumped past RUSTSEC-2026-0285, -0346 to -0349,
+  -0381 and -0382 (transitive via `ureq`; lockfile only).
+- **Every client on a pane can read peer messages via `check_messages`.**
+  (#375, #334) A `claude daemon run` session sharing a pane with the
+  front-end `claude` used to lose messages, since push clients kept
+  nothing but a channel frame. Push inboxes are capped at 256 entries
+  (oldest dropped); Codex queues stay unbounded.
+- **Windows panes no longer stall on spawn.** (#366) `portable-pty` 0.9
+  creates ConPTY with cursor inheritance, so conhost sends `ESC[6n` and
+  waits; renga now answers the cursor-position query.
+
 ### Documentation
 
 - **Surface-doc reconciliation (§9 step 1).** The inventory pass this
@@ -195,6 +268,8 @@ rules in [`docs/semver-policy-2.0.md`](./docs/semver-policy-2.0.md).
   contract despite shipping as stable. They are added, and the count is
   corrected to 27. No behavior changed; this is the same class of gap
   §8 recorded closing at 2.0.0.
+- **Cross-tab selectors are part of the contract.** (#384, #204)
+  Promoted from "out of scope" in `docs/api-surface-v1.0.md`.
 
 ## [2.2.0] — 2026-08-10
 
